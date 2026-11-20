@@ -145,7 +145,8 @@ def render_message(rule: dict[str, Any], ctx: dict[str, Any]) -> str:
 # ---------------------------------------------------------------- 投递
 async def deliver(work_id: str, target: str, text: str, *,
                   rule_id: str = "", wake: bool = True,
-                  mode: str = "message", action_id: str = "") -> Optional[str]:
+                  mode: str = "message", action_id: str = "",
+                  expect: Optional[dict] = None) -> Optional[str]:
     """把一条系统提醒送到目标卡。
 
     [harness 三手段 2026-10-28 · 用户定义] `mode` 决定用哪种手段：
@@ -166,7 +167,7 @@ async def deliver(work_id: str, target: str, text: str, *,
         # [2026-10-29 用户裁定] 固定能力，与 message / inject 并列：
         # 按卡停下来的状态原样再调起一次，塞不同的提示词。
         return await _deliver_continue(work_id, target, text, rule_id=rule_id,
-                                       action_id=action_id)
+                                       action_id=action_id, expect=expect)
     try:
         from ..api import event_stream, message_runner
         from ..storage import session_facade
@@ -241,7 +242,8 @@ async def _deliver_inject(work_id: str, target: str, text: str, *,
 
 async def _deliver_continue(work_id: str, target: str, text: str, *,
                             rule_id: str = "",
-                            action_id: str = "") -> Optional[str]:
+                            action_id: str = "",
+                            expect: Optional[dict] = None) -> Optional[str]:
     """续接：**原状态再调起一次**，并塞一句说明为什么叫它。
 
     [2026-10-29 用户口径]「停下来时的最后一次调用是什么状态，就原状态再次调起，
@@ -279,13 +281,40 @@ async def _deliver_continue(work_id: str, target: str, text: str, *,
         # 改前走 `deliver_now` ⇒ 评审卡被叫醒后跑的是普通对话（实弹 card_123 事件流：
         # context→round_start→…→turn_end），评审一步都没推进，批次就此停住。
         from ..api import review_runner
-        r = await review_runner.run_once(work_id, target, hint=text)
+        r = await review_runner.run_once(work_id, target, hint=text,
+                                         expect=expect)
+        # [过期步骤销账 2026-11-20 · 批次A第三轮返工] 评审属主判定
+        # 步骤身份已过期（批次/稿次/next 与登记时不符）⇒ 不执行、
+        # 回 continue:stale——台账销账 stale 不重试。
+        if isinstance(r, dict) and r.get("stale"):
+            try:
+                event_stream.emit(work_id, target, EV_TYPE, {
+                    "rule_id": rule_id, "to": str(target), "wake": False,
+                    "mode": "continue", "started": False,
+                    "reason": "stale_step", "stale": True,
+                    "action_id": str(action_id or ""),
+                    "text": text,
+                })
+            except Exception:  # noqa: BLE001
+                pass
+            return "continue:stale"
+        # [受理记账 2026-11-20 · 批次A返工4] 受理与否由评审入口的
+        # ``accepted`` 显式回执说了算——no_auto/already_running/步崩/
+        # 投递失败 ⇒ continue:0（台账 failed 待 resume）；无键旧形态
+        # （含 mock/转发旧端）回落 reason 黑名单。
         # [2026-10-31] 到站原因补两个：**stopped**（用户点了停止）与
         # **review_busy**（评审卡被别的回合占着，本步让路）——都不是"这一步干成了"，
         # 不该报成 continue 成功（否则前端会显示"已续跑"，实际一步没走）。
-        ok = bool(isinstance(r, dict) and r.get("reason") not in
-                  ("no_batch", "already_running", "speak_failed",
-                   "stopped", "review_busy"))
+        if isinstance(r, dict) and "accepted" in r:
+            ok = bool(r.get("accepted"))
+        else:
+            # 回落黑名单与 review_runner._STEP_REFUSED 同口径：只拒
+            # 「请求没被真正处理」的结局；no_batch 是确定终点照旧受理。
+            ok = bool(isinstance(r, dict) and r.get("reason") not in
+                      ("already_running", "speak_failed",
+                       "stopped", "review_busy", "no_auto",
+                       "step_error", "child_busy", "wake_failed",
+                       "advance_no_members"))
         try:
             event_stream.emit(work_id, target, EV_TYPE, {
                 "rule_id": rule_id, "to": str(target), "wake": ok,
@@ -301,3 +330,23 @@ async def _deliver_continue(work_id: str, target: str, text: str, *,
         logger.warning("[harness] 续接失败 work=%s to=%s rule=%s: %s",
                        work_id, target, rule_id, exc)
         return None
+
+
+def deliver_accepted(result: Any) -> bool:
+    """投递回执的**受理判定**：返回值非空≠受理——``continue:0`` 是
+    评审侧明确拒绝（already_running/stopped/review_busy…），一步没走；
+    ``continue:N>0`` 才算续跑成立。message/inject 的 msg_id 非空即受理。
+
+    [续跑记账 2026-11-20 · 批次A返工] 台账 ``mark_receipt`` 曾按
+    ``bool("continue:0")`` 记 delivered——被拒的续跑成了"已送达"，
+    resume 据此跳过，义务无声蒸发。
+    """
+    if not result:
+        return False
+    s = str(result)
+    if s.startswith("continue:"):
+        try:
+            return int(s.rsplit(":", 1)[-1]) > 0
+        except (TypeError, ValueError):
+            return False
+    return True

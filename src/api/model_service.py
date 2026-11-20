@@ -124,24 +124,9 @@ def _parse_text_tool_calls(text: str) -> list[dict[str, Any]]:
     [2026-10-29] 纯兼容层：只把**文本形态的调用**还原成结构化 tool_calls，
     不改变任何模型行为。名字/参数原样取，不做猜测性修补。
     """
-    import json as _json
-    import re as _re
+    from .text_tool_rescue import parse_legacy_text_tool_calls
 
-    out: list[dict[str, Any]] = []
-    for m in _re.finditer(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", text, _re.S):
-        try:
-            obj = _json.loads(m.group(1))
-        except Exception:  # noqa: BLE001 不是合法 JSON 就当正文
-            continue
-        if not isinstance(obj, dict):
-            continue
-        name = str(obj.get("name") or "").strip()
-        if not name:
-            continue
-        args = obj.get("arguments")
-        out.append({"name": name,
-                    "arguments": args if isinstance(args, dict) else {}})
-    return out
+    return parse_legacy_text_tool_calls(text)
 
 
 def _endpoint_protocol_of(model_name: str) -> str:
@@ -319,9 +304,11 @@ async def call_main(
         _stopped = True
     if not result and _stopped:
         # 人停断流：把已产出的正文照常交付（工具轮未走完 ⇒ 不产生 tool_calls）。
+        # [B2返修·真实终帧] ``stopped`` 标记＝**无真实终帧的合成收口**——
+        # 补救占位核销 delivered 必须凭真实终帧，此类结果只记 sent/unverified。
         result = {"content": "".join(_content_parts), "tool_calls": [],
                   "truncated_tool_call": None, "finish_reason": "stop",
-                  "tokens_used": 0, "latency_ms": 0,
+                  "tokens_used": 0, "latency_ms": 0, "stopped": True,
                   # [调用来源 2026-11-19] 断流收口也带协议元数据（本轮零调用的
                   # 停止原因如实是 stop，不是协议失败）。
                   "protocol_meta": {
@@ -334,6 +321,7 @@ async def call_main(
     if not result:
         result = {"content": "", "tool_calls": [], "truncated_tool_call": None,
                   "finish_reason": "stop", "tokens_used": 0, "latency_ms": 0,
+                  "stopped": True,
                   "protocol_meta": {
                       "endpoint_protocol": _endpoint_protocol_of(model_name),
                       "declared_text": _endpoint_protocol_of(model_name) == "declared_text",
@@ -381,7 +369,8 @@ async def call_main(
                    for t in (tools or [])}
         parsed = [c for c in parsed if not allowed or c["name"] in allowed]
         if parsed:
-            _ep = _endpoint_protocol_of(model_name)
+            _ep = (result.get("protocol_meta") or {}).get("endpoint_protocol")
+            _ep = _ep or _endpoint_protocol_of(result.get("model_used") or model_name)
             _origin = "declared_text" if _ep == "declared_text" else "pseudo_compat"
             for _c in parsed:
                 _c["_src_origin"] = _origin

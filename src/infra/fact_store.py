@@ -343,6 +343,32 @@ class FactStore:
             out = list(reversed(out))
         return out
 
+    def card_facts_after(self, work_id: str, card: str, seq: int, *,
+                         types: Iterable[str], limit: int,
+                         since: Optional[float] = None, task_id: str = "",
+                         msg_id: str = "", sender: str = "") -> list[dict[str, Any]]:
+        """按卡的序号取事实页，限制应用在 SQL 的游标上。"""
+        kinds = tuple(types)
+        filters = ["card=?", "seq>?", "type IN (%s)" % ",".join("?" for _ in kinds)]
+        args: list[Any] = [card, seq, *kinds]
+        if since is not None:
+            filters.append("ts>=?")
+            args.append(since)
+        if task_id:
+            filters.append("COALESCE(NULLIF(json_extract(parts,'$.dispatch_task_id'),''),"
+                           "json_extract(parts,'$.reply_to'))=?")
+            args.append(task_id)
+        if msg_id:
+            filters.append("json_extract(parts,'$.msg_id')=?")
+            args.append(msg_id)
+        if sender:
+            filters.append("json_extract(parts,'$.from')=?")
+            args.append(sender)
+        rows = self._conn(work_id).execute(
+            "SELECT seq, card, ts, ts_iso, type, run_id, round, parts FROM facts WHERE "
+            + " AND ".join(filters) + " ORDER BY seq LIMIT ?", [*args, limit])
+        return [self._row_to_fact(work_id, row) for row in rows]
+
     @staticmethod
     def _row_to_fact(work_id: str, r: Any) -> dict[str, Any]:
         seq, card, t, ts_iso, ev_type, run_id, round_, parts = r

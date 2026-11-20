@@ -192,7 +192,9 @@ async def test_offline_round_trip(client, sandbox):
     assert payload["model_used"] == "fake-main"
     assert payload["response"] == "本轮无需建卡。"
     assert payload["tool_events"] == []
-    assert "## 卡片清单" in payload["vp_system_prompt"]
+    # [批二 2026-11-20] 卡片清单已迁 tail 槽：vp_system_prompt（席位共享
+    # 上下文）不再含清单正文——清单改经席位调用的 turn_tail 下发。
+    assert "## 卡片清单" not in payload["vp_system_prompt"]
     # [思维链真实落地] 直答回合零三席 → prompt 日志 viewpoints 键不出现
     # （「空则不同构」纪律）；vp_system_prompt 仍落（白板证据位）。
     assert "viewpoints" not in payload

@@ -98,8 +98,8 @@ async def test_continue_passes_hint_to_run_once(monkeypatch):
 
     got: dict = {}
 
-    async def _once(work_id, review_id, *, hint=""):
-        got.update(work=work_id, review=review_id, hint=hint)
+    async def _once(work_id, review_id, *, hint="", expect=None):
+        got.update(work=work_id, review=review_id, hint=hint, expect=expect)
         return {"continued": True, "reason": "spoken"}
 
     monkeypatch.setattr(card_store, "read_card", _read)

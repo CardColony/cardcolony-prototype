@@ -10,7 +10,6 @@
 本模块只做机械模式匹配，不判内容、不拦产出、不引导方向（无闸原则）：
 1. extract_text_tool_calls(content) —— 从正文中解析文本形态调用
    形态A：DeepSeek 原生标记（全角/半角竖线变体，单条或多条 invoke）
-   形态B：标准围栏 JSON 数组 [{"name":..., "arguments":{...}}]
 2. strip_text_tool_calls(content) —— 把已解析出的调用文本从正文剥离
 3. 若匹配到标记但解析不成完整调用 → unresolved=True，由调用方
    把「未识别为调用、未执行」这个机械事实回注模型上下文（反馈兜底，
@@ -42,13 +41,6 @@ _A_PARAM = re.compile(
     rf"(?P<val>.*?)"
     rf"<{_PIPE}\s*/?\s*parameter\s*{_PIPE}?>",
     re.IGNORECASE | re.DOTALL)
-
-# ---------------------------------------------------------------------------
-# 形态B：标准围栏 JSON（模型有时把调用写成 ```json [{name, arguments}]）
-# ---------------------------------------------------------------------------
-_B_BLOCK = re.compile(
-    r"```(?:json|tool[_ ]?calls)?\s*(\[\s*\{.*?\}\s*\])\s*```",
-    re.DOTALL)
 
 # ---------------------------------------------------------------------------
 # 形态C：antml/Devin 系 XML 元素伪调用（deepseek-v4.1-flash-eco 反复发作，
@@ -216,8 +208,377 @@ def _d_params(body: str) -> dict:
 # 也计入疑似（解析不出完整调用时照样喂反馈，不开第二个黑洞）。
 # ---------------------------------------------------------------------------
 _SUSPECT = re.compile(
-    rf"<{_PIPE}\s*(?:{_NS})?(?:tool_calls|function_calls|invoke|function|parameter|执行)",
+    rf"<{_PIPE}\s*(?:{_NS})?(?:tool_calls?|function_calls|invoke|function|parameter|执行"
+    rf"|函数调用|函數調用|関数呼び出し|调用|工具名|ツール名|参数|パラメータ)",
     re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# 形态E：DSML（DeepSeek V4.1 公开语法，｜｜DSML｜｜ 竖线外壳）——
+# card_582 09:56 实录：`<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="X">
+# <｜｜DSML｜｜ parameter name="k" string="true">v</｜｜DSML｜｜ parameter>
+# </｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>`；单/双竖线、开闭标签内空白
+# 均有现场变体（</｜｜DSML｜｜invoke> 无空格、</｜DSML｜ parameter> 单竖线）。
+# [按路由启用 §四] 只在 models.yaml 声明 text_protocols 含 dsml 时解析
+# （protocols 参数）；未声明路由的 DSML 壳只走疑似标记/隔离，不出调用。
+# ---------------------------------------------------------------------------
+_DSML = r"[｜|]+\s*DSML\s*[｜|]+"
+_F_DSML_BLOCK = re.compile(
+    rf"<\s*{_DSML}\s*(?P<tag>calls|tool_calls)\s*>(?P<body>.*?)"
+    rf"<\s*/\s*{_DSML}\s*(?P=tag)\s*>",
+    re.IGNORECASE | re.DOTALL)
+_F_DSML = re.compile(
+    rf"<\s*{_DSML}\s*invoke\s+name=\"(?P<name>[^\"]+)\"\s*>"
+    rf"(?P<body>.*?)"
+    rf"<\s*/\s*{_DSML}\s*invoke\s*>",
+    re.IGNORECASE | re.DOTALL)
+_F_DSML_PARAM = re.compile(
+    rf"<\s*{_DSML}\s*parameter\s+name=\"(?P<key>[^\"]+)\""
+    rf"(?P<attrs>[^>]*)>"
+    rf"(?P<val>.*?)"
+    rf"<\s*/\s*{_DSML}\s*parameter\s*>",
+    re.IGNORECASE | re.DOTALL)
+
+# ---------------------------------------------------------------------------
+# 形态F：<call><name>X</name><parameter name="k">v</parameter></call>
+# （§四 用户补充样本）——一块只读一个工具名；工具名缺失/重复、参数名
+# 重复、外壳不闭合均不产生调用（失败事实由疑似标记/家具行兜底记录）。
+# ---------------------------------------------------------------------------
+_F_CALL = re.compile(
+    r"<\s*call\s*>(?P<body>.*?)<\s*/\s*call\s*>",
+    re.IGNORECASE | re.DOTALL)
+_F_CALL_TAG = re.compile(r"<\s*/?\s*call\b", re.IGNORECASE)
+_F_CALL_NAME = re.compile(
+    r"<\s*name\s*>(?P<v>.*?)<\s*/\s*name\s*>", re.IGNORECASE | re.DOTALL)
+_F_CALL_PARAM = re.compile(
+    r"<\s*parameter\s+name=\"(?P<key>[^\"]+)\"\s*>"
+    rf"(?P<val>.*?)<\s*/\s*parameter\s*>",
+    re.IGNORECASE | re.DOTALL)
+
+# ---------------------------------------------------------------------------
+# 形态G：中日文标签伪调用（card_049 实录 2026-11-20，13:27/13:30/13:39 末跳）
+#   模型把 DeepSeek 系标签译成中日文再写一遍：
+#     <函数调用><工具名>X</工具名><参数>{json}</参数></函数调用>      （中文）
+#     <関数呼び出し><ツール名>X</ツール名><パラメータ>{json}</パラメータ>…（日文）
+#     <调用><工具名>report_up</工具名><参数>{json}</工具名></function_calls>
+#   开闭错配是常态（参数拿 </工具名> 收尾、外壳拿 </function_calls> 收尾）。
+#   非精确形态只识别、只清理：整段先收编
+#   进剥离区（壳内夹带的 invoke/call 元素随之出执行链），错配闭标签照收
+#   ——它们就是异常的一部分；「形似调用但未派发」由 unresolved 反馈兜底。
+#   方括号声明行「[工具调用：X，…]」不是块，走家具行/疑似标记。
+# ---------------------------------------------------------------------------
+_G_WRAPPER = r"函数调用|函數調用|関数呼び出し|调用"
+_G_CLOSE = r"函数调用|函數調用|関数呼び出し|调用|function_calls|function_results"
+_G_OPEN = re.compile(rf"<\s*(?:{_G_WRAPPER})\s*>")
+_G_CLOSE_RE = re.compile(rf"<\s*/\s*(?:{_G_CLOSE})\s*>")
+_G_BRACKET_DECL = re.compile(
+    r"^\s*[\[［【〔]\s*(?:工具调用|ツール呼び出し|関数呼び出し)[：:]",
+    re.MULTILINE)
+_G_CALL_OPEN = r"<\s*调用\s*>(?=\s*<\s*工具名\s*>)"
+_G_CALL_HEADER = re.compile(
+    r"\s*<\s*工具名\s*>\s*(?P<name>[A-Za-z_]\w*)\s*<\s*/\s*工具名\s*>"
+    r"\s*<\s*参数\s*>\s*")
+_G_CALL_END = re.compile(r"\s*<\s*/\s*参数\s*>\s*<\s*/\s*调用\s*>")
+
+# 形态H：<invoke><tool>X</tool><param name="k">v</param></invoke>。
+# 裸 invoke 开标签与形态 A/C 的 <invoke name="X"> 分开。
+_H_INVOKE_OPEN = r"<\s*invoke\s*>"
+_H_INVOKE_NAME = re.compile(
+    r"<\s*tool\s*>\s*(?P<v>[A-Za-z_]\w*)\s*<\s*/\s*tool\s*>", re.IGNORECASE)
+# 形态I：function_calls 外壳以 tool_name 开始才进入调用解析。
+_I_FUNCTION_OPEN = r"<\s*function_calls\s*>(?=\s*<\s*tool_name\s*>)"
+_I_FUNCTION_NAME = re.compile(
+    r"<\s*tool_name\s*>\s*(?P<v>[A-Za-z_]\w*)\s*<\s*/\s*tool_name\s*>", re.IGNORECASE)
+
+
+def _xml_parameter(tag: str) -> re.Pattern:
+    return re.compile(
+        rf"""<\s*{tag}\s+name\s*=\s*(?P<quote>["'])(?P<key>[^"'<>]+)(?P=quote)\s*>"""
+        rf"(?P<val>[^<]*)<\s*/\s*{tag}\s*>", re.IGNORECASE)
+
+
+_XML_FIELDS = {
+    "invoke": (_H_INVOKE_NAME, _xml_parameter("param")),
+    "function_calls": (_I_FUNCTION_NAME, _xml_parameter("parameter")),
+}
+_COMPAT_ORIGINS = {
+    "cjk_call": "textG_cjk",
+    "invoke": "textH_invoke",
+    "function_calls": "textI_function_calls",
+}
+READONLY_PROTOCOL_ORIGINS = frozenset({"textE_dsml", "textF_call", *_COMPAT_ORIGINS.values()})
+
+
+# ---------------------------------------------------------------------------
+# 仿回执（假结果）——模型自写的 <function_results>…</function_results>
+# 整段（card_049 实录 8 段假 JSON）与 <function_calls>{json}</function_calls>
+# 结果壳：外壳+未经执行器确认的数据退出投影；后者 content 字段是模型
+# 报告文字，按普通助手陈述留下。仿系统行只在模型原始正文上判，落存
+# 正文还可能有宿主追加的回执行。
+# ---------------------------------------------------------------------------
+_RESULT_TAG = re.compile(r"<\s*(?P<close>/)?\s*function_results\s*>", re.IGNORECASE)
+_JSON_REGION_END = {
+    "report": re.compile(r"\s*</\s*function_calls\s*>", re.IGNORECASE),
+    "legacy": re.compile(r"\s*</tool_call>", re.IGNORECASE),
+}
+_REFERENCE = r"```.*?(?:```|\Z)|^[ \t]*>[^\n]*"
+_INLINE_REFERENCE = r"`[^`\r\n]+`"
+_CONTEXT_REGION = re.compile(
+    rf"(?P<reference>{_REFERENCE})"
+    rf"|(?P<inline>{_INLINE_REFERENCE})"
+    r"|(?P<result><\s*function_results\s*>)"
+    rf"|(?P<function_calls>{_I_FUNCTION_OPEN})"
+    r"|(?P<report><\s*function_calls\s*>\s*(?=\{))"
+    r"|(?P<reportshell><\s*function_calls\s*>)"
+    r"|(?P<legacy><tool_call>\s*(?=\{))"
+    rf"|(?P<cjk_call>{_G_CALL_OPEN})"
+    rf"|(?P<invoke>{_H_INVOKE_OPEN})",
+    re.IGNORECASE | re.DOTALL | re.MULTILINE)
+_XML_EDGES = {
+    tag: re.compile(
+        rf"{_REFERENCE}|{_INLINE_REFERENCE}"
+        rf"|(?P<open><\s*{tag}(?:\s+[^<>]*)?\s*>)"
+        rf"|(?P<close><\s*/\s*{tag}\s*>)",
+        re.IGNORECASE | re.DOTALL | re.MULTILINE)
+    for tag in _XML_FIELDS
+}
+_Q_SYS_LINE = re.compile(r"^[ \t]*〔\s*(?:系统|工具)[^〕\r\n]*〕", re.MULTILINE)
+_JSON_START = re.compile(r"\s*(?=[{\[])")
+_JSON_DECODER = json.JSONDecoder()
+_MASKED_CHAR = "\x00"
+
+
+def _xml_call_region(content: str, start: int, tag: str) -> tuple[int, str | None]:
+    depth = 1
+    for edge in _XML_EDGES[tag].finditer(content, start):
+        if edge.group("open") and not edge[0].endswith("/>"):
+            depth += 1
+        elif edge.group("close"):
+            depth -= 1
+            if depth == 0:
+                return edge.end(), content[start:edge.start()]
+    return len(content), None
+
+
+def _cjk_call_region(content: str, start: int) -> tuple[int, dict | None]:
+    header = _G_CALL_HEADER.match(content, start)
+    if header:
+        try:
+            args, start = _JSON_DECODER.raw_decode(content, header.end())
+        except (ValueError, RecursionError):
+            pass
+        else:
+            end = _G_CALL_END.match(content, start)
+            if end and isinstance(args, dict):
+                return end.end(), {"name": header["name"], "arguments": args}
+    close = _G_CLOSE_RE.search(content, start)
+    return (close.end() if close else len(content)), None
+
+
+def _context_regions(content: str):
+    """按原文位置枚举引用区、结果区、报告壳和需按整段处理的调用块。"""
+    cursor = 0
+    while match := _CONTEXT_REGION.search(content, cursor):
+        kind = match.lastgroup
+        end = match.end()
+        payload = None
+        if kind == "result":
+            # JSON 值中可能含字面闭合标签，优先从完整数据之后找外壳结尾。
+            value_start = _JSON_START.match(content, end)
+            if value_start:
+                try:
+                    _, end = _JSON_DECODER.raw_decode(content, value_start.end())
+                except (ValueError, RecursionError):
+                    pass
+            depth = 1
+            for tag in _RESULT_TAG.finditer(content, end):
+                depth += -1 if tag.group("close") else 1
+                if not depth:
+                    end = tag.end()
+                    break
+            else:
+                end = len(content)
+        elif kind == "reportshell":
+            # <function_calls> 非 JSON 内容：报告文字或结果字段的混合壳——
+            # 方案判据「只有报告内容或结果字段时按结果壳处理」。壳内文字作
+            # content 传入（剥壳留报告），零派发随 result/report 同口径。
+            close = _JSON_REGION_END["report"].search(content, end)
+            inner_end = close.start() if close else len(content)
+            inner = content[end:inner_end].strip()
+            end = close.end() if close else len(content)
+            if re.search(r"<\s*(?:[A-Za-z_][\w.-]*:)?(?:invoke|function)\s+name=",
+                         inner, re.IGNORECASE):
+                # 壳里装的是调用元素 ⇒ 不是结果壳，交回形态 C 处理——
+                # 不产出 region（内部调用照常可解析、可遮蔽判定）。
+                cursor = match.end()
+                continue
+            if inner and not re.search(
+                    r"<\s*(?:result|output|return)\b|\"(?:ok|result|output|status)\"\s*:",
+                    inner, re.IGNORECASE):
+                # 结果字段（<result>…/"ok":…）⇒ 整壳丢弃；纯报告文字 ⇒ 剥壳留文
+                payload = {"content": inner}
+        elif kind in _JSON_REGION_END:
+            # JSON 字符串里的闭合标签、引用和结果示例仍属于该 JSON 值。
+            closing = _JSON_REGION_END[kind]
+            try:
+                value, after = _JSON_DECODER.raw_decode(content, end)
+            except (ValueError, RecursionError):
+                close = closing.search(content, end) if kind == "legacy" else None
+                end = close.end() if close else len(content)
+            else:
+                close = closing.match(content, after)
+                end = close.end() if close else len(content)
+                if close and isinstance(value, dict):
+                    payload = value
+        elif kind in _XML_FIELDS:
+            end, payload = _xml_call_region(content, end, kind)
+        elif kind == "cjk_call":
+            end, payload = _cjk_call_region(content, end)
+        yield match.start(), end, kind, payload
+        cursor = end
+
+
+def detect_pseudo_receipt(content: str, *, include_sys_lines: bool = True) -> int:
+    """非围栏区仿回执计数（检测端：围栏内是代码示例，保留引用身份）。
+
+    include_sys_lines：〔系统结果〕/〔工具结果〕行是否计仿写。
+    逐跳模型原始正文上判 ⇒ True（模型正文里这些行只能是仿写）；
+    已落存会话块上判 ⇒ False——宿主生成的真实系统结果行会随
+    clean_text 落进块正文（复现修复：真回执被误标 pseudo_receipt），
+    存量分类只信 function_results/结果壳这两类永不合法的硬家具。
+    """
+    content = content or ""
+    n, cursor = 0, 0
+    for start, end, kind, _ in _context_regions(content):
+        if include_sys_lines:
+            n += len(_Q_SYS_LINE.findall(content, cursor, start))
+        n += kind in {"result", "report", "reportshell"}
+        cursor = end
+    if include_sys_lines:
+        n += len(_Q_SYS_LINE.findall(content, cursor))
+    return n
+
+
+def parse_legacy_text_tool_calls(content: str) -> list[dict]:
+    """读取顶层 `<tool_call>` JSON，工具许可仍由调用者核对。"""
+    calls = []
+    for _, _, kind, payload in _context_regions(content):
+        if kind != "legacy" or payload is None:
+            continue
+        name = str(payload.get("name") or "").strip()
+        if name:
+            args = payload.get("arguments")
+            calls.append({"name": name, "arguments": args if isinstance(args, dict) else {}})
+    return calls
+
+
+# ---------------------------------------------------------------------------
+# 引用区/结果区遮蔽（2026-11-20 复现修复）：围栏代码、<function_results>…
+# </function_results> 区内的调用样例只供审计，不参与解析派发、不计疑似。
+# 遮蔽保留坐标，标记用于拒绝跨越引用区或结果区的候选块；
+# 未闭合区（``` 无收尾 / function_results 无闭合）遮蔽到文末——保守口径。
+# ---------------------------------------------------------------------------
+def _scan_call_text(content: str) -> tuple[str, list[tuple[int, int, str, dict | str | None]]]:
+    """保留原文坐标，整块遮蔽引用、结果和由专用解析器处理的调用。"""
+    pieces = []
+    xml_calls = []
+    cursor = 0
+    for start, end, kind, payload in _context_regions(content):
+        pieces.extend((content[cursor:start], _MASKED_CHAR * (end - start)))
+        if kind in _COMPAT_ORIGINS:
+            xml_calls.append((start, end, kind, payload))
+        cursor = end
+    pieces.append(content[cursor:])
+    return "".join(pieces), xml_calls
+
+
+def _unmasked_matches(pattern: re.Pattern, scan: str):
+    return (match for match in pattern.finditer(scan) if _MASKED_CHAR not in match[0])
+
+
+def detect_protocol_hint(content: str) -> str:
+    """可识别但未启用的协议族提示（空＝无）——关闭路由兼容时
+    只记识别事实，供 anomaly 事件 detail 携带。"""
+    scan, xml_calls = _scan_call_text(content or "")
+    if xml_calls:
+        return xml_calls[0][2]
+    if _F_DSML.search(scan) or re.search(_DSML, scan):
+        return "dsml"
+    if _F_CALL_TAG.search(scan):
+        return "call"
+    return ""
+
+
+_DSML_PARAM_TYPE = re.compile(r'\s*(string|number)\s*=\s*"(true|false)"\s*',
+                              re.IGNORECASE)
+
+
+def _dsml_args(body: str) -> dict | None:
+    args: dict = {}
+    cursor = 0
+    for pm in _F_DSML_PARAM.finditer(body):
+        if body[cursor:pm.start()].strip():
+            return None
+        cursor = pm.end()
+        key = pm.group("key").strip()
+        if not key or key in args:
+            return None
+        val = pm.group("val")
+        attrs = pm.group("attrs").strip()
+        declared = _DSML_PARAM_TYPE.fullmatch(attrs) if attrs else None
+        if attrs and not declared:
+            return None
+        kind, flag = (declared.group(1).lower(), declared.group(2).lower()) if declared else ("", "")
+        if kind == "string" and flag == "true":
+            args[key] = val
+            continue
+        try:
+            value = json.loads(val)
+        except (ValueError, RecursionError):
+            if declared:
+                return None
+            value = val.strip()
+        if kind == "number" and (flag != "true" or type(value) not in (int, float)):
+            return None
+        args[key] = value
+    return args if not body[cursor:].strip() else None
+
+
+def _dsml_calls(body: str) -> list[dict]:
+    calls: list[dict] = []
+    cursor = 0
+    for match in _F_DSML.finditer(body):
+        if body[cursor:match.start()].strip():
+            return []
+        name = match.group("name").strip()
+        args = _dsml_args(match.group("body"))
+        if not name or args is None:
+            return []
+        calls.append({"name": name, "arguments": args, "_origin": "textE_dsml"})
+        cursor = match.end()
+    return calls if not body[cursor:].strip() else []
+
+
+def _named_call(body: str, name_tag: re.Pattern, param_tag: re.Pattern) -> dict | None:
+    names = list(name_tag.finditer(body))
+    if len(names) != 1:
+        return None
+    name_tag_match = names[0]
+    name = name_tag_match["v"].strip()
+    parts = (body[:name_tag_match.start()], body[name_tag_match.end():])
+    if not name or any(param_tag.sub("", part).strip() for part in parts):
+        return None
+    args: dict = {}
+    for pm in param_tag.finditer(body):
+        key = pm.group("key").strip()
+        if not key or key in args:
+            return None
+        val = (pm.group("val") or "").strip()
+        try:
+            args[key] = json.loads(val)
+        except Exception:  # noqa: BLE001
+            args[key] = val
+    return {"name": name, "arguments": args}
 
 
 def _parse_invoke_params(body: str) -> dict:
@@ -233,23 +594,150 @@ def _parse_invoke_params(body: str) -> dict:
     return args
 
 
-def extract_text_tool_calls(content: str) -> tuple[list[dict], bool, str]:
+# ---------------------------------------------------------------------------
+# [异常正文隔离 2026-11-20 · card_057 实录] 隔离块供模型使用的视图。
+#
+# 背景：原生端点把调用写进正文且解析不出（pseudo_call_unparsed）时，
+# 异常正文（<func …>/</invoke>/</parameter>/｜｜DSML｜｜ 等调用家具）会随
+# 回复块进会话 → 下轮历史原样投影 → 模型照着抄（10:11 两万字符末跳、
+# 10:11:57 历史带入数百个闭合标签）。治理口径（施工方案 §3）：
+#   · 原文留在会话/事件/界面档案面——审计照查；
+#   · 供模型使用的内容换成 ctx_content：剥掉坏片段后的可采信残部 +
+#     宿主一行状态；残部为空 ⇒ 只剩状态行。
+# 残部切分规则：stripped（已解析跨度）之外再剔「纯调用家具行」——
+# 行首是已知调用族标签的行整行剔除（`<parameter name="x">值</parameter>`
+# 这种单行参数随标签一起剔）。叙述行即使含内嵌标签也不以标签起始 ⇒
+# 不误伤；判据只用已知调用族，不做关键词/外观泛化（方案红线）。
+# ---------------------------------------------------------------------------
+_Q_LINE = re.compile(
+    r"^\s*(?:"
+    # 已知调用族标签（开/闭/截断形；含 funccall 复合变体——card_057:3754
+    # 实录 <funccall name="x">）；function_results/中日文调用族同家具处理
+    r"</?\s*(?:funccall|func|invoke|call|parameter|tool_calls|"
+    r"function_calls?|tool_call|function_results|antml:[\w.-]+|executing|执行|confirm"
+    r"|函数调用|函數調用|関数呼び出し|调用|工具名|ツール名|参数|パラメータ)\b[^>]*>?"
+    # 方括号声明行：[工具调用：X，…]／〔工具调用：…〕（card_049 13:36 实录）
+    r"|[\[［【〔]\s*(?:工具调用|ツール呼び出し|関数呼び出し)[：:][^\n]*"
+    # DSML/竖线记号：｜｜DSML｜｜、<｜…｜>、</｜DSML｜ parameter>、｜<…>｜
+    # ——开闭都收（card_057:3697 实录 </｜DSML｜ invoke> 闭合变体）
+    r"|[｜|]+\s*DSML\s*[｜|]+"
+    r"|</?\s*[｜|]+\s*[^>\n]*[｜|]?\s*>?"
+    r")",
+    re.IGNORECASE)
+#: 纯标签碎片行（`</`、`<`、多余 `>`、孤立竖线——截断标签的残骸）
+_Q_FRAG = re.compile(r"^\s*[<>\s/｜|]+$")
+#: 行尾连续家具串：剥 `…</system_warning></｜DSML｜ parameter>` 这类
+# 挂在正常行尾的孤立闭标签（card_057:3697 实录——剥尾后正常内容保留）
+_Q_TAIL = re.compile(
+    r"(?:\s*(?:"
+    r"</?\s*(?:funccall|func|invoke|call|parameter|tool_calls|"
+    r"function_calls?|tool_call|function_results|antml:[\w.-]+|executing|执行|confirm"
+    r"|函数调用|函數調用|関数呼び出し|调用|工具名|ツール名|参数|パラメータ)\b[^>]*>?"
+    r"|[｜|]+\s*DSML\s*[｜|]+"
+    r"|</?\s*[｜|]+\s*[^>\n]*[｜|]?\s*>?"
+    r"))+\s*$",
+    re.IGNORECASE)
+
+ANOMALY_NOTE = "〔系统〕该回复含调用格式文本，未派发执行（原文见会话档案）。"
+_MIXED_ANOMALY_NOTE = "〔系统〕该回复中的部分调用文本或回执未经执行确认（原文见会话档案）。"
+
+def _quarantine_text(content: str, *, unwrap_report: bool = True) -> str:
+    _, _, stripped = extract_text_tool_calls(content, protocols=frozenset({"dsml", "call"}))
+    parts = []
+    cursor = 0
+    for start, end, kind, payload in _context_regions(stripped):
+        if kind == "inline":
+            continue  # 保留整行语境，仿系统行中的行内代码也随该行剔除。
+        parts.append(_strip_furniture_lines(stripped[cursor:start]))
+        if kind == "reference":
+            parts.append(stripped[start:end])
+        elif kind in ("report", "reportshell") and unwrap_report and payload:
+            report = payload.get("content")
+            if isinstance(report, str):
+                parts.append(_quarantine_text(report, unwrap_report=False))
+        cursor = end
+    parts.append(_strip_furniture_lines(stripped[cursor:]))
+    return "".join(parts)
+
+
+def _strip_furniture_lines(content: str) -> str:
+    kept = []
+    for line in content.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        tail = line[len(body):]
+        body = _Q_TAIL.sub("", body)
+        if not (_Q_LINE.match(body) or _Q_FRAG.match(body) or _Q_SYS_LINE.match(body)):
+            kept.append(body + tail)
+    return "".join(kept)
+
+
+def quarantine_view(content: str, *, has_dispatch: bool = False) -> str:
+    """隔离块供模型使用的内容（ctx_content 候选值）。
+
+    只切"能对应到坏片段"的部分：已解析跨度经 stripped 剥；仿回执整段
+    剔除（外壳+假数据），function_calls 结果壳剥壳留 content 报告；
+    未解析的孤立标签按行剔除（行首调用族判据）。残部非空 ⇒ 残部＋宿主
+    状态行；空 ⇒ 只剩状态行（方案：必要时只留宿主生成的一行状态）。
+    围栏代码块内不做任何剔除（代码示例保留引用身份）。
+    """
+    residue = _quarantine_text(content or "").strip()
+    note = _MIXED_ANOMALY_NOTE if has_dispatch else ANOMALY_NOTE
+    return f"{residue}\n\n{note}" if residue else note
+
+
+def extract_text_tool_calls(
+        content: str,
+        *,
+        protocols: frozenset = frozenset(),
+) -> tuple[list[dict], bool, str]:
     """解析正文里的文本形态工具调用。
 
     返回 (calls, unresolved, stripped_content)：
-    - calls: [{name, arguments, _origin: "textA"|"textB"}]
+    - calls: [{name, arguments, _origin}]
     - unresolved: 正文有疑似标记但没解析出任何完整调用（反馈兜底信号）
     - stripped_content: 把已解析的调用块剥离后的正文
+    - protocols: 路由声明支持的正文协议集（models.yaml text_protocols）。
+      invoke / cjk_call / function_calls 即使未声明，也按整块剥离。
     """
     if not content:
         return [], False, content or ""
 
     calls: list[dict] = []
     spans: list[tuple[int, int]] = []
+    # 解析/疑似判定跑遮蔽文本（引用区/结果区不参与）；span 与原文等长
+    # 对齐，stripped 仍从原文算——围栏样例不进 spans、不被派发。
+    scan, xml_calls = _scan_call_text(content)
+
+    # ---- 形态G 预扫描：中日文标签块（<函数调用>/<関数呼び出し>/<调用> 壳）----
+    # [2026-11-20 返修 · 用户裁定] G 只识别、只清理、**零派发**——错配闭标签
+    # 的完整块曾把 direct 真发进收件卡（隔离复验实录）。整段先收编进 spans，
+    # 壳内夹带的 <invoke>/<call> 等可见元素也随之出执行链（A/C/D 的匹配
+    # 一律跳过与既有 span 重叠的区段）。unresolved 兜底给「未执行」反馈。
+    # 开闭标签都在遮蔽文本上找——行内引用/围栏里的标签是 \x00 不可见，
+    # 不会成为假开标签（13:32 实录：`` `関数呼び出し` `` 引用若当开标签，
+    # 会惰性吞掉 1100 字正文再撞上真块闭标签）。块 = 开标签到第一个可见
+    # 闭标签；无闭标签 ⇒ 只剥开标签行（截断头，残部走家具行剔除）。
+    g_regions = []
+    for om in _G_OPEN.finditer(scan):
+        cm = _G_CLOSE_RE.search(scan, om.end())
+        spans.append((om.start(), cm.end() if cm else om.end()))
+        g_regions.append((om.start(), cm.end() if cm else len(content)))
+
+    for start, end, kind, payload in xml_calls:
+        spans.append((start, end))
+        if kind not in protocols or any(start < e and end > s for s, e in g_regions):
+            continue
+        parsed = (_named_call(payload, *_XML_FIELDS[kind])
+                  if isinstance(payload, str) else payload)
+        if parsed:
+            calls.append({**parsed, "_origin": _COMPAT_ORIGINS[kind]})
 
     # ---- 形态A：原生标记 ----
-    if _A_BLOCK_OPEN.search(content) or _A_INVOKE.search(content):
-        for m in _A_INVOKE.finditer(content):
+    if _A_BLOCK_OPEN.search(scan) or _A_INVOKE.search(scan):
+        a_spans: list[tuple[int, int]] = []
+        for m in _unmasked_matches(_A_INVOKE, scan):
+            if any(m.start() < e and m.end() > s for s, e in spans):
+                continue          # 落在已收编的 G 壳内 ⇒ 不派、不剥第二遍
             name = (m.group("name") or "").strip()
             if not name:
                 continue
@@ -258,51 +746,26 @@ def extract_text_tool_calls(content: str) -> tuple[list[dict], bool, str]:
                 "arguments": _parse_invoke_params(m.group("body")),
                 "_origin": "textA",
             })
-            spans.append(m.span())
+            a_spans.append(m.span())
+        spans.extend(a_spans)
         # 整段 tool_calls 外壳（开标记到文本中最后一个 invoke 结束）一并剥
-        open_m = _A_BLOCK_OPEN.search(content)
-        if open_m and spans:
-            last_end = max(e for _, e in spans)
-            spans.append((open_m.start(), min(last_end, len(content))))
+        open_m = _A_BLOCK_OPEN.search(scan)
+        if open_m and a_spans:
+            last_end = max(e for _, e in a_spans)
+            if _MASKED_CHAR not in scan[open_m.start():last_end]:
+                spans.append((open_m.start(), last_end))
         # 外壳可能还带闭合尾标记
         for tail in re.finditer(
-                rf"<{_PIPE}\s*/?\s*tool_calls\s*{_PIPE}?>", content, re.IGNORECASE):
+                rf"<{_PIPE}\s*/?\s*tool_calls\s*{_PIPE}?>", scan, re.IGNORECASE):
             spans.append(tail.span())
 
-    # ---- 形态B：围栏 JSON ----
-    for m in _B_BLOCK.finditer(content):
-        raw = m.group(1)
-        try:
-            arr = json.loads(raw)
-        except Exception:  # noqa: BLE001
-            # 逐候选重试：字符串内裸换行修复（同建卡解析器先例）
-            fixed = raw.replace("\n", "\\n")
-            try:
-                arr = json.loads(fixed)
-            except Exception:  # noqa: BLE001
-                continue
-        if not isinstance(arr, list):
-            continue
-        ok_items = [it for it in arr
-                    if isinstance(it, dict) and it.get("name")]
-        if not ok_items:
-            continue
-        for it in ok_items:
-            args = it.get("arguments") or {}
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except Exception:  # noqa: BLE001
-                    args = {"_raw": args}
-            calls.append({"name": it["name"], "arguments": args,
-                          "_origin": "textB"})
-        spans.append(m.span())
-
     # ---- 形态C：antml/function_calls XML 元素伪调用 ----
-    for m in _C_CALL.finditer(content):
+    for m in _unmasked_matches(_C_CALL, scan):
         name = (m.group("name") or "").strip()
         if not name:
             continue
+        if any(m.start() < e and m.end() > s for s, e in spans):
+            continue  # <invoke name=> 已随形态A收编——同一跨度不二次派发
         body = m.group("body") or ""
         args: dict = {}
         named_spans: list[tuple[int, int]] = []
@@ -335,13 +798,36 @@ def extract_text_tool_calls(content: str) -> tuple[list[dict], bool, str]:
         spans.append(m.span())
     # 外壳家具一并剥：function_calls 开闭壳、<执行></执行> 壳。
     # <计划> 是模型写的正文内容，不是调用家具——留。
-    for wm in _C_WRAPPER.finditer(content):
+    for wm in _C_WRAPPER.finditer(scan):
         spans.append(wm.span())
+
+    # ---- 形态E：完整 DSML calls 区（路由声明 dsml 时启用）----
+    if "dsml" in protocols:
+        for m in _unmasked_matches(_F_DSML_BLOCK, scan):
+            if any(m.start() < e and m.end() > s for s, e in spans):
+                continue          # 与已收编跨度重叠 ⇒ 不二次吞
+            block_calls = _dsml_calls(m.group("body"))
+            if not block_calls:
+                continue
+            calls.extend(block_calls)
+            spans.append(m.span())
+
+    # ---- 形态F：<call><name>X</name><parameter name="k">v</parameter></call>
+    # （路由声明 call 时启用；一块一个工具名，同级多块顺序各算一条）----
+    if "call" in protocols:
+        for m in _unmasked_matches(_F_CALL, scan):
+            if any(m.start() < e and m.end() > s for s, e in spans):
+                continue
+            parsed = _named_call(m.group("body"), _F_CALL_NAME, _F_CALL_PARAM)
+            if parsed is None:
+                continue
+            calls.append({**parsed, "_origin": "textF_call"})
+            spans.append(m.span())
 
     # ---- 形态D：根元素即工具名（<read_card><card_id>…</read_card>）----
     _d_call, _d_self, _d_sus = _d_patterns()
     if _d_call is not None:
-        for m in _d_call.finditer(content):
+        for m in _unmasked_matches(_d_call, scan):
             if any(m.start() < e and m.end() > s for s, e in spans):
                 continue          # 与已收编的调用块重叠 ⇒ 不二次吞
             body = m.group("body") or ""
@@ -354,7 +840,7 @@ def extract_text_tool_calls(content: str) -> tuple[list[dict], bool, str]:
                           "arguments": args, "_origin": "textD"})
             spans.append(m.span())
         if _d_self is not None:
-            for m in _d_self.finditer(content):
+            for m in _unmasked_matches(_d_self, scan):
                 if any(m.start() < e and m.end() > s for s, e in spans):
                     continue
                 calls.append({"name": (m.group("name") or "").strip(),
@@ -362,7 +848,7 @@ def extract_text_tool_calls(content: str) -> tuple[list[dict], bool, str]:
                 spans.append(m.span())
 
     # ---- 思维标签家具：泄漏的 </think>/<antml:thinking> 纯噪声，剥 ----
-    for tm in _THINK_TAG.finditer(content):
+    for tm in _THINK_TAG.finditer(scan):
         spans.append(tm.span())
 
     # ---- 剥离 ----
@@ -379,8 +865,12 @@ def extract_text_tool_calls(content: str) -> tuple[list[dict], bool, str]:
     # 在剥离前的原文上探：calls 为空时 stripped 里外壳标记可能已被
     # _C_WRAPPER 剥光 ⇒ 漏报 ⇒ 等待黑洞重开。零调用时查原文更严。
     unresolved = (not calls) and (
-        bool(_SUSPECT.search(content))
-        or (_d_sus is not None and bool(_d_sus.search(content)))
-        or _e_unknown_pair(content, _d_names()))
+        bool(g_regions or xml_calls)           # 已识别的中日文壳及兼容块
+        or bool(_SUSPECT.search(scan))
+        or bool(re.search(_DSML, scan))         # DSML 壳（含未启用路由）
+        or bool(_F_CALL_TAG.search(scan))       # <call> 壳（含截断和未启用）
+        or bool(_G_BRACKET_DECL.search(scan))   # [工具调用：…] 声明行
+        or (_d_sus is not None and bool(_d_sus.search(scan)))
+        or _e_unknown_pair(scan, _d_names()))
 
     return calls, unresolved, stripped

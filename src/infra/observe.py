@@ -71,23 +71,43 @@ def log_model_call(*, trace_id: str = "", caller: str = "",
                    completion_tokens: int | None = None,
                    tokens_used: int | None = None, reasoning_chars: int | None = None,
                    reasoning_tokens: int | None = None,
-                   latency_ms: int | None = None, finish_reason: str = "",
+                   latency_ms: float | None = None, finish_reason: str = "",
                    text_len: int | None = None, tool_calls: int | None = None,
-                   error: str = "") -> None:
+                   error: str = "",
+                   first_chunk_ms: float | None = None,
+                   serialize_ms: float | None = None,
+                   json_dumps_ms: float | None = None,
+                   first_content_ms: float | None = None) -> None:
     """每次模型调用一条（原版 recordUsage 同位；字段比原版多 caller/trace 对账键）。
 
     ``reasoning_tokens``＝端点 usage 报的思考 token 数（区别于
     ``reasoning_chars``＝回吐给我们的思考正文字符数）：>0 且 chars=0 ⇒
     模型想了但没给你看（kimi「可能返回 reasoning_content」合同）；
     =0 ⇒ 真没推理——「没 think 流」的定责键（2026-11-10 文档核查后补）。
+
+    [2026-11-19 返工·四段拆分] 一条 model_call 行拆四段（**单位统一毫秒
+    float**；None＝该段未发生/未采集，如实留空）：
+      - ``serialize_ms``     构建**请求选项**（gateway._build_options）；
+      - ``json_dumps_ms``    **实际 JSON 序列化**（最终载荷 dumps 编码）；
+      - ``first_chunk_ms`` 发起调用 → **端点首个事件**（任意帧，含思考）；
+      - ``first_content_ms`` 发起 attempt → **用户可见首字**（首个非空
+        text-delta 帧——思考前置的模型不算，用户的"正文开始"才是首字）；
+      - ``latency_ms``     端点完整耗时（原字段，保持口径）。
     """
+    def _r(v: float | None) -> float | None:
+        return round(float(v), 1) if v is not None else None
+
     _write({"kind": "model_call", "trace_id": str(trace_id or ""),
             "caller": str(caller or ""), "work_id": str(work_id or ""),
             "card_id": str(card_id or ""), "seat": str(seat or ""),
             "model": str(model or ""), "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens, "tokens_used": tokens_used,
             "reasoning_chars": reasoning_chars, "reasoning_tokens": reasoning_tokens,
-            "latency_ms": latency_ms,
+            "latency_ms": _r(latency_ms),
+            "serialize_ms": _r(serialize_ms),
+            "json_dumps_ms": _r(json_dumps_ms),
+            "first_chunk_ms": _r(first_chunk_ms),
+            "first_content_ms": _r(first_content_ms),
             "finish_reason": str(finish_reason or ""), "text_len": text_len,
             "tool_calls": tool_calls, "error": str(error or "")})
 
@@ -144,6 +164,27 @@ def log_regions(*, work_id: str = "", card_id: str = "",
                 for r in (regions or []) if isinstance(r, dict)]})
 
 
+def log_assembly(*, work_id: str = "", card_id: str = "", profile: str = "",
+                 phase: str = "", ms: dict[str, Any] | None = None,
+                 **extra: Any) -> None:
+    """[2026-11-19 性能批次三] 装配链分段打点：本地读取/分区渲染/序列化耗时。
+
+    只记数值、标识与必要指纹（任务书口径）；打点失败不阻断装配。
+    """
+    try:
+        row = {"kind": "assembly", "work_id": str(work_id or ""),
+               "card_id": str(card_id or ""), "profile": str(profile or ""),
+               "phase": str(phase or ""),
+               "ms": {str(k): round(float(v), 2) for k, v in (ms or {}).items()
+                      if isinstance(v, (int, float))}}
+        for k, v in (extra or {}).items():
+            if isinstance(v, (int, float, str, bool)) or v is None:
+                row[str(k)] = v
+        _write(row)
+    except Exception:  # noqa: BLE001 观测永不阻断装配
+        pass
+
+
 def new_trace_id() -> str:
     """短 trace id（进程内唯一即可：时间戳＋线程序）。"""
     return f"tr-{int(time.time() * 1000):x}-{os.getpid():x}-{id(threading.current_thread()) % 0xffff:x}"
@@ -174,13 +215,77 @@ def call_begin(trace_id: str, caller: str = "", work_id: str = "", card_id: str 
 
 
 def call_chunk(trace_id: str) -> None:
-    """每收一帧记一笔（内存账；不落 JSONL——逐帧落盘太吵，状态看 inflight()）。"""
+    """每收一帧记一笔（内存账；不落 JSONL——逐帧落盘太吵，状态看 inflight()）。
+
+    [2026-11-19 性能批次三] 首帧时刻单独留账——``first_chunk_ms()`` 读它，
+    进 model_call 行＝「首个提供方事件」的分段证据。
+    """
     import time as _t
     with _lock:
         rec = _INFLIGHT.get(str(trace_id))
         if rec is not None:
+            if rec.get("first_chunk") is None:
+                rec["first_chunk"] = _t.time()
             rec["chunks"] += 1
             rec["last_chunk"] = _t.time()
+
+
+def call_content_chunk(trace_id: str) -> None:
+    """〔2026-11-19 返工3〕首个**用户可见正文帧**（text-delta 非空）留账。
+
+    与 ``call_chunk`` **同一台账基准**（call_begin 时刻）⇒ first_chunk_ms 与
+    first_content_ms 可比（用户令「同一次尝试的时间基准验证首事件和可见
+    首字」）。思考前置帧（reasoning）不调用本函数。
+    """
+    import time as _t
+    with _lock:
+        rec = _INFLIGHT.get(str(trace_id))
+        if rec is not None and rec.get("first_content") is None:
+            rec["first_content"] = _t.time()
+
+
+def content_chunk_ms(trace_id: str) -> float | None:
+    """首个用户可见正文帧相对**当前 attempt 起点**的毫秒数
+    （无台账/未收到 ⇒ None）。基准同 first_chunk_ms（按尝试归账）。"""
+    import time as _t
+    with _lock:
+        rec = _INFLIGHT.get(str(trace_id))
+        if rec is None or rec.get("first_content") is None:
+            return None
+        base = rec.get("attempt_started") or rec["started"]
+        return (rec["first_content"] - base) * 1000.0
+
+
+def reset_attempt_timings(trace_id: str) -> None:
+    """〔2026-11-20 返工·按尝试归账〕新 attempt 开始：清首事件/首正文读数，
+    并把 **attempt 起点**记为后续首帧/首正文读数的基准。
+
+    首试失败（如 503）的时刻不许沿给成功尝试（用户实测：模拟首试 503 时
+    首事件沿用了失败尝试的记录）——重试后首帧/首正文**相对新 attempt 起点**
+    重新计时。帧计数与 last_chunk 是在途监控量，保留累计不重置。
+    """
+    import time as _t
+    with _lock:
+        rec = _INFLIGHT.get(str(trace_id))
+        if rec is not None:
+            rec["first_chunk"] = None
+            rec["first_content"] = None
+            rec["attempt_started"] = _t.time()
+            rec["last_chunk"] = _t.time()
+
+
+def first_chunk_ms(trace_id: str) -> float | None:
+    """首个提供方事件（任意帧）相对**当前 attempt 起点**的毫秒数
+    （无台账/未收帧 ⇒ None）。〔2026-11-20 返工·按尝试归账〕基准从
+    call_begin 改为 attempt_started——重试后首事件不再沿用失败尝试，
+    且与 first_content_ms 同基准可比。"""
+    import time as _t
+    with _lock:
+        rec = _INFLIGHT.get(str(trace_id))
+        if rec is None or rec.get("first_chunk") is None:
+            return None
+        base = rec.get("attempt_started") or rec["started"]
+        return (rec["first_chunk"] - base) * 1000.0
 
 
 def call_end(trace_id: str) -> None:

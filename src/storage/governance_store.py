@@ -55,8 +55,10 @@ async def set_state(work_id: str, card_id: str, state: str, reason: str = "",
            "reason": str(reason or ""), "by": str(by or ""),
            "ts": _now()}
 
-    def _fn(conn: sqlite3.Connection) -> None:
+    def _fn(conn: sqlite3.Connection) -> str:
         _ensure(conn)
+        row = conn.execute("SELECT state FROM card_governance WHERE work_id=? AND card_id=?",
+                           (work_id, card_id)).fetchone()
         conn.execute(
             "INSERT INTO card_governance"
             " (work_id, card_id, state, reason, by_id, ts)"
@@ -65,8 +67,9 @@ async def set_state(work_id: str, card_id: str, state: str, reason: str = "",
             " state=excluded.state, reason=excluded.reason,"
             " by_id=excluded.by_id, ts=excluded.ts",
             (work_id, card_id, state, rec["reason"], rec["by"], rec["ts"]))
+        return str(row["state"]) if row else STATE_ACTIVE
 
-    await card_db.run_write(work_id, _fn)
+    rec["previous_state"] = await card_db.run_write(work_id, _fn)
     return rec
 
 

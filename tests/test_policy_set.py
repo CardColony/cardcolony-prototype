@@ -512,3 +512,54 @@ def test_idle_exec_auto_archive_policy():
         "card_idle", "c3", silent_sec=40000, card_type="worker",
         card_state="active"))
     assert "idle_exec_auto_archive" not in [f["policy"] for f in fired]
+
+def test_review_step_not_finished_runnable_gate():
+    """[待处理/可运行分家 2026-11-20 · card_050 rv_429afe597e 空转实录]
+    review_step_not_finished 只对「现在可运行的一步」点火：
+    - has_next=true + runnable=true  ⇒ 续跑（票齐待派活、席位跑成）；
+    - has_next=true + runnable=false ⇒ **不续**——步结局在等外部条件
+      （awaiting_*/delivered_quiet/wake_delivered），旧版靠 has_next
+      单字段续跑空转 75 万步；等待由真实事件解除不属本策略；
+    - 老事实缺 runnable 字段 ⇒ 不续（回放中如实报不足）。"""
+    st = ps.PolicySet()
+    assert st.load(_real_policies()) == []
+
+    # ① 有可运行动作 ⇒ 点火
+    fired = st.dispatch("w1", _fact(
+        "review_round_done", "rv1", batch="b1", has_next=True,
+        runnable=True, continued=False, reason="seat:speak"))
+    hits = [f for f in fired if f["policy"] == "review_step_not_finished"]
+    assert hits, "runnable=true 没点火"
+
+    st2 = ps.PolicySet()
+    assert st2.load(_real_policies()) == []
+    # ② 还有活但步结局在等 ⇒ 不点（活锁反案）
+    fired = st2.dispatch("w1", _fact(
+        "review_round_done", "rv1", batch="b1", has_next=True,
+        runnable=False, continued=False, reason="awaiting_halted"))
+    assert not any(f["policy"] == "review_step_not_finished" for f in fired),         "awaiting_halted+runnable=false 还点火——活锁没堵上"
+    fired = st2.dispatch("w1", _fact(
+        "review_round_done", "rv1", batch="b1", has_next=True,
+        runnable=False, continued=False, reason="wake_delivered"))
+    assert not any(f["policy"] == "review_step_not_finished" for f in fired)
+
+    # ③ 席位回合正常结束，但没有下一步可运行。
+    st3 = ps.PolicySet()
+    assert st3.load(_real_policies()) == []
+    fired = st3.dispatch("w1", _fact(
+        "review_round_done", "rv1", batch="b1", has_next=False,
+        runnable=False, continued=True, reason="seat:vote_nudge"))
+    assert not any(f["policy"] == "review_step_not_finished" for f in fired)
+
+    # ④ 旧事件缺 runnable ⇒ 不点（只诊断，不错续）
+    st4 = ps.PolicySet()
+    assert st4.load(_real_policies()) == []
+    # card_050 seq 160 的等待事实，及旧版会直接续跑的未投票事实。
+    for fact in [
+        _fact("review_round_done", "card_050", batch="rv_429afe597e", seq=160,
+              draft=1, has_next=True, continued=False, voted=False, reason="awaiting_halted"),
+        _fact("review_round_done", "card_050", batch="rv_429afe597e", draft=1,
+              has_next=True, continued=True, voted=False, reason="seat:vote_nudge"),
+    ]:
+        fired = st4.dispatch("w1", fact)
+        assert not any(f["policy"] == "review_step_not_finished" for f in fired)

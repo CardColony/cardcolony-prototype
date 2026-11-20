@@ -133,4 +133,20 @@ def enters_context(block: dict[str, Any]) -> bool:
         return False
     if actor == "assistant" and block.get("tool_calls"):
         return False
+    # [异常正文隔离 2026-11-20] quarantine 标记块：有投影内容（ctx_content）
+    # 才进——投的是剥掉坏片段的残部/宿主状态行，原文只留档案面。无
+    # ctx_content 的隔离块直接出局（防御兜底；正常写口恒有值）。
+    if block.get("quarantine") and not str(block.get("ctx_content") or "").strip():
+        return False
     return True
+
+
+def context_content(block: dict[str, Any]) -> str:
+    """供模型使用的内容：隔离块投 ``ctx_content``，其余投原文 ``content``。
+
+    历史投影、缓存板物化、凝练送检**共用同一口径**——隔离块原文只在
+    会话/事件/界面档案面可查（quarantine 标记者 raw 不投影）。
+    """
+    if block.get("quarantine"):
+        return str(block.get("ctx_content") or "")
+    return str(block.get("content") or "")

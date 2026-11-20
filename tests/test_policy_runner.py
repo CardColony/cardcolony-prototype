@@ -86,7 +86,8 @@ async def test_deliver_fired_renders_and_sends(wired, monkeypatch):
     """触发记录 → 真的调用投递，模板占位符被替换。"""
     calls: list[tuple] = []
 
-    async def fake_deliver(work_id, target, text, *, rule_id="", wake=True, mode="message"):
+    async def fake_deliver(work_id, target, text, *, rule_id="", wake=True,
+                           mode="message", action_id="", expect=None):
         calls.append((work_id, target, text, rule_id, wake))
         return "mid"
 
@@ -108,7 +109,8 @@ async def test_deliver_fired_one_failure_does_not_stop_others(wired, monkeypatch
     """一条投递失败，后面的照发。"""
     calls: list[str] = []
 
-    async def fake_deliver(work_id, target, text, *, rule_id="", wake=True, mode="message"):
+    async def fake_deliver(work_id, target, text, *, rule_id="", wake=True,
+                           mode="message", action_id="", expect=None):
         if target == "boom":
             raise RuntimeError("投递炸了")
         calls.append(target)

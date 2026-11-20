@@ -432,6 +432,12 @@ def chain_from_entries(entries: list[dict[str, Any]],
         # 已被低频归拢吸收的成员：标 supersededBy（节点不删，渲染时过滤）
         if folded and str(e.get("fingerprint") or "") in folded:
             node["supersededBy"] = "folded"
+        # [§三.2 · 2026-11-20] 生命周期/来源字段无损透传：chain 列即 entries
+        # 的唯一载体（save_memory 单事务发布），任何被丢的键都会在下次
+        # load→save 往返中永久消失（sunk/degraded/revived/lastUsedAt…）。
+        for _k, _v in e.items():
+            if _k not in node and _v is not None:
+                node[_k] = _v
         chain.append(node)
     return chain
 
@@ -440,10 +446,20 @@ def chain_from_entries(entries: list[dict[str, Any]],
 # 落库 / 读库（dsh `memory` 表：每会话一条 = 链 + 两个半开水位）
 # ---------------------------------------------------------------------------
 
+class _ChainConflict(Exception):
+    """[§三.2] 乐观并发冲突：事务内当前链与调用方基于的旧链不一致——
+    整链提交作废（返回 False），由调用方基于新链重算或下轮重试。"""
+
+
 def save_chain(work_id: str, card_id: str, chain: list[dict[str, Any]], *,
                condense_mark: Optional[int] = None,
-               fold_mark: Optional[int] = None) -> bool:
-    """把链写进 `memory` 表（幂等 upsert）。失败只记日志、不抛。"""
+               fold_mark: Optional[int] = None,
+               expected_chain: Optional[list[dict[str, Any]]] = None) -> bool:
+    """把链写进 `memory` 表（幂等 upsert）。失败只记日志、不抛。
+
+    [§三.2] `expected_chain`：调用方**读链时**的快照——事务内当前链与其
+    不一致 ⇒ CAS 冲突、整链不写（旧快照不得覆盖新记忆）；一致才提交。
+    缺省 None＝不校验（兼容旧调用方）。"""
     import json
     import logging
     from datetime import datetime
@@ -454,6 +470,15 @@ def save_chain(work_id: str, card_id: str, chain: list[dict[str, Any]], *,
     now = datetime.now().astimezone().isoformat()
 
     def _fn(conn: Any) -> int:
+        if expected_chain is not None:
+            row = conn.execute(
+                "SELECT chain FROM memory WHERE card_id=?", (card_id,)).fetchone()
+            try:
+                cur = json.loads((row["chain"] if row else "") or "[]")
+            except (ValueError, TypeError):
+                cur = []
+            if cur != (expected_chain or []):
+                raise _ChainConflict()
         conn.execute(
             "INSERT INTO memory (card_id, chain, condense_mark, fold_mark, updated_at) "
             "VALUES (?,?,?,?,?) ON CONFLICT(card_id) DO UPDATE SET "
@@ -475,9 +500,77 @@ def save_chain(work_id: str, card_id: str, chain: list[dict[str, Any]], *,
 
     try:
         return bool(card_db._write_sync(work_id, _fn))  # noqa: SLF001 同包写事务边界
+    except _ChainConflict:
+        log.info("[memory_domain] 链提交冲突（CAS）card=%s——旧快照不覆盖新链", card_id)
+        return False
     except Exception as exc:  # noqa: BLE001 落库失败不阻断
         log.warning("[memory_domain] 链落库失败 card=%s: %s", card_id, exc)
         return False
+
+
+def revive_sunk(work_id: str, card_id: str, seq: int,
+                now_ms: Optional[int] = None) -> bool:
+    """[§三.2 · 2026-11-20] 复活沉底条目＝**事务内对当前链做局部生命周期更新**：
+    读-改-写同一个 `_write_sync`，不存在「拿旧链快照整链覆盖新链」的路径——
+    旧复活操作覆盖不了更新的记忆。返回是否真的改了（锚点不存在/未沉底 ⇒ False）。
+    """
+    import json
+    import logging
+    import time as _time
+    from datetime import datetime
+
+    from . import card_db, memory_lifecycle as lc
+    log = logging.getLogger("storage.memory_domain")
+    now = int(now_ms) if now_ms is not None else int(_time.time() * 1000)
+    done = {"changed": False}
+
+    def _fn(conn: Any) -> None:
+        row = conn.execute(
+            "SELECT chain FROM memory WHERE card_id=?", (card_id,)).fetchone()
+        if row is None:
+            return
+        try:
+            chain = json.loads(row["chain"] or "[]")
+        except (ValueError, TypeError):
+            return
+        hit = False
+        for n in chain or []:
+            if not isinstance(n, dict):
+                continue
+            a = n.get("anchor")
+            _raw = (a or {}).get("seq") if isinstance(a, dict) else None
+            if _raw is None:
+                _raw = n.get("seq")
+            try:
+                nseq = int(_raw) if _raw is not None else -1
+            except (TypeError, ValueError):
+                nseq = -1
+            if nseq == int(seq) and n.get("sunk"):
+                hit = True
+                break
+        if not hit:
+            return
+        new_chain = lc.revive_update(chain, int(seq), now)
+        conn.execute(
+            "UPDATE memory SET chain=?, updated_at=? WHERE card_id=?",
+            (json.dumps(new_chain, ensure_ascii=False),
+             datetime.now().astimezone().isoformat(timespec="seconds"), card_id))
+        # 派生索引同步翻 sunk 位（链是事实源、nodes 是投影——同事务不留半态）
+        try:
+            conn.execute(
+                "UPDATE memory_nodes SET sunk=0 WHERE card_id=? AND anchor_seq=?",
+                (card_id, int(seq)))
+        except Exception:  # noqa: BLE001 表可能尚未建——链已更新，下次 sync 补齐
+            pass
+        done["changed"] = True
+
+    try:
+        card_db._write_sync(work_id, _fn)  # noqa: SLF001 同包写事务边界
+    except Exception as exc:  # noqa: BLE001 落库失败如实报没复活
+        log.warning("[memory_domain] 复活写入失败 card=%s seq=%s: %s",
+                    card_id, seq, exc)
+        return False
+    return bool(done["changed"])
 
 
 def load_chain(work_id: str, card_id: str) -> list[dict[str, Any]]:

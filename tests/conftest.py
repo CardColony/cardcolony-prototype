@@ -78,6 +78,11 @@ def sandbox(tmp_path, monkeypatch):
     # 与上面 card_db 同一先例：沙箱建好后就把单例绑到本沙箱的 works。
     from src.infra import intervention_store as _ist_clear
     _ist_clear.reset(_ist_clear.InterventionStore(works_dir=works))
+    # [事实库 2026-11-20] fact_store 单例同理：_root 在建实例时绑定，
+    # 不重置则全套件共用首个用例的 facts.db——每用例事件 jsonl 的 seq 从 1
+    # 重算，跨用例 seq 碰撞（INSERT OR REPLACE 互相顶行，游标越过真回执）。
+    from src.infra import fact_store as _fs_clear
+    _fs_clear.reset()
 
     # 快照根：BASE_DIR 用于 _iter_protected_files 与相对路径计算
     monkeypatch.setattr(data_snapshot, "BASE_DIR", base)

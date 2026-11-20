@@ -37,7 +37,7 @@ from ..storage.card_store import CardLockedError, CardNotFoundError
 from ..storage.card_store import CardDeleteDeniedError
 from ..storage.hash_utils import parse_front_matter, split_body_sections
 from ..storage.manuscript_store import ChapterNotFoundError
-from . import auto_driver, card_msg, card_proposal, card_tools, control, context_assembler, context_regions, event_stream, message_runner, model_service, progress, prompt_log, prompts, role_room, serial_gate, simple_service, steer, text_tool_rescue, tool_fold
+from . import auto_driver, card_msg, card_proposal, card_tools, control, context_assembler, context_regions, event_stream, message_runner, model_service, progress, prompt_log, prompts, role_room, serial_gate, simple_service, steer, text_tool_rescue, tool_fold, tool_receipt
 
 logger = logging.getLogger("api.routes")
 
@@ -179,6 +179,7 @@ class CtlDeliverRequest(BaseModel):
     steer_text: str = ""
     source_kind: str = "internal"
     source: Optional[dict[str, Any]] = None
+    msg_type: str = ""
 
 
 class CtlReviewStepRequest(BaseModel):
@@ -202,6 +203,10 @@ class PostMessageRequest(BaseModel):
     op: Optional[str] = None
     # [席位会话 2026-11-18] 目标会话键（card@N）；缺省＝主会话。
     session: Optional[str] = None
+    # [可信任务入口 2026-11-20 · B2返修] 明确提交记录的任务绑定：
+    # {task_id, rev, text, action, target, accept}——服务端据它对账
+    # 「交办动作有没有真派发」。缺省 None ⇒ 普通聊天（不入绑定账）。
+    task: Optional[dict] = None
 
 
 # [wb_exec 2026-10-23] 执行体选择（谁干活：WorkBuddy 还是系统自己的模型）
@@ -795,17 +800,23 @@ async def get_health(request: Request):
     except Exception:  # noqa: BLE001
         pass
     lag = None
+    lag_serving = None
     try:
         from ..infra import loops as _loops
         lag = round(_loops.loop_lag_ms(), 1)
+        # [2026-11-19 返工] 服务循环 B 的迟滞读数——SSE 占满/大流量场景
+        # 定责用（A 是跑卡域主循环，web 进程的请求面在 B 上）。
+        lag_serving = round(_loops.serving_loop_lag_ms(), 1)
     except Exception:  # noqa: BLE001 仪表没装就如实缺省
         lag = None
+        lag_serving = None
     return {
         "ok": True,
         "build": stamp,
         "logs_dir": str(logs),
         "access_log_lines": n_access,
         "loop_lag_ms": lag,
+        "serving_loop_lag_ms": lag_serving,
         "now": time.time(),
     }
 
@@ -1289,9 +1300,30 @@ async def create_work_card(work_id: str, req: CreateCardRequest):
 
 
 @router.get("/works/{work_id}/cards/{card_id}")
-async def get_work_card(work_id: str, card_id: str):
+async def get_work_card(work_id: str, card_id: str, projection: str = ""):
+    """读卡。``?projection=meta`` ⇒ **只回 meta**（窄投影，见下）。
+
+    [窄投影 2026-11-20 · 性能批次一] 默认契约**逐字不变**（``{meta, body}``
+    ＋按卡型附 role/function/ceo）。``projection=meta`` 是**新增**的一档：
+    只回 ``{"meta": {...}}``、**没有 body 键**——首屏（面包屑/空态/角色卡
+    自动展开/模型徽标）只要 meta，正文是右栏「卡详情」的区域载荷，
+    那个区域展开时再读全文。
+
+    为什么值得单开一档：实测 work_073/card_007 的整张卡面 530KB 的 JSON 里
+    **99.5% 是 body**（requirements 285KB ＋ 1800+ 行 history 201KB ＋
+    status_block 17KB），meta 只有 2.7KB。首屏等这 500KB 是纯浪费。
+    """
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
+    if projection == "meta":
+        # 窄投影：正文不读。角色卡/职能卡的角色与职能摘要同属「右栏载荷」，
+        # 首屏不需要 ⇒ 这里不拼（省掉 role_summary / function_summary 两次读）。
+        try:
+            return await card_store.read_card_meta(work_id, card_id)
+        except CardNotFoundError:
+            return _err(404, f"卡片不存在: {card_id}")
+        except CardLockedError:
+            return _err(423, "卡片被占用，请稍后重试")
     try:
         result = await card_store.read_card(work_id, card_id)
     except CardNotFoundError:
@@ -1510,7 +1542,11 @@ async def get_exec_backend(work_id: str, card_id: str):
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
     try:
-        card = await card_store.read_card(work_id, card_id)
+        # [窄投影 2026-11-20 · 性能批次一] 这里**只需要 card_type**，
+        # 原来走 read_card（SELECT *）⇒ 大卡上白付 500KB 正文 IO 与解析
+        # （实测 work_073/card_007 的 body 530KB 里 requirements 285KB、
+        # history 201KB）。改走 meta 窄读：只取归属与类型那组小列。
+        card = await card_store.read_card_meta(work_id, card_id)
     except CardNotFoundError:
         return _err(404, f"卡片不存在: {card_id}")
     except CardLockedError:
@@ -2655,6 +2691,14 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
                 session_facade.turn_release(work_id, card_id, _revive_owner)
     elif _revive_owner:
         session_facade.turn_release(work_id, card_id, _revive_owner)
+    # [可信任务入口 2026-11-20 · B2返修] req.task 是明确提交记录——服务端
+    # 凭它绑定原任务/版本/动作/目标（require_report 只核对汇报义务，不顶
+    # 替任务本身）。模型正文与自报编号不入账。
+    _src: Optional[dict] = None
+    if str(_meta.get("card_type") or "") == "review":
+        _src = {"kind": "venue_clerk"}
+    if isinstance(req.task, dict) and req.task:
+        _src = {**(_src or {}), "task": dict(req.task)}
     _res = await message_runner.await_spawned(message_runner._spawn_tracked(
         _run_message(
         work_id, card_id, req.content, req.pair_id,
@@ -2663,8 +2707,7 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
         # [venue_clerk 2026-10-31] 用户在评审卡上发言＝跟**场**说话：
         # 接话的是场务人格（不占席位、不产出评审事件、无表态权），
         # source 标记让事件流/R 规则能把它跟席位回合（review_step）区分开。
-        source=({"kind": "venue_clerk"}
-                if str(_meta.get("card_type") or "") == "review" else None),
+        source=_src,
         source_kind="human"),
         work_id=work_id, card_id=card_id))
     # [2026-10-31 用户令]「插话不打断流程；停止状态下说话，就继续跑」
@@ -3407,7 +3450,7 @@ async def ctl_deliver(req: CtlDeliverRequest):
     """[多进程拆分] 属主 runner 入口：替调用方在本进程判 pending/起回合。"""
     delivered = await message_runner.deliver_now(
         req.work_id, req.card_id, text=req.text, steer_text=req.steer_text,
-        source_kind=req.source_kind, source=req.source)
+        source_kind=req.source_kind, source=req.source, msg_type=req.msg_type)
     return {"delivered": bool(delivered)}
 
 
@@ -3558,6 +3601,20 @@ async def _run_message(work_id: str, card_id: str, content: str,
         control.unbind_turn_task(work_id, sid, _turn_task)
         event_stream.reset_stream_context(_stream_ctx_token)
         raise
+    if source and source.get("kind") == "review_activation":
+        from . import review_runner
+
+        current = False
+        try:
+            current = await review_runner.activation_wake_is_current(work_id, card_id, source)
+        finally:
+            if not current:
+                serial_gate.release(work_id, sid)
+                session_facade.turn_release(work_id, sid, turn_owner)
+                control.unbind_turn_task(work_id, sid, _turn_task)
+                event_stream.reset_stream_context(_stream_ctx_token)
+        if not current:
+            return _err(409, "待接收的评审请求已变更")
     failed = False
     # [goal 域 2026-10-20 · 照抄 dsh] 回合来源。工具权威判定（create/edit/pause/
     # resume 必须直接人类回合；complete/blocked 允许当前 goal round）全靠它。
@@ -3652,7 +3709,7 @@ async def _run_message(work_id: str, card_id: str, content: str,
         # [5715] 插话残留清扫（对齐 control.discard_stop 的纪律）：回合窗口外
         # 的插话一律作废——不能留给下一回合，否则那句话会凭空出现在下一轮。
         # 残留件先收着：applied 却没被模型看见的话不算送达，摘牌后下面补投。
-        _steer_remains = steer.discard_steer(work_id, card_id)
+        _steer_remains = steer.take_steer_entries(work_id, card_id)
         session_facade.turn_release(work_id, sid, turn_owner)
         # [立刻停止 2026-10-21] 解登记本轮协程（传 task 只解自己，防误删后续回合）
         control.unbind_turn_task(work_id, sid, _turn_task)
@@ -3663,7 +3720,7 @@ async def _run_message(work_id: str, card_id: str, content: str,
         # 都报一次。这就是「自动模式会不断唤醒」的落点——不再依赖回合尾部的
         # 顺序调用（原版 ctx.on('agent/status', idle)）。
         try:
-            goal_driver.notify_idle(work_id, card_id, outcome)
+            goal_driver.notify_idle(work_id, card_id, outcome, source=turn_source)
             goal_driver.notify_parent_idle(work_id, card_id)
         except Exception as exc:  # noqa: BLE001 驱动异常不影响回合返回
             logger.warning("[goal] idle 通知失败 card=%s: %s", card_id, exc)
@@ -3709,10 +3766,13 @@ async def _run_message(work_id: str, card_id: str, content: str,
             # 插话原文（含 〔用户插话〕/〔卡间消息〕 标）作 prompt 直接进。
             if _steer_remains:
                 try:
+                    _report_targets = sorted({
+                        target for entry in _steer_remains for target in entry.report_targets
+                    })
                     _rt = await message_runner.deliver_now(
                         work_id, card_id,
-                        text="\n\n".join(_steer_remains),
-                        source={"kind": "steer_remains"})
+                        text="\n\n".join(entry.text for entry in _steer_remains),
+                        source={"kind": "steer_remains", "report_targets": _report_targets})
                     if _rt:
                         logger.info("[steer] 残留插话补投 card=%s 条数=%d",
                                     card_id, len(_steer_remains))
@@ -3832,7 +3892,17 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     # 失效 ⇒ 本轮直接拒（不调模型、不落 user 消息），并把预留丢掉让驱动重排。
     if source and source.get("kind") == "goal":
         from ..goal import driver as _goal_driver
+        from ..goal import wait_store
         _ok_res, _why = _goal_driver.validate_reservation(work_id, card_id, source)
+        if _ok_res and wait_store.enabled(work_id):
+            from ..goal.service import get_service
+            current = await get_service().get(work_id, card_id)
+            if (current is None or current.id != source.get("goalId")
+                    or current.revision != source.get("revision")
+                    or current.phase != "active" or current.activation != "armed"
+                    or not _goal_driver._auto_enabled(work_id, card_id)
+                    or control.is_halted(work_id, card_id) is not None):
+                _ok_res, _why = False, "目标、模式或停止状态已变化"
         if not _ok_res:
             _goal_driver.drop_attempt(work_id, card_id)
             logger.warning("[goal] 续轮预留失效，拒绝本轮 card=%s reason=%s", card_id, _why)
@@ -3970,11 +4040,67 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
         progress.set_stage(work_id, sid, "started", "已提交")
         while True:
             outcome = await message_runner.step(state)
+            # [runner/Harness 共用一次补救决定 2026-11-20 · B2返修]
+            # 本跳检测到的伪调用事实延到收口点发：续跳/补救已裁定 ⇒
+            # handled=runner 进事件，策略 pseudo_call_reinvoke 见此标记
+            # 不再二次唤醒；裸事实（回合未接管就交付）仍发，走重调起兜底。
+            _hup = getattr(state, "hop_unparsed", None)
+            if _hup:
+                state.hop_unparsed = None
+                if (outcome.kind in ("continue", "seats")
+                        or getattr(state, "remediation_adjudicated", False)):
+                    _hup["handled"] = "runner"
+                event_stream.emit(work_id, sid, "pseudo_call_unparsed", _hup)
+            # [B3 请求对账 2026-11-20 · 返修] step 内建好的请求级载荷在此
+            # 补齐执行侧事实后发——派发数在**调用执行器前**记账
+            # （executor_attempts），完成（completed）与成功（succeeded）
+            # 另计：派发后异常/取消时 attempts > completed 的差值是实证。
+            _acc = getattr(state, "hop_accounting", None)
+            if _acc:
+                state.hop_accounting = None
+                _round = int(_acc.get("round") or 0)
+                _evs = [e for e in (state.tool_events or [])
+                        if int(e.get("round") or 0) == _round]
+                _acc["executor_attempts"] = int(
+                    getattr(state, "hop_dispatch_attempts", 0) or 0)
+                _acc["completed"] = len(_evs)
+                _acc["succeeded"] = sum(1 for e in _evs
+                                        if e.get("ok") is True)
+                _acc["executed_tools"] = [str(e.get("tool") or "")
+                                          for e in _evs]
+                event_stream.emit(work_id, sid, "hop_accounting", _acc)
+                tool_receipt.ledger({"kind": "request_accounting",
+                                     "work_id": work_id, "card_id": card_id,
+                                     **_acc})
             if outcome.kind == "seats":
                 outcome = await message_runner.run_seats(state)
             if outcome.kind != "continue":
                 break
     except Exception as exc:
+        _hup = getattr(state, "hop_unparsed", None)
+        if _hup:
+            state.hop_unparsed = None
+            event_stream.emit(work_id, sid, "pseudo_call_unparsed", _hup)
+        # [B3 请求对账返修] step 中途异常也把已建对账载荷发出去——
+        # executor_attempts > completed 的差值正是「派发后异常」的实证，
+        # 吞掉它等于把事故抹平。
+        _acc = getattr(state, "hop_accounting", None)
+        if _acc:
+            state.hop_accounting = None
+            _acc["executor_attempts"] = int(
+                getattr(state, "hop_dispatch_attempts", 0) or 0)
+            _acc["completed"] = sum(
+                1 for e in (state.tool_events or [])
+                if int(e.get("round") or 0) == int(_acc.get("round") or 0))
+            _acc["succeeded"] = sum(
+                1 for e in (state.tool_events or [])
+                if int(e.get("round") or 0) == int(_acc.get("round") or 0)
+                and e.get("ok") is True)
+            _acc["aborted"] = True
+            event_stream.emit(work_id, sid, "hop_accounting", _acc)
+            tool_receipt.ledger({"kind": "request_accounting",
+                                 "work_id": work_id, "card_id": card_id,
+                                 **_acc})
         message_runner.handle_error(state, exc)
 
     # 段④ prompt 日志（无论成败）

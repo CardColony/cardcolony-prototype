@@ -622,7 +622,7 @@ def test_block4_prompt_version_and_section():
 
 
 def test_block4_tool_table_and_registry():
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-31"  # [2026-11-02] +browser/+create_ui_card
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-33"  # [2026-11-20] memory_expand section/revision/cursor
     assert "update_goal" in card_tools.TOOL_REGISTRY
     assert card_tools.TOOL_SWITCH["update_goal"] == policy.SWITCH_PLAN
     assert "update_goal" in card_tools.AUTO_ONLY_TOOLS
@@ -636,8 +636,11 @@ def test_block4_tool_table_and_registry():
         assert _gone not in card_tools.TOOL_REGISTRY, _gone
     # [2026-11-01] edit_requirements 已转常规工具面（草稿→评审→正稿流程），
     # auto-only 剩目标生命周期四件。
+    # [声明式等待 2026-11-20] 四件→五件（+declare_wait：自动卡回合里
+    # 声明「等哪笔派工的哪个回执」，机械核对后驱动统一起轮）。
     assert card_tools.AUTO_ONLY_TOOLS == {"update_goal", "get_goal",
-                                          "create_goal", "resume_child"}
+                                          "create_goal", "resume_child",
+                                          "declare_wait"}
     # [去全量更新 2026-10-28] update_status/update_shadow 已退役；现状走 edit_status
     for _gone2 in ("update_status", "update_shadow"):
         assert _gone2 not in card_tools.TOOL_REGISTRY, _gone2

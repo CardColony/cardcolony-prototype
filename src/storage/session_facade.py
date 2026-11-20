@@ -108,7 +108,16 @@ BLOCK_FIELDS = ("seq", "actor", "from", "turn", "pair", "model", "behavior", "en
                 # （ok/error——存根三态投影的数据源）与调用来源标记
                 # （native/declared_text/pseudo_compat——来源面在块上可审计）。
                 # 存量旧块无这两字段 → 解析为零迁移（缺字段＝空）。
-                "status", "origin")
+                "status", "origin",
+                # [超长会话漏调专项 2026-11-19] 回复块的收口核对＋系统结果
+                # （JSON 单行——「没有执行却显示完成」的结构化对账锚，刷新后
+                # 的历史与最终回复同源）。存量旧块缺字段＝空（零迁移）。
+                "receipt",
+                # [异常正文隔离 2026-11-20] quarantine＝隔离原因标记
+                # （pseudo_unparsed/refused_strict/over_cap——原文只留档案面）；
+                # ctx_content＝供模型使用的视图（残部＋宿主状态行，JSON 单行
+                # 规则同 reasoning_content）。存量旧块缺字段＝空（零迁移）。
+                "quarantine", "ctx_content")
 BLOCK_REQUIRED = ("seq", "actor", "turn")
 END_VALUES = ("model_done", "policy_stop", "human_stop", "error")
 ACTOR_HUMAN = "human"
@@ -359,6 +368,30 @@ def _parse_v2(text: str, content_limit: int = 0) -> dict[str, Any]:
     return {"header": header, "blocks": blocks}
 
 
+def _parse_receipt_json(raw: str) -> Optional[dict[str, Any]]:
+    """receipt 头行（JSON 单行）→ dict；缺字段＝None（存量旧块零迁移）；
+    解析失败退化为原文串包装（不丢内容，展示侧按 str 呈现）。"""
+    if not raw:
+        return None
+    try:
+        obj = json.loads(raw)
+        return obj if isinstance(obj, dict) else {"raw": str(obj)}
+    except (ValueError, TypeError):
+        return {"raw": raw}
+
+
+def _parse_text_json(raw: str) -> str:
+    """JSON 单行字符串字段（ctx_content/reasoning_content 同款）→ str；
+    缺字段＝""，解析失败退化为原文串（不丢内容）。"""
+    if not raw:
+        return ""
+    try:
+        obj = json.loads(raw)
+        return obj if isinstance(obj, str) else str(obj)
+    except (ValueError, TypeError):
+        return raw
+
+
 def _materialize_v2_block(kv: dict, content_lines: list[str],
                           header_closed: bool, closed: bool,
                           unknown_fields: list[str]) -> dict[str, Any]:
@@ -434,7 +467,14 @@ def _materialize_v2_block(kv: dict, content_lines: list[str],
         # （缺＝空串；存量旧块零迁移——存根投影按内容判三态）
         "status": kv.get("status", "") or "",
         "origin": kv.get("origin", "") or "",
+        # [超长会话漏调专项 2026-11-19] 回复块收口核对＋系统结果（JSON 单行；
+        # 缺＝None——存量旧块零迁移，解析失败退化为原文串不丢内容）
+        "receipt": _parse_receipt_json(kv.get("receipt", "")),
         "reasoning_content": reasoning_content,
+        # [异常正文隔离 2026-11-20] quarantine 短标记直读；ctx_content 是
+        # JSON 单行字符串，解析失败退化为原文串（不丢内容；缺字段＝空）
+        "quarantine": kv.get("quarantine", "") or "",
+        "ctx_content": _parse_text_json(kv.get("ctx_content", "")),
         "format": "v2",
     }
     damaged = bool(missing) or not header_closed or not closed
@@ -965,10 +1005,21 @@ def _render_v2_block(b: dict[str, Any]) -> str:
     if b.get("origin"):
         # [调用来源与真实回执 2026-11-19] 调用来源标记（native/declared_text/pseudo_compat）
         lines.append(f"origin: {b['origin']}")
+    if b.get("receipt"):
+        # [超长会话漏调专项 2026-11-19] 回复块收口核对＋系统结果（JSON 单行，
+        # 换行转义保单行——规则同 tool_calls）
+        lines.append("receipt: " + json.dumps(b["receipt"], ensure_ascii=False))
     if b.get("reasoning_content"):
         # [保留式思考 2026-11-12] JSON 单行（同 tool_calls 规则：换行转义保单行）
         lines.append("reasoning_content: " +
                      json.dumps(b["reasoning_content"], ensure_ascii=False))
+    if b.get("quarantine"):
+        # [异常正文隔离 2026-11-20] 隔离原因（短标记，单行无转义需求）
+        lines.append(f"quarantine: {b['quarantine']}")
+    if b.get("ctx_content"):
+        # 投影视图 JSON 单行（规则同 reasoning_content）
+        lines.append("ctx_content: " +
+                     json.dumps(b["ctx_content"], ensure_ascii=False))
     if b.get("end"):
         lines.append(f"end: {b['end']}")
     lines.append(f"ts: {b.get('ts') or session_store._now_iso()}")
@@ -1229,7 +1280,13 @@ def _assign_block(existing: list[dict[str, Any]], block: dict[str, Any]) -> dict
         # （空值不落行——渲染侧有值才写；存量旧块零迁移）。
         "status": block.get("status", "") or "",
         "origin": block.get("origin", "") or "",
+        # [超长会话漏调专项 2026-11-19] 回复块收口核对＋系统结果（结构化 dict）
+        "receipt": block.get("receipt") or None,
         "reasoning_content": block.get("reasoning_content") or "",
+        # [异常正文隔离 2026-11-20] 隔离标记＋投影视图（缺＝空；白名单重建
+        # 时若漏掉这两键，标记在落盘瞬间被剥——reasoning_content 同族教训）
+        "quarantine": block.get("quarantine") or "",
+        "ctx_content": block.get("ctx_content") or "",
         "ts": now,
         "format": "v2",
     }
@@ -1379,6 +1436,19 @@ async def append_card_message(work_id: str, card_id: str, *,
     msg_id = f"cmsg-{uuid.uuid4().hex[:12]}"
     header = card_msg.build_header(msg_id, msg_type, str(from_card or ""),
                                    reply_to)
+    # 试点派工落信时写入发送方的目标 ID 和版本。回执沿原派工查归属。
+    _extra = dict(extra or {})
+    from ..goal import wait_store
+    if wait_store.enabled(work_id) and msg_type == "msg_directive" and not reply_to \
+            and str(from_card or "") not in ("", "system", "harness"):
+        try:
+            from ..goal.service import get_service as _gs
+            _g = await _gs().get(work_id, str(from_card))
+            if _g is not None:
+                _extra["target_rev"] = str(_g.revision)
+                _extra["dispatch_goal_id"] = _g.id
+        except Exception:  # noqa: BLE001 读不到目标就不印（下游按待核实办）
+            pass
     if str(from_card) in ("system", "", "harness"):
         body = f"系统给你发来一条{label}：\n{text}"
     else:
@@ -1393,7 +1463,7 @@ async def append_card_message(work_id: str, card_id: str, *,
         # 它只活在入参块里，_assign_block 的白名单不会把它写进会话文件。
         "msg_id": msg_id,
         # 调用方追加的零件（如汇报的 kind）。同样只活在入参块，不进会话文件。
-        **({"_extra": dict(extra)} if extra else {}),
+        **({"_extra": dict(_extra)} if _extra else {}),
         **({"reply_to": reply_to} if reply_to else {}),
     })
     # [2026-10-27] 返回里带上 msg_id：调用方（发信工具）要把它交给模型做 reply_to。

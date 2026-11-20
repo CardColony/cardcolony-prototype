@@ -211,3 +211,65 @@ def test_ds_norm_keeps_existing_reasoning_untouched():
 
     msgs = [{"role": "assistant", "content": "x", "reasoning_content": "真的想过"}]
     assert g._ds_norm(msgs, "(系统注入的消息，无模型思考记录)") == msgs
+
+
+@pytest.mark.parametrize("seat, expected", [
+    ("kimi-k3", None),
+    ("kimi-k31-pro-volc", None),
+    ("deepseek-pro", ""),
+    ("cmd-beam-free", "(系统注入的消息，无模型思考记录)"),
+    ("glm-53", None),
+])
+def test_compat_request_reasoning_fill_follows_route(seat, expected):
+    from src.api import model_config
+    from src.model_gateway.gateway import ModelGateway, REASONING_PLACEHOLDER
+    from src.model_gateway.llm_openai_compat.serialize import serialize_request
+
+    gateway = ModelGateway(model_config._gateway_config())
+    history = [
+        {"role": "assistant", "content": "", "reasoning_content": REASONING_PLACEHOLDER,
+         "tool_calls": [{"id": "call_a", "type": "function",
+                         "function": {"name": "read_card", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_a", "content": "工具回执已折叠"},
+    ]
+    options = gateway._build_options(seat, "", "查现状", None, None, None,
+                                     history, None, None, stream=True)
+    defaults = gateway._facts_for(options.provider, options.model).defaults
+    messages = serialize_request(options, defaults)["messages"]
+
+    if expected is None:
+        assert "reasoning_content" not in messages[1]
+    else:
+        assert messages[1]["reasoning_content"] == expected
+    assert messages[1]["tool_calls"][0]["id"] == messages[2]["tool_call_id"]
+    assert history[0]["reasoning_content"] == REASONING_PLACEHOLDER
+
+
+def test_kimi_request_uses_its_own_reasoning_and_keeps_user_last():
+    from src.api import model_config, tool_receipt
+    from src.model_gateway.gateway import ModelGateway
+    from src.model_gateway.llm_openai_compat.serialize import serialize_request
+
+    gateway = ModelGateway(model_config._gateway_config())
+    history = [
+        {"role": "assistant", "content": "另一模型的答复", "reasoning_content": "异源推理",
+         "_reasoning_model": "deepseek/deepseek-v4.1-flash"},
+        {"role": "assistant", "content": "历史答复", "reasoning_content": "无来源推理",
+         "_reasoning_model": ""},
+        {"role": "assistant", "content": "本模型答复", "reasoning_content": "原样回传",
+         "_reasoning_model": "k3.1-pro"},
+    ]
+    hint = tool_receipt.build_turn_hint("native", [{"name": "read_card"}])
+    assert hint is not None
+    options = gateway._build_options("kimi-k3", "系统", "你一个工具也没调", 0.5, None,
+                                     None, history, None, [hint], stream=True)
+    body = serialize_request(options, gateway._facts_for(options.provider, options.model).defaults)
+    messages = body["messages"]
+
+    assert [msg.get("reasoning_content") for msg in messages[1:4]] == [None, None, "原样回传"]
+    assert [msg["content"] for msg in messages[1:4]] == [msg["content"] for msg in history]
+    assert all("_reasoning_model" not in msg for msg in messages)
+    assert messages[-2] == hint and messages[-2]["role"] == "system"
+    assert messages[-1] == {"role": "user", "content": "你一个工具也没调"}
+    assert "temperature" not in body
+    assert history[0]["reasoning_content"] == "异源推理"

@@ -214,9 +214,12 @@ async def test_f19_memory_expand_tool_registered_and_expands(sandbox, work):
                   "perms": ["read"]}}
     r = await card_tools.execute_tool(wid, cid, "memory_expand", {"seq": 1}, meta)
     assert r["ok"] is True and r["data"]["found"] is True
-    text = r["data"]["text"]
-    assert "【记忆】顶层结论" in text  # [F23] 回执形态去【结论】
-    assert "细节一" in text, "整组展开：细节子条随组给出"
+    # [记忆找回 2026-11-20] text=本页逐字原文；结论走 gist 字段，细节组在
+    # section=details 分页里
+    assert r["data"]["gist"] == "顶层结论"
+    rd = await card_tools.execute_tool(wid, cid, "memory_expand",
+                                       {"seq": 1, "section": "details"}, meta)
+    assert rd["ok"] and "细节一" in rd["data"]["text"], "细节子条随组给出"
     # 缺 seq ⇒ 校验错误
     r2 = await card_tools.execute_tool(wid, cid, "memory_expand", {}, meta)
     assert r2["ok"] is False

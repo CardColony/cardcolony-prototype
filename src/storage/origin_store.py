@@ -202,26 +202,41 @@ def read_origin_span(work_id: str, card_id: str, from_seq: int,
     """
     start = int(from_seq or 0)
 
-    def _fn(conn: Any) -> list[dict[str, Any]]:
-        if through_seq is None:
-            cur = conn.execute(
-                "SELECT seq, type, time, content, data FROM session_blocks "
-                "WHERE card_id = ? AND seq >= ? ORDER BY seq",
-                (card_id, start))
-        else:
-            cur = conn.execute(
-                "SELECT seq, type, time, content, data FROM session_blocks "
-                "WHERE card_id = ? AND seq >= ? AND seq <= ? ORDER BY seq",
-                (card_id, start, int(through_seq)))
-        return [dict(r) for r in cur.fetchall()]
-
     try:
-        rows = card_db.read_sync(work_id, _fn, []) or []
+        rows = card_db.read_sync(
+            work_id, lambda conn: _read_rows_tx(conn, card_id, start, through_seq), []) or []
     except Exception as exc:  # noqa: BLE001 读不到＝没有（不阻断）
         logger.warning("[origin] 原文取数失败（视同空）card=%s from=%s: %s",
                        card_id, start, exc)
         rows = []
 
+    return {
+        "events": _rows_to_events(rows),
+        "from": start,
+        "throughSeq": rows[-1]["seq"] if rows else None,
+    }
+
+
+def _read_rows_tx(conn: Any, card_id: str, start: int,
+                  through_seq: Optional[int]) -> list[dict[str, Any]]:
+    sql = ("SELECT seq, type, time, content, data FROM session_blocks "
+           "WHERE card_id = ? AND seq >= ?")
+    params: tuple = (card_id, start)
+    if through_seq is not None:
+        sql += " AND seq <= ?"
+        params += (int(through_seq),)
+    return [dict(r) for r in conn.execute(sql + " ORDER BY seq", params)]
+
+
+def read_blocks_tx(conn: Any, card_id: str, from_seq: int,
+                   through_seq: Optional[int] = None) -> list[dict[str, Any]]:
+    """在调用方事务内按相同口径取原文块，查询失败交由事务处理。"""
+    return _events_to_blocks(_rows_to_events(
+        _read_rows_tx(conn, card_id, from_seq, through_seq)))
+
+
+def _rows_to_events(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """session_blocks 行 → 事件形（seq/type/time/content/data，两读口共用）。"""
     events: list[dict[str, Any]] = []
     for r in rows:
         ev: dict[str, Any] = {"seq": int(r["seq"]), "type": str(r.get("type") or "")}
@@ -237,12 +252,36 @@ def read_origin_span(work_id: str, card_id: str, from_seq: int,
                 # 与 dsh 一致：解析失败显式记日志，但**不丢 seq/type**（原文取数要能继续）
                 logger.warning("[origin] data 列解析失败 seq=%s card=%s", r.get("seq"), card_id)
         events.append(ev)
+    return events
 
-    return {
-        "events": events,
-        "from": start,
-        "throughSeq": events[-1]["seq"] if events else None,
-    }
+
+def read_origin_seqs(work_id: str, card_id: str,
+                     seqs: list[int]) -> list[dict[str, Any]]:
+    """**按块号精确取块**（IN 查询、去重、按 seq 升序、不加工）。
+
+    [记忆找回 2026-11-20] 精确覆盖集（coveredSeqs 有空洞）按块号取数——
+    旧实现 min/max 区间读把覆盖外几十块、几十万字符每次翻页都捞进来
+    再过滤（card_017/2913：5 块覆盖 → 41 块 42 万字符）。缺块由调用方
+    比对 seq 集合得出（空洞保持空洞）。
+    """
+    want = sorted({int(s) for s in seqs})
+    if not want:
+        return []
+
+    def _fn(conn: Any) -> list[dict[str, Any]]:
+        q = ",".join("?" * len(want))
+        cur = conn.execute(
+            f"SELECT seq, type, time, content, data FROM session_blocks "
+            f"WHERE card_id = ? AND seq IN ({q}) ORDER BY seq",
+            (card_id, *want))
+        return [dict(r) for r in cur.fetchall()]
+
+    try:
+        rows = card_db.read_sync(work_id, _fn, []) or []
+    except Exception as exc:  # noqa: BLE001 读不到＝没有（不阻断）
+        logger.warning("[origin] 按块号取数失败（视同空）card=%s: %s", card_id, exc)
+        rows = []
+    return _rows_to_events(rows)
 
 
 def trace_entry(work_id: str, card_id: str, seq_from: int,

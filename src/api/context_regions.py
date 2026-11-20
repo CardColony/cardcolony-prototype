@@ -32,6 +32,14 @@ from .prompts import BASE_PROMPT, THIRD_BLOCK_NAME_BY_TREE as _THIRD_BLOCK_NAME_
 
 logger = logging.getLogger("api.context_regions")
 
+#: [2026-11-19 性能批次三] system 渲染缓存命中账（观测/验收用）。
+_SYS_CACHE_STATS: dict[str, int] = {"hits": 0, "misses": 0}
+
+
+def system_cache_stats() -> dict[str, int]:
+    """system 区同回合缓存命中读数（dict 拷贝，防外部改动）。"""
+    return dict(_SYS_CACHE_STATS)
+
 
 @dataclass
 class RegionCtx:
@@ -65,6 +73,7 @@ class RegionCtx:
     memory_entries: list[dict[str, Any]] = field(default_factory=list)
     controls: dict[str, Any] = field(default_factory=dict)
     history_source: list[dict[str, Any]] = field(default_factory=list)
+    history_id: str = ""
     history_mark: int = 0
     #: [缓存板 2026-11-12] 运行时附加块（prior_extra，评审现场发言）——
     #: 它们是**别的卡的会话块**（带真 seq，不能靠 seqless 与 history_source
@@ -76,10 +85,18 @@ class RegionCtx:
     #: 同一条消息在 prior 与 user_prompt 各出现一次（"你粘贴了两遍"）。
     #: 板路按它滤掉本轮已落块的行；空串＝无本轮块可滤（评审/草稿路）。
     current_pair_id: str = ""
+    #: [§三.2 · 2026-11-20] 同版本快照下发的板行（与 memory_state/水位同一读
+    #: 事务）；板不可用时同事务取原文，避免渲染时再读到另外一版。
+    board_rows: Optional[list[dict[str, Any]]] = None
+    snapshot_history: Optional[list[dict[str, Any]]] = None
     request_prior: Optional[list[dict[str, Any]]] = None
     request_prior_key: str = "history"
     request_user: Optional[str] = None
     request_once: list[dict[str, Any]] = field(default_factory=list)
+    # [工具回执提示独立区 2026-11-19] 协议短提示/汇报回合提示专用通道——
+    # 与判断协议（request_once）分离：once 区被 thinkchain 开关连坐
+    # （纯单模型模式返回 []），提示必须无条件到达模型面前。
+    request_hint: list[dict[str, Any]] = field(default_factory=list)
     request_tail: list[dict[str, Any]] = field(default_factory=list)
     request_seat_identity: list[dict[str, Any]] = field(default_factory=list)
     rule_sections: dict[str, str] = field(default_factory=dict)
@@ -109,6 +126,19 @@ class RegionCtx:
     # 两者都缺省空 ⇒ 对应区输出空串（「没有来源就不出现这个区」）。
     function_roster: list[dict[str, Any]] = field(default_factory=list)
     function_meta: dict[str, Any] = field(default_factory=dict)
+    # [批二·按任务缩量 2026-11-20 · 成本优化任务书 §三·第二步] 本轮**任务范围**
+    # 判定结果（single/global/unknown）。判定只用结构化字段（回合来源/卡型/
+    # 子卡卡型/差事账对象），取数在装配层（context_assembler.build_ctx），
+    # 渲染器只读。unknown ⇒ 逐字同旧（完整材料）。
+    task_scope: Any = None
+    # [批二·按任务缩量 2026-11-20] **对象卡卡面**（single 档且对象≠本卡时）：
+    # {card_id, title, mission, status_block}——任务书要求单卡专项的首跳带
+    # 「对象卡号、使命、必要的现状」；对象＝本卡时本卡三块已在 150 区 ⇒ 不重复给。
+    scope_target_body: dict[str, Any] = field(default_factory=dict)
+    # [批二·按任务缩量 2026-11-20] 本次 compose 的 **profile**（main/viewpoint/
+    # draft）——缩量**只对普通主对话**生效；三席与起草保持原有材料（总方案 §三
+    # 通过条件：「以普通主对话为首批覆盖范围，评审、草稿和席位原有分区另行复验」）。
+    request_profile: str = ""
 
 
 def _count_duty_lines(ctx: RegionCtx, text: str) -> int:
@@ -346,6 +376,35 @@ def render_pending_inject(items: list[str]) -> list[dict[str, Any]]:
              "content": "〔本轮提示〕\n" + body}]
 
 
+def _scope_for(ctx: RegionCtx) -> Any:
+    """本次渲染**能不能缩量**：范围可证 **且** 本次是普通主对话。
+
+    [批二·按任务缩量 2026-11-20] 缩量只对 main 生效——三席（viewpoint）与
+    起草（draft）保持原有材料（总方案 §三通过条件：首批只覆盖普通主对话，
+    评审/草稿/席位另行复验）。未设 profile 时按 main 算（白盒直调口径）。
+    """
+    scope = getattr(ctx, "task_scope", None)
+    if scope is None or not getattr(scope, "narrowed", False):
+        return None
+    prof = str(getattr(ctx, "request_profile", "") or "")
+    if prof and prof != "main":
+        return None
+    return scope
+
+
+def _as_tail_facts(mark: str, text: str) -> list[dict[str, Any]]:
+    """区文本 → tail 槽当轮事实消息（assistant 角色，与〔工作规范〕等注入同族）。
+
+    [批二·清单/子卡走当轮 2026-11-20 · 成本优化任务书 §三] 原 system 区的
+    文本**一字不动**包进当轮消息：材料同一份、槽位换 tail——首跳随用户
+    消息之后下发、工具续跳每跳仍在；system 端卸下后稳定前缀不再随卡面
+    变化分叉。空文本 ⇒ 空列表（「没有来源就不出现这个区」口径不变）。
+    """
+    if not str(text or "").strip():
+        return []
+    return [{"role": "assistant", "content": f"{mark}\n{text}"}]
+
+
 REGION_TABLE: list[dict[str, Any]] = [
     {
         "key": "instruction",
@@ -488,24 +547,32 @@ REGION_TABLE: list[dict[str, Any]] = [
         "count": 1,
     },
     {
+        # [批二·清单走当轮 2026-11-20 · 成本优化任务书 §三] system → tail：
+        # 卡片清单是高频变化材料（建卡/改标题/依赖线），插在 system 前段让
+        # 它的每次变化都截断可复用前缀（实测 card_007 相邻请求 4/9 对从
+        # 清单处开始分叉）。挪进 tail 当轮事实消息：材料同一份、来源标记
+        # 〔卡片清单〕，首跳下发、续跳每跳仍在；渲染数据仍走装配层同一快照。
         "key": "card_list",
         "order": 100,
         "name": "卡片清单",
-        "channel": "system",
+        "channel": "messages",
         "seats": ("main", "viewpoints"),
         "owner": "context",
         "source_owner": "assembler",
-        "delivery": "system",
+        "delivery": "tail",
         "profiles": ("main", "viewpoint", "draft"),
         "source": "context_assembler._load_cards_index（查库，每卡一行 id·标题·父卡）",
-        "render": lambda ctx: render_card_list_region(
-            ctx.cards, ctx.work_card_id, ctx.card_id,
-            [{"card_id": str(r.get("target") or ""), "dir": "out",
-              "kind": str(r.get("kind") or ""), "detail": str(r.get("detail") or "")}
-             for r in (ctx.dep_relations_out or [])]
-            + [{"card_id": str(r.get("source") or ""), "dir": "in",
-                "kind": str(r.get("kind") or ""), "detail": str(r.get("detail") or "")}
-               for r in (ctx.dep_relations_in or [])]),
+        "render": lambda ctx: _as_tail_facts(
+            "〔卡片清单〕",
+            render_card_list_region(
+                ctx.cards, ctx.work_card_id, ctx.card_id,
+                [{"card_id": str(r.get("target") or ""), "dir": "out",
+                  "kind": str(r.get("kind") or ""), "detail": str(r.get("detail") or "")}
+                 for r in (ctx.dep_relations_out or [])]
+                + [{"card_id": str(r.get("source") or ""), "dir": "in",
+                    "kind": str(r.get("kind") or ""), "detail": str(r.get("detail") or "")}
+                   for r in (ctx.dep_relations_in or [])],
+                scope=_scope_for(ctx))),
         "count": lambda ctx, text: len(ctx.cards),
     },
     {
@@ -610,18 +677,24 @@ REGION_TABLE: list[dict[str, Any]] = [
         # [父卡展示子卡现状 2026-10-15] order 170：紧随 155 之后、200 记忆之前——
         # 「我是谁」→「我的直接子卡现在怎么样」→「我的记忆」。
         # 来源＝直接子卡的 status_block（**只一层，不含孙级**；SQL 不递归）。
+        # [批二·子卡现状走当轮 2026-11-20 · 成本优化任务书 §三] system → tail：
+        # 子卡活性/现状比清单变得更快（子卡每跑一步活性行就变），是最伤前缀
+        # 的位置之一。同一份材料、来源标记〔直接子卡现状〕，走当轮事实消息。
         "key": "child_status",
         "order": 170,
         "name": "直接子卡（活性·使命·现状）",
-        "channel": "system",
+        "channel": "messages",
         "seats": ("main", "viewpoints"),
         "owner": "context",
         "source_owner": "assembler",
-        "delivery": "system",
+        "delivery": "tail",
         "profiles": ("main", "viewpoint", "draft"),
         "source": ("当前卡的**直接**子卡 mission ＋ status_block（WHERE parent=?，不递归；"
                    "需求文档不给——用户 2026-10-27 裁定「太长」；两块都空则跳过）"),
-        "render": lambda ctx: render_direct_child_status_region(ctx.direct_child_status),
+        "render": lambda ctx: _as_tail_facts(
+            "〔直接子卡现状〕",
+            render_direct_child_status_region(ctx.direct_child_status,
+                                              scope=_scope_for(ctx))),
         "count": lambda ctx, text: sum(
             1 for child in ctx.direct_child_status
             if _child_status_body(child) or _child_mission_body(child)),
@@ -682,7 +755,8 @@ REGION_TABLE: list[dict[str, Any]] = [
         "profiles": ("main", "viewpoint", "draft"),
         "source": "当前卡的依赖关联线（relations）：正向＝本卡自己的条目（带目标当前需求文档）；反向＝全库卡索引扫 target==本卡（零额外 IO）",
         "render": lambda ctx: render_dep_relations_region(
-            ctx.dep_relations_out, ctx.dep_relations_in),
+            ctx.dep_relations_out, ctx.dep_relations_in,
+            scope=_scope_for(ctx), doc_meta=_dep_doc_meta(ctx)),
         "count": lambda ctx, text: len(ctx.dep_relations_out) + len(ctx.dep_relations_in),
     },
     {
@@ -739,6 +813,26 @@ REGION_TABLE: list[dict[str, Any]] = [
         "profiles": ("main",),
         "source": "本轮一次性注入；不进入轮槽",
         "render": lambda ctx: render_judgment_region(ctx),
+        "count": lambda ctx, payload: len(payload),
+    },
+    {
+        # [工具回执提示独立区 2026-11-19 · 超长会话漏调专项] 协议短提示＋
+        # 汇报回合提示。与判断协议分离的唯一原因：once 区在纯单模型模式
+        # （thinkchain.ENABLED=False）下整体返回 []（render_judgment_region
+        # 的既有裁定「判断协议一律不注入」），提示走它会被连坐吞掉——
+        # 实测协议提示到不了模型面前。本区**无条件透传** request_hint；
+        # 开关在生成侧（tool_receipt.turn_hint_enabled）管。
+        "key": "tool_receipt_hint",
+        "order": 1002,
+        "name": "工具调用与汇报回合提示",
+        "channel": "messages",
+        "seats": ("main",),
+        "owner": "context",
+        "source_owner": "current_turn/message_runner",
+        "delivery": "once",
+        "profiles": ("main",),
+        "source": "随实际端点协议生成的一次性提示；不进入轮槽",
+        "render": lambda ctx: ctx.request_hint,
         "count": lambda ctx, payload: len(payload),
     },
     {
@@ -947,6 +1041,7 @@ def _tool_stub_wire(m: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
                 "tool_calls": tcs}
         if m.get("reasoning_content"):
             item["reasoning_content"] = m["reasoning_content"]
+            item["_reasoning_model"] = str(m.get("model") or "")
         return item
     cid = str(m.get("tool_call_id") or "")
     raw = str(m.get("content") or "")
@@ -1019,22 +1114,26 @@ def project_history_messages(
         from ..storage import predicates as _pred
         if not _pred.enters_context(m):
             continue
+        # [异常正文隔离 2026-11-20] 隔离块投 ctx_content（残部＋状态行），
+        # 同跳思考不回传——它们是"生成坏调用"的那部分（方案 §3）。
+        _cc = _pred.context_content(m)
         item = {
             # [F13 · 2026-10-31 卡间消息 system 化（对齐 dsh renderHistory 区头升格）]
             # 改前卡间块换头后仍 role=user——**机器生成的消息冒充用户发言**，模型会
             # 把别的卡的话当成人的指令。原版明令「不得裸 user 冒充用户发言」：区头
             # 升格 role=system。内容仍带 card_msg 的固定头标记（〔来自卡X〕语义）。
             "role": ("system" if actor.startswith("card:") else role),
-            "content": (card_msg.render_for_context(m["content"])
+            "content": (card_msg.render_for_context(_cc)
                         if actor.startswith("card:")
-                        else m["content"]),
+                        else _cc),
         }
         if actor == "assistant" and m.get("tool_calls"):
             item["tool_calls"] = m["tool_calls"]
         if actor == "tool":
             item["tool_call_id"] = m.get("tool_call_id") or ""
-        if m.get("reasoning_content"):
+        if m.get("reasoning_content") and not m.get("quarantine"):
             item["reasoning_content"] = m["reasoning_content"]
+            item["_reasoning_model"] = str(m.get("model") or "")
         out.append(item)
     return _heal_tool_pairs(out)
 
@@ -1049,14 +1148,18 @@ def _render_prior_for(ctx: RegionCtx, key: str) -> list[dict[str, Any]]:
         return ctx.request_prior if ctx.request_prior_key == key else []
     if key == "history":
         from ..storage import context_board as _cb
-        if _cb.enabled():
+        history_id = ctx.history_id or ctx.card_id
+        if _cb.enabled() and ctx.snapshot_history is None:
             # [缓存板 2026-11-12] 视野在写时已算好：板=「过闸 且 seq>=水位 且
             # 评审 keep-N」的物化答案，这里只做机械投影、零筛选。
             # prior_extra（运行时追加块）不属于板，走独立通道照旧接在板后。
             # [调用对存根 2026-11-14] 板行永不含工具块（写时过闸剥掉）——从
             # history_source 原文把工具对块按 seq 合回，投影层才能见到它们
             # 并落存根；mark 照传，水位下旧对不进、extras 走独立通道。
-            rows = _cb.read_board(ctx.work_id, ctx.card_id)
+            # [§三.2] 快照已同版本下发板行 ⇒ 直接用（与水位/索引同一读事务）；
+            # None 才回退 read_board 懒重建旧路。
+            rows = (ctx.board_rows if ctx.board_rows is not None
+                    else _cb.read_board(ctx.work_id, history_id))
             if ctx.current_pair_id:
                 # [本轮消息双重计数 2026-11-14] 本轮 user 块落盘瞬间已进板；
                 # 它归 user 通道，不归历史——按 pair_id 从板行滤掉。
@@ -1072,9 +1175,13 @@ def _render_prior_for(ctx: RegionCtx, key: str) -> list[dict[str, Any]]:
         # prior_extra 是别的卡的会话块（seq 相对它自己，恒小于本卡水位）——
         # seq 水位过滤会把它误杀；拆出 extras（按对象身份，不猜位置）单独投影接尾。
         _ext_ids = {id(m) for m in ctx.history_extra}
-        _head = [m for m in ctx.history_source if id(m) not in _ext_ids]
+        if ctx.snapshot_history is None:
+            _head = [m for m in ctx.history_source if id(m) not in _ext_ids]
+        else:
+            _head = [m for m in ctx.snapshot_history if not ctx.current_pair_id
+                     or str(m.get("pair_id") or m.get("pair") or "") != ctx.current_pair_id]
         return project_history_messages(
-            _rs.drop_stale_review(ctx.work_id, ctx.card_id, _head),
+            _rs.drop_stale_review(ctx.work_id, history_id, _head),
             ctx.history_mark) + project_history_messages(ctx.history_extra)
     return []
 
@@ -1141,6 +1248,7 @@ def compose_model_context(
     prior_key: str = "history",
     user_content: Optional[str] = None,
     turn_once: Optional[list[dict[str, Any]]] = None,
+    turn_hint: Optional[list[dict[str, Any]]] = None,
     turn_tail: Optional[list[dict[str, Any]]] = None,
     seat_identity: Optional[list[dict[str, Any]]] = None,
     system_override: Optional[str] = None,
@@ -1150,6 +1258,13 @@ def compose_model_context(
 
     主模型、三席、起草调用共享此路由；具体调用方只提供动态数据，不自己拼装区。
     顺序仍按 gateway 契约：system → prior → user → turn_once → turn_tail。
+
+    [2026-11-19 性能批次三] **同回合 system 区缓存**：system 通道的区只读
+    ctx 基础字段（request_* 仅被 prior/user/once/tail 区消费——已逐区核实），
+    工具续跳每跳整单重渲染全部区（分区装配体积中位 1.23MB/次）纯属重复劳动。
+    现在 system 渲染结果按 (ctx 实例, profile) 缓存——RegionCtx 每回合新建
+    （build_context → build_ctx），缓存生命周期＝单回合，**零跨回合复用、
+    零失效机制**（任务书口径：事实源无可靠版本不跨回合复用）。
     """
     request_ctx = replace(
         ctx,
@@ -1157,50 +1272,113 @@ def compose_model_context(
         request_prior_key=prior_key,
         request_user=user_content,
         request_once=turn_once or [],
+        # [批二·按任务缩量 2026-11-20] profile 随请求走：缩量只对 main 生效。
+        request_profile=profile,
+        # [工具回执提示独立区 2026-11-19 · 超长会话漏调专项] 协议短提示与
+        # 汇报回合提示**不与判断协议同路**：judgment_protocol 区被 thinkchain
+        # 开关连坐（纯单模型模式 ENABLED=False ⇒ once 区整体返回 []，实测
+        # 提示到不了模型面前），提示走独立区 tool_receipt_hint 无条件透传。
+        request_hint=turn_hint or [],
         request_tail=turn_tail or [],
         request_seat_identity=seat_identity or [],
     )
-    rendered = render_registered_regions(
+    import time as _time
+    _t0 = _time.perf_counter()
+    # system_override / system_prefix 每调用可变（draft 链路）⇒ 这两个参数
+    # 在场时缓存必须旁路（否则会把第一次的前缀冻结进后续请求）。
+    cacheable = (system_override is None and system_prefix is None
+                 and profile in ("main", "viewpoint"))
+    sys_cache = getattr(ctx, "_system_render_cache", None) if cacheable else None
+    if not isinstance(sys_cache, dict):
+        sys_cache = {}
+        try:
+            ctx._system_render_cache = sys_cache   # dataclass 非冻结：挂实例
+        except Exception:  # noqa: BLE001 挂不上＝退回逐跳渲染（行为不变）
+            pass
+    sys_part = sys_cache.get(profile)
+    cache_hit = sys_part is not None
+    try:
+        _SYS_CACHE_STATS["hits" if cache_hit else "misses"] += 1
+    except Exception:  # noqa: BLE001
+        pass
+    if sys_part is None:
+        rendered_sys = render_registered_regions(
+            request_ctx, profile=profile, deliveries={"system"})
+        system_regions = [r for r in rendered_sys if r["delivery"] == "system"]
+        instruction = next((r["payload"] for r in system_regions
+                            if r["key"] == "instruction"), "")
+        content_regions = [r for r in system_regions if r["key"] != "instruction"]
+        neutral = assemble_regions([r["payload"] for r in content_regions])
+        if system_override is not None:
+            system_prompt = system_override
+        elif profile == "main":
+            system_prompt = prompts.build_system_prompt(neutral, base_prompt=instruction)
+        elif profile == "viewpoint":
+            system_prompt = prompts.build_viewpoint_system_prompt(neutral)
+        elif profile == "draft":
+            system_prompt = ((system_prefix or "")
+                             + ("\n" if system_prefix and neutral else "")
+                             + neutral)
+        else:
+            raise ValueError(f"unknown context profile: {profile}")
+        assembler_regions = [
+            {"order": r["order"], "name": r["name"], "channel": r["channel"],
+             "seats": r["seats"], "text": r["payload"], "entries": r["entries"]}
+            for r in content_regions if r["source_owner"] == "assembler"
+        ]
+        sys_part = {
+            "system_prompt": system_prompt,
+            "neutral_context": neutral,
+            "system_regions": assembler_regions,
+            # [2026-11-19 返工·恢复各区体积读数] system 区的体积行随缓存存档，
+            # 缓存命中时 regions 行照常含 system 各区（改前被缓存吞掉——
+            # 记忆区/规则区占多大、哪天膨胀的账不能断）。
+            "_region_rows": [
+                {"key": r["key"], "order": r["order"],
+                 "bytes": len(str(r["payload"] or "").encode("utf-8"))
+                 if not isinstance(r["payload"], (list, dict)) else
+                 len(json.dumps(r["payload"], ensure_ascii=False,
+                                default=str).encode("utf-8")),
+                 "entries": r["entries"]}
+                for r in rendered_sys],
+        }
+        sys_cache[profile] = sys_part
+    _t_sys = (_time.perf_counter() - _t0) * 1000.0
+
+    _t1 = _time.perf_counter()
+    rendered_dyn = render_registered_regions(
         request_ctx, profile=profile,
-        deliveries={"system", "prior", "user", "once", "tail"})
+        deliveries={"prior", "user", "once", "tail"})
+    _t_dyn = (_time.perf_counter() - _t1) * 1000.0
     # [F22 · 2026-10-31] 区装配体积打点：每区 key/order/bytes/entries 落 JSONL——
     # 记忆区/历史区占多大、哪天开始膨胀，数字说话。打点失败不阻断（observe 内吞）。
+    # [2026-11-19 返工] **system 各区行随缓存恢复**：每次 compose（含缓存命中）
+    # 的 regions 行都含 system+dynamic 全部区——与拆分前的行形态一致。
     try:
         from ..infra import observe as _obs
         _obs.log_regions(work_id=str(ctx.work_id or ""), card_id=str(ctx.card_id or ""),
-                         regions=rendered)
+                         regions=rendered_dyn + (sys_part.get("_region_rows") or []))
+        _obs.log_assembly(
+            work_id=str(ctx.work_id or ""), card_id=str(ctx.card_id or ""),
+            profile=str(profile), phase="compose_model_context",
+            ms={"system_render": round(_t_sys, 2), "dynamic_render": round(_t_dyn, 2)},
+            system_cached=cache_hit,
+            system_bytes=len(str(sys_part["system_prompt"] or "").encode("utf-8")),
+        )
     except Exception:  # noqa: BLE001 观测永不阻断装配
         pass
-    system_regions = [r for r in rendered if r["delivery"] == "system"]
-    instruction = next((r["payload"] for r in system_regions if r["key"] == "instruction"), "")
-    content_regions = [r for r in system_regions if r["key"] != "instruction"]
-    neutral = assemble_regions([r["payload"] for r in content_regions])
-    if system_override is not None:
-        system_prompt = system_override
-    elif profile == "main":
-        system_prompt = prompts.build_system_prompt(neutral, base_prompt=instruction)
-    elif profile == "viewpoint":
-        system_prompt = prompts.build_viewpoint_system_prompt(neutral)
-    elif profile == "draft":
-        system_prompt = ((system_prefix or "") + ("\n" if system_prefix and neutral else "")
-                         + neutral)
-    else:
-        raise ValueError(f"unknown context profile: {profile}")
-
-    prior = [m for r in rendered if r["delivery"] == "prior" for m in r["payload"]]
-    user_items = [r["payload"] for r in rendered if r["delivery"] == "user"]
+    prior = [m for r in rendered_dyn if r["delivery"] == "prior"
+             for m in r["payload"]]
+    user_items = [r["payload"] for r in rendered_dyn if r["delivery"] == "user"]
     user_prompt = user_items[0] if user_items else ""
-    once = [m for r in rendered if r["delivery"] == "once" for m in r["payload"]]
-    tail = [m for r in rendered if r["delivery"] == "tail" for m in r["payload"]]
-    assembler_regions = [
-        {"order": r["order"], "name": r["name"], "channel": r["channel"],
-         "seats": r["seats"], "text": r["payload"], "entries": r["entries"]}
-        for r in content_regions if r["source_owner"] == "assembler"
-    ]
+    once = [m for r in rendered_dyn if r["delivery"] == "once"
+            for m in r["payload"]]
+    tail = [m for r in rendered_dyn if r["delivery"] == "tail"
+            for m in r["payload"]]
     return {
-        "system_prompt": system_prompt,
-        "neutral_context": neutral,
-        "system_regions": assembler_regions,
+        "system_prompt": sys_part["system_prompt"],
+        "neutral_context": sys_part["neutral_context"],
+        "system_regions": sys_part["system_regions"],
         "prior_messages": prior,
         "user_prompt": user_prompt,
         "turn_once": once,
@@ -1519,6 +1697,8 @@ def render_card_list_region(
     work_card_id: str,
     current_id: str = "",
     related: list[dict[str, Any]] | None = None,
+    scope: Any = None,
+    target_body: dict[str, Any] | None = None,
 ) -> str:
     """100 区渲染：**只列与当前卡有关系的卡**——父子线（祖先链＋子树）∪ 关系线对方。
 
@@ -1583,6 +1763,22 @@ def render_card_list_region(
         # [2026-10-30 修正] **不把关系线对方并进来**：100 区列的是"树上的卡"
         # （父子线：祖先＋子树），线上的卡由 250 区列。两种关系不同，混在一处
         # 会让同一张卡在两区各出现一次，且看不出它是"树上的"还是"线上的"。
+        # [批二·按任务缩量 2026-11-20] 范围可证时（single/global）：**子树只留
+        # 一层**——对象卡（single）或本卡（global）的直接子卡。执行者要的是
+        # "父子及关系坐标"，更深层按需 read_card 取；证不出来（unknown）仍旧全树。
+        if scope is not None and getattr(scope, "narrowed", False):
+            anchor_id = str(getattr(scope, "target_card", "") or current_id) or current_id
+            visible = {current_id}
+            for _root in (current_id, anchor_id):
+                cur = _root                       # 祖先链（本卡＋对象卡各一条）
+                while parent.get(cur):
+                    cur = parent[cur]
+                    if cur in visible:
+                        break
+                    visible.add(cur)
+            if anchor_id:
+                visible.add(anchor_id)
+            visible.update(children.get(anchor_id, []))
     else:
         visible = set(parent)                  # 旧行为：全树
 
@@ -1601,6 +1797,17 @@ def render_card_list_region(
         if rels:
             head += "｜" + "；".join(rels)
         lines.append(head)
+    # [批二·按任务缩量 2026-11-20] single 档且**对象≠本卡**时：把对象卡的
+    # 使命与现状带进首跳（任务书：「首跳给对象卡号、使命、必要的现状」）。
+    # 对象＝本卡时本卡三块已在 150 区 ⇒ 不重复给。
+    tb = target_body or {}
+    if tb and str(tb.get("card_id") or "") and str(tb.get("card_id")) != current_id:
+        lines.append("")
+        lines.append(f"## 本轮对象卡（{tb.get('card_id')} · {tb.get('title')}）")
+        if str(tb.get("mission") or "").strip():
+            lines.append(f"**使命**：{tb.get('mission')}")
+        if str(tb.get("status_block") or "").strip():
+            lines.append(f"**现状**：\n{tb.get('status_block')}")
     return "\n".join(lines)
 
 
@@ -2139,7 +2346,8 @@ def render_upstream_requirements_region(
             "不用为拿它去 read_card 上卡。*\n\n" + "\n\n".join(secs))
 
 
-def render_direct_child_status_region(children: list[dict[str, Any]]) -> str:
+def render_direct_child_status_region(children: list[dict[str, Any]],
+                                      scope: Any = None) -> str:
     """直接子卡区（order 170）：呈现当前卡**直接**子卡的**活性 ＋ 使命 ＋ 现状**。
 
     - 上游 SQL 只按 `parent=?` 取一层 ⇒ **结构上不可能含孙级**；
@@ -2158,7 +2366,14 @@ def render_direct_child_status_region(children: list[dict[str, Any]]) -> str:
       没有直接子卡 ⇒ 整个区不出现。
     - 子卡顺序由上游按 card_id 固定排序。
     - [2026-10-24 · 用户令「不允许截断,截断不如不发」] **全文注入,不截断**。
+    - [批二·按任务缩量 2026-11-20 · 成本优化任务书 §三·第二步] 范围可证时
+      （single/global）：改成**简表**——每张直接子卡留卡号·标题·活性；宿主数据
+      已标识的**异常**（goal_state 卡住/已暂停、活性含异常措辞）与**当前处理
+      对象**（scope.target_card）展开使命与现状；其余详情按现有权限 read_card 取。
+      证不出来（unknown）⇒ 逐字同旧（全文注入）。
     """
+    narrowed = bool(scope is not None and getattr(scope, "narrowed", False))
+    target_card = str(getattr(scope, "target_card", "") or "") if scope is not None else ""
     sections: list[str] = []
     for child in children or []:
         card_id = str(child.get("card_id") or "")
@@ -2174,6 +2389,11 @@ def render_direct_child_status_region(children: list[dict[str, Any]]) -> str:
         parts = [f"### {card_id} · {title}"]
         if activity:
             parts.append(f"**活性**：{activity}")
+        if narrowed:
+            # 简表：使命/现状只给异常项与当前处理对象
+            if not _child_is_anomaly(child) and card_id != target_card:
+                sections.append("\n".join(parts))
+                continue
         if mission:
             parts.append(f"**使命**：{mission}")
         if status:
@@ -2181,7 +2401,26 @@ def render_direct_child_status_region(children: list[dict[str, Any]]) -> str:
         sections.append("\n".join(parts))
     if not sections:
         return ""
-    return "## 直接子卡（活性·使命·现状）\n" + "\n\n".join(sections)
+    head = "## 直接子卡（活性·使命·现状）"
+    if narrowed:
+        head += ("\n〔本轮按任务范围收窄：只给管辖范围内子卡的卡号·标题·活性；"
+                 "异常项与当前处理对象已展开，其余详情按现有权限 read_card 取。〕")
+    return head + "\n" + "\n\n".join(sections)
+
+
+#: [批二·按任务缩量 2026-11-20] 宿主数据已标识的异常判据：goal_state 目标位标签
+#: 落在「卡住了/已暂停」，或活性行里出现异常措辞。
+_ANOMALY_GOAL_STATES = frozenset({"卡住了", "已暂停"})
+_ANOMALY_ACTIVITY_WORDS = ("卡住", "异常", "失败", "冲突", "阻塞", "超时")
+
+
+def _child_is_anomaly(child: dict[str, Any]) -> bool:
+    """这张直接子卡是不是「宿主数据已标识的异常」——机械判据，不猜。"""
+    gs = str(child.get("goal_state") or "").strip()
+    if gs in _ANOMALY_GOAL_STATES:
+        return True
+    act = str(child.get("activity") or "")
+    return any(w in act for w in _ANOMALY_ACTIVITY_WORDS)
 
 
 #: [F11 · 展开说明] 区头下挂——教模型沿锚点展开（依赖 memory_expand 工具，F19）
@@ -2388,6 +2627,9 @@ def _rel_suffix(kind: str, detail: str) -> str:
 def render_dep_relations_region(
     out_entries: list[dict[str, Any]],
     in_entries: list[dict[str, Any]],
+    *,
+    scope: Any = None,
+    doc_meta: Optional[dict[str, dict[str, Any]]] = None,
 ) -> str:
     """250 区渲染（依赖关联）：当前卡的**双向**依赖关联线。
 
@@ -2398,10 +2640,35 @@ def render_dep_relations_region(
     - 两向都无 → 空串（「没有来源就不出现这个区」）；
     - 条目原样呈现（kind/detail/需求文档不加工、不截断；渲染零加工）。
 
+    [批二·按任务缩量 2026-11-20 · 成本优化任务书 §三·第二步] 范围可证时
+    （single/global），**不再整份内联目标正稿**：
+
+    - 边本身逐字保留（方向、两端卡号、类型、说明）——一条不少；
+    - 正稿改成「**定位到本轮真正消费的那几条**」：条款号锚（A2／R10／S9-R01…）
+      或标题短语锚（逐字出现在某个标题里）⇒ 给**条目标题 + 行段坐标 + 版本指纹
+      + read_card 行段回读命令**；短段落顺手内联，长段落只给坐标；
+    - 定位不到时：single ⇒ **回退完整正稿**（全文验收口径）；global ⇒ 只给
+      版本指纹与回读入口（正稿按需取）；**本轮没有 read_card 工具时一律回退
+      完整正稿**（给了坐标读不到＝白给）。
+    - 证不出来（unknown）⇒ 逐字同旧（整份内联 + 批一去重）。
+
     纯函数：不做 IO（模块头硬约束）。双向取数由 ``context_assembler.build_ctx``
-    在已加载的全库卡索引上算好（零额外 IO）后传入。
+    在已加载的全库卡索引上算好（零额外 IO）后传入；``doc_meta`` ��目标卡的
+    {title, requirements} 投影（装配层已取好）。
     """
+    from . import doc_locator as _dl  # 延迟 import：模块内定位器无环
+
+    narrowed = bool(scope is not None and getattr(scope, "narrowed", False))
+    readback = True if scope is None else bool(getattr(scope, "readback_available", True))
+    meta_by_id = doc_meta or {}
     lines: list[str] = []
+    # [去重 2026-11-20 · 成本优化任务书批一] 同一张卡被多条正向边指着时，
+    # 改前逐边全文重贴同一份需求正稿——实测 card_009 单次装配内 card_007
+    # 正稿（~102K 字符）重复两份、整依赖区重 ~287KB。身份＝「目标卡＋正文
+    # 指纹」（当前投影无版本字段 ⇒ 按任务书用原文稳定指纹对账）：同卡同文
+    # 首次原样展示，其后沿关系线留一行指针；**key 含 target**——不同卡号
+    # 即便文字相同也各有自己的文档身份，不互相去重。
+    shown_docs: set[tuple[str, str]] = set()
     for r in out_entries or []:
         if not isinstance(r, dict):
             continue
@@ -2414,9 +2681,22 @@ def render_dep_relations_region(
         # 文档投影进来：它改了卡面，我这里下一轮就是新的——关系线本身即更新
         # 通道，不需要「告诉你变了再自己去读」的通知。
         req = str(r.get("requirements") or "").strip()
-        if req:
-            lines.append(f"  {target} 的需求文档（随它卡面更新）：")
-            lines.extend(f"  {ln}" for ln in req.split("\n"))
+        if not req:
+            continue
+        fp = _dl.doc_fingerprint(req)
+        detail = str(r.get("detail") or "")
+        if narrowed:
+            lines.extend(_dep_doc_lines_narrowed(
+                _dl, target, req, fp, detail, scope, readback, meta_by_id))
+            continue
+        if (target, fp) in shown_docs:
+            lines.append(
+                f"  {target} 的需求文档：同本区上方首次展示的正稿"
+                f"（同一卡面同一正文，此处不重复展开）")
+            continue
+        shown_docs.add((target, fp))
+        lines.append(f"  {target} 的需求文档（随它卡面更新）：")
+        lines.extend(f"  {ln}" for ln in req.split("\n"))
     for r in in_entries or []:
         if not isinstance(r, dict):
             continue
@@ -2428,6 +2708,63 @@ def render_dep_relations_region(
     if not lines:
         return ""
     return "## 依赖关联\n" + "\n".join(lines)
+
+
+#: 定位到的段落短于这个字节数就顺手内联（长的只给坐标，模型按行段回读）。
+_DEP_INLINE_MAX = 4000
+
+
+def _dep_doc_meta(ctx: RegionCtx) -> dict[str, dict[str, Any]]:
+    """依赖目标的 {卡号 → {标题, 需求文档正稿}} 投影（装配层已取好，渲染层只读）。"""
+    out: dict[str, dict[str, Any]] = {}
+    for c in (ctx.cards or []):
+        cid = str(c.get("card_id") or "")
+        if not cid:
+            continue
+        out[cid] = {"title": str(c.get("title") or ""),
+                    "requirements": str(c.get("requirements") or "")}
+    return out
+
+
+def _dep_doc_lines_narrowed(dl: Any, target: str, req: str, fp: str,
+                            detail: str, scope: Any, readback: bool,
+                            meta_by_id: dict[str, dict[str, Any]]) -> list[str]:
+    """缩量档下的一条依赖正稿：**定位优先，定位不到按档位回退**。
+
+    - 条款号锚（关系说明里点名的条目）⇒ 精确命中，内联短段；
+    - 标题短语锚（关系说明里的中文短语逐字命中某个标题）⇒ 坐标；
+    - 都定位不到 ⇒ single 给完整正稿；global 只给版本指纹与回读入口；
+    - 本轮没有 read_card 工具 ⇒ 一律给完整正稿（坐标读不到就是白给）。
+    """
+    title = str((meta_by_id.get(target) or {}).get("title") or "")
+    total_lines = len(req.split("\n"))
+    head = f"  {target} 的需求文档"
+    if title:
+        head += f"《{title}》"
+    head += f"（当前版本 {fp}，{total_lines} 行）"
+
+    anchors = dl.extract_clause_anchors(detail)
+    ranges = dl.locate_clauses(req, anchors)
+    if not ranges:
+        phrases = dl.extract_title_phrases(detail)
+        ranges = dl.locate_sections(req, phrases)
+    if ranges:
+        out = [head + "：本轮定位到以下条目（其余按需按坐标回读）："]
+        for rg in ranges:
+            out.append(f"  · {rg.anchor}「{rg.title}」→ 行 {rg.start}-{rg.end}")
+            out.append("    " + dl.range_read_hint(
+                target, "需求文档", rg.start, rg.end))
+            if rg.text and len(rg.text.encode("utf-8")) <= _DEP_INLINE_MAX:
+                out.extend(f"    {ln}" for ln in rg.text.split("\n"))
+        return out
+    # 定位不到 ⇒ 按档位回退
+    if getattr(scope, "is_global", False) and readback:
+        out = [head + "：未定位到本轮消费的条款（正文不在此处展开）。",
+               f"  需读全文：read_card(card_id=\"{target}\", block=\"需求文档\")"]
+        return out
+    out = [f"  {target} 的需求文档（随它卡面更新）："]
+    out.extend(f"  {ln}" for ln in req.split("\n"))
+    return out
 
 
 def assemble_regions(region_texts: list[str]) -> str:

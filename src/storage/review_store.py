@@ -472,7 +472,11 @@ async def _vote(work_id: str, review_id: str, role_id: str,
     draft_ver = int(st.get("draft") or 1)
     snapshot = await _draft_text(work_id, str(st.get("target") or ""))
 
-    def _fn(conn: Any) -> None:
+    def _fn(conn: Any) -> bool:
+        previous = conn.execute(
+            "SELECT verdict, draft_ver, revoked FROM review_approvals"
+            " WHERE work_id=? AND batch_id=? AND role_id=?",
+            (work_id, batch, role_id)).fetchone()
         conn.execute(
             "INSERT INTO review_approvals"
             " (work_id,batch_id,role_id,draft_ver,ts,revoked,verdict,draft_snapshot)"
@@ -491,10 +495,12 @@ async def _vote(work_id: str, review_id: str, role_id: str,
             st2["dispatch_fails"] = 0
             conn.execute("UPDATE cards SET review_state=? WHERE card_id=?",
                          (json.dumps(st2, ensure_ascii=False), review_id))
+        return previous is None or bool(previous["revoked"]) or (
+            previous["verdict"] or "approve", previous["draft_ver"]) != (verdict, draft_ver)
 
-    await card_db.run_write(work_id, _fn)
+    changed = await card_db.run_write(work_id, _fn)
     return {"ok": True, "batch": batch, "role": role_id,
-            "draft": draft_ver, "verdict": verdict}
+            "draft": draft_ver, "verdict": verdict, "changed": changed}
 
 
 async def approve(work_id: str, review_id: str, role_id: str) -> dict[str, Any]:
@@ -675,23 +681,29 @@ async def set_drift_pending(work_id: str, review_id: str,
     await card_db.run_write(work_id, _fn)
 
 
-async def mark_seen(work_id: str, review_id: str, role_id: str) -> None:
+async def mark_seen(work_id: str, review_id: str, role_id: str, *,
+                    batch: str = "", vote_nudge_basis: list | None = None) -> None:
     """记"该席位最近一次被叫时看到的回应序号"（response_seen=responded_seq）。
 
     reject 席位只在**有新回应**时才重叫：被叫当下把已到的回应序号记给它，
     下次只有当 responded_seq 再涨它才又可被叫。
     """
-    st = await state_of(work_id, review_id)
-    seats = dict(st.get("seats") or {})
-    seat = dict(seats.get(role_id) or {})
-    seat["response_seen"] = int(st.get("responded_seq") or 0)
-    seats[role_id] = seat
-    st2 = dict(st)
-    st2["seats"] = seats
-
     def _fn(conn: Any) -> None:
+        row = conn.execute("SELECT review_state FROM cards WHERE card_id=?",
+                           (review_id,)).fetchone()
+        try:
+            st = json.loads(row["review_state"] or "{}") if row else {}
+        except (TypeError, ValueError):
+            return
+        if not isinstance(st, dict) or not st.get("batch") or (batch and st["batch"] != batch):
+            return
+        seats = st.setdefault("seats", {})
+        seat = seats.setdefault(role_id, {})
+        seat["response_seen"] = int(st.get("responded_seq") or 0)
+        if vote_nudge_basis is not None:
+            seat["vote_nudge_basis"] = vote_nudge_basis
         conn.execute("UPDATE cards SET review_state=? WHERE card_id=?",
-                     (json.dumps(st2, ensure_ascii=False), review_id))
+                     (json.dumps(st, ensure_ascii=False), review_id))
 
     await card_db.run_write(work_id, _fn)
 

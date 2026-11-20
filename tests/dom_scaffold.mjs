@@ -131,6 +131,25 @@ export function makeScrollable(scroll, { height = 1000, viewport = 400 } = {}) {
 }
 
 /**
+ * 等一帧（rAF）。
+ *
+ * 为什么需要它：对话视图的 scroll 处理是**按帧合并**的（同一帧内的多个
+ * scroll 事件只处理最后一次状态——这是 2026-10-21 的性能改动）。
+ * ⇒ 「派发 scroll → 立刻断言」会**断言在处理之前**⇒ 假红。
+ * （Node/jsdom 里没有全局 requestAnimationFrame ⇒ 产品代码走 setTimeout(16)
+ * 分支；浏览器里走 rAF。两者都是「下一帧」语义，这里统一等一帧。）
+ */
+export function nextFrame() {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+      return;
+    }
+    setTimeout(resolve, 20);
+  });
+}
+
+/**
  * 给元素造一个**可控**的 getBoundingClientRect（jsdom 恒返回 0）。
  * 用来模拟「前面插了一段 ⇒ 下面的行整体下移」这类布局变化。
  */

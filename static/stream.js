@@ -38,12 +38,12 @@
  *
  *   SSE 失败回调 onFail → 由 workspace.js 回退 createWaitingBubble 轮询（降级兜底）。
  *   事件纯展示层：只读渲染，不写存储、不影响 POST。 */
-import { API } from "./esm/api.js?v=56";
+import { API } from "./esm/api.js?v=57";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=31";
 import { createAssembler } from "./esm/assembler.js?v=42";
-import { createChatView } from "./esm/flow/chat-view.js?v=7";
+import { createChatView } from "./esm/flow/chat-view.js?v=8";
 import { createMessageItem } from "./esm/flow/message-item.js?v=1";
 // [5715 · 性能] 思考块的增量渲染（直播路径 O(N²) → O(N)）
 import { createThinkRenderer, createTextUpdater } from "./esm/flow/think-stream.js?v=1";
@@ -351,6 +351,55 @@ const BOARD_CFG = Object.assign(
         // 0KB 时不再显示体积（拼接为空是常态，挂个 0KB 只是噪音）
         return makeRow(t, "交付拼接" + fld("branch", d.branch) + fld("bytes", d.bytes),
           (d.bytes || 0) > 0 ? Math.round((d.bytes || 0) / 1024) + "KB" : null);
+      // [超长会话漏调专项 2026-11-20 · 用户复验] 系统结果独立行——执行事实
+      // 与模型正文分开显示；实时（SSE）与刷新（timeline）同一条渲染路。
+      // status：none=未执行工具 / done=全部成功 / partial / fail。
+      case "system_result": {
+        if (!d.text) return null;
+        const srCls = d.status === "none" ? "warn" :
+          (d.status === "fail" ? "fail err" :
+            (d.status === "partial" ? "warn" : "ok"));
+        return makeRow(t, "<b>系统结果</b>：" + esc(d.text),
+          d.status === "none" ? "本轮未执行工具" : null,
+          (d.items && d.items.length) ? JSON.stringify(d.items, null, 1) : null,
+          srCls);
+      }
+      // [按回执交付] 绑定动作回合收口核对未满足——「没有执行却显示完成」
+      // 的系统对账行。
+      case "action_not_executed":
+        if (d.text) {
+          return makeRow(t, esc(d.text), null, fmtData(d),
+            d.severity === "warn" ? "warn" : "fail err");
+        }
+        return makeRow(t, "<b>系统回执</b>：本回合任务未执行" +
+          fld("detail", d.detail), null, fmtData(d), "fail err");
+      // [定向补救续跳] 零派发＋完成声明 → 一次定向续跳（事件面可数）。
+      case "remediation_jump":
+        return makeRow(t, "定向补救续跳（欠动作，续跳一次）" +
+          fld("rounds", d.rounds), null, fmtData(d), "warn");
+      // [原生协议失败] 端点声称调了工具但网关没拿到有效调用——与「模型没调」
+      // 分开的计数面。
+      case "native_protocol_error":
+        return makeRow(t, "原生协议失败：端点报告了调用但未收到有效调用" +
+          fld("finish_reason", d.finish_reason),
+          "缺名 " + esc(d.native_dropped || 0) + " · 截断 " + esc(d.native_truncated || 0),
+          fmtData(d), "fail err");
+      // [正文伪调用拒绝] 验收模式（TOOL_CALL_STRICT=1）下原生端点正文伪
+      // 调用不代执行。
+      case "pseudo_call_refused":
+        return makeRow(t, "正文伪调用已拒绝（只认标准调用通道）" +
+          fld("names", (d.names || []).join("、")), null, fmtData(d), "warn");
+      // [伪调用未解析] 写了形似调用的文本但解析不出——机械事实落账，纠偏
+      // 归 harness 策略（2026-11-12 harness 化）。
+      case "pseudo_call_unparsed":
+        return makeRow(t, "正文伪调用未解析（未执行）" + fld("chars", d.chars),
+          null, fmtData(d), "warn");
+      case "pseudo_receipt":
+        return makeRow(t, "模型自写回执（未获执行确认）" + fld("count", d.count),
+          null, fmtData(d), "warn");
+      case "text_proto_refused":
+        return makeRow(t, "正文协议调用已拒绝（当前协议仅支持只读工具）" +
+          fld("name", d.name), null, fmtData(d), "warn");
       case "proposal":
         if (!(d.count > 0)) return null;
         return makeRow(t, "建卡 " + esc(d.count) + " 张" + fld("cards", (d.cards || []).join("、")),
@@ -1173,7 +1222,17 @@ const BOARD_CFG = Object.assign(
     if (activeKey) {
       const prev = sessions.get(activeKey);
       if (prev && prev.board) {
-        if (ca) prev.scrollTop = ca.scrollTop;                 // 记下滚动位置
+        /* [滚动位置 · 视图独占 2026-11-20 · 性能批次一]
+           真正的滚动容器是**视图里的 .flow-view-scroll**（overflow-y:auto）；
+           #chatArea（.chat）是 overflow:hidden 的画框 ⇒ 读它的 scrollTop
+           恒为 0 ⇒ 改前「记下滚动位置 / 切回恢复」**一直是 no-op**
+           （热切回对话跳回顶部）。现在由视图自己存取。
+           注：读 scrollTop 在布局干净时是零成本（不会强制重排）。 */
+        if (prev.view && typeof prev.view.getScrollTop === "function") {
+          prev.scrollTop = prev.view.getScrollTop();
+        } else if (ca) {
+          prev.scrollTop = ca.scrollTop;
+        }
         if (prev.board.parentNode) prev.board.parentNode.removeChild(prev.board);   // 摘下
       }
     }
@@ -1193,8 +1252,17 @@ const BOARD_CFG = Object.assign(
       // #chatArea 只承载当前会话的画板：游离画板不进文档流（不变量 1）
       for (const ch of Array.from(ca.children)) if (ch !== board) ca.removeChild(ch);
       ca.appendChild(board);
-      void ca.scrollHeight;               // [T3] 先强制布局，再落滚动位置（否则会被重置为 0）
-      ca.scrollTop = st.scrollTop || 0;   // 切回恢复滚动位置
+      /* [滚动位置 · 视图独占 2026-11-20] 切回恢复：交给**视图**（它知道
+         滚动容器是 .flow-view-scroll，不是 #chatArea）。
+         画板刚重新挂回文档 ⇒ 布局失效 ⇒ 视图内部读一次 scrollHeight 是
+         必要的（且只此一次）；改前这里是 `void ca.scrollHeight` —— 对着
+         **画框**读高度，白白强制一次整棵画板的排版。 */
+      if (st.view && typeof st.view.restoreScrollTop === "function") {
+        st.view.restoreScrollTop(st.scrollTop || 0);
+      } else {
+        void ca.scrollHeight;                 // 兜底：无视图时按老口径
+        ca.scrollTop = st.scrollTop || 0;
+      }
     }
     activeKey = key;
     st.lastUsed = Date.now();
@@ -1372,8 +1440,10 @@ const BOARD_CFG = Object.assign(
   }
 
   /** 刷新/换卡恢复：快照先贴 → 后台 tail 权威窗口 → 有差异才重渲。
-      ★ 断 timeline 时保留快照画面（同源旧态），不落空屏。 */
-  async function replayTrace(wid, cid) {
+      ★ 断 timeline 时保留快照画面（同源旧态），不落空屏。
+      [取消 2026-11-20] opts.signal：切卡时把**这条卡的**时序拉取真取消
+      （改前旧请求一直飞着，占连接、回来还要装配一遍没人看的卡）。 */
+  async function replayTrace(wid, cid, opts) {
     // [T1] 前台「打开/换卡恢复」＝激活该卡画板（open() 已先行同步 activate，此处幂等）。
     // 后台结算回流走 resync()——**不激活**，结果落该卡自己的（可能游离的）画板（§五.5）。
     const st = activate(wid, cid);
@@ -1392,8 +1462,11 @@ const BOARD_CFG = Object.assign(
       }
       // [对话流分页 2026-10-20] 首次只拉尾部 initialEvents 条（不是全量）。
       // 全量时 card_004 要装配 1185 个节点、打开耗 2.8 秒 CPU；尾部 400 条约 200 节点。
-      const items = await fetchTimeline(st, wid, cid, undefined, { tail: BOARD_CFG.initialEvents });
-      if (items === null) return;   // 拉不到：有快照留快照，没快照如实空屏
+      const signal = opts && opts.signal;
+      if (signal && signal.aborted) return;      // 切卡了 ⇒ 这一轮不必再跑
+      const items = await fetchTimeline(st, wid, cid, undefined,
+        { tail: BOARD_CFG.initialEvents, signal: signal });
+      if (items === null) return;   // 拉不到（含被取消）：有快照留快照，没快照如实空屏
       st.loadedItems = items;
       /* [切卡零重建 2026-10-21 · 用户令「最近对话都在内存态」] 成功加载一次就打标记：
          切回这张卡时直接用内存里的画板（零网络、零装配），不再重拉 400 条事件。 */
@@ -1785,6 +1858,28 @@ export const EventFlow = {
   // [画板四机制 T1] 会话表对外两口：activate＝把某卡画板挂上 #chatArea（open 用）；
   // board＝取某卡自己的容器（workspace 把系统行写进该卡那份，不再写全局唯一列）。
   activate, board,
+  /* [滚动位置 · 视图独占 2026-11-20 · 性能批次一]
+     宿主要「回到底部」时走这里 —— **不要**自己碰 #chatArea 的 scrollTop：
+     那不是滚动容器（.chat 是 overflow:hidden 的画框），真正的滚动容器是
+     视图里的 .flow-view-scroll。写错元素＝写了个 no-op ＋ 白强制一次布局。 */
+  toBottom(wid, cid) {
+    const st = (wid && cid) ? sessions.get(skey(wid, cid))
+      : (activeKey ? sessions.get(activeKey) : null);
+    if (st && st.view && typeof st.view.toBottom === "function") {
+      st.view.toBottom();
+      return true;
+    }
+    return false;
+  },
+  /* 切回时恢复滚动位置（视图自己存取，宿主只给一个数）。 */
+  restoreScrollTop(wid, cid, v) {
+    const st = sessions.get(skey(wid, cid));
+    if (st && st.view && typeof st.view.restoreScrollTop === "function") {
+      st.view.restoreScrollTop(v);
+      return true;
+    }
+    return false;
+  },
   /* [对话界面商业化 2026-10-17] 停止过渡态：停止指令已发、回合尚未收口。 */
   setStopping(wid, cid, bool) {
     const st = sessions.get(skey(wid, cid));

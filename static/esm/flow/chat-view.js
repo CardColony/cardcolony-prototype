@@ -180,6 +180,43 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     paintToBottom();
   }
 
+  /* ══════════════════════════════════════════════════════════════════════
+     [滚动位置 · 视图独占 2026-11-20 · 性能批次一]
+
+     改前的病根：**宿主读写的是错的元素**。
+       · 真正的滚动容器是本视图的 ``.flow-view-scroll``（overflow-y:auto）；
+       · 宿主（workspace.scrollChatBottom / stream.activate）读写的是
+         ``#chatArea``（``.chat``，overflow:hidden）⇒ 它根本不能滚：
+         「写 scrollTop」是 no-op，「读 scrollHeight」却**照样强制一次
+         同步布局**（整棵画板的排版）。
+     ⇒ 后果有两个：① 每批多一次强制布局（首屏路径上）；②
+        「切回恢复滚动位置」**一直是 no-op**（存进去的是 #chatArea 的 0，
+        取出来还是 0）——热切回时对话跳回顶部。
+     ⇒ 现在：滚动位置**只由本视图持有**，宿主通过 get/restoreScrollTop 走。
+
+     语义不变的部分：跟随阈值 24px、离底才出回底钮、前插保位、回底钮的
+     「新消息」标记。
+     ══════════════════════════════════════════════════════════════════════ */
+
+  /** 当前滚动位置（宿主存切走时的位置用）。 */
+  function getScrollTop() {
+    return scroll.scrollTop || 0;
+  }
+
+  /** 切回时恢复滚动位置（画板重新挂回文档后调用）。
+      位置可能已随内容变化而失效 ⇒ 越界就夹到合法范围；
+      恢复后按「离底多远」重算跟随权。 */
+  function restoreScrollTop(v) {
+    const want = Number(v) || 0;
+    try { scroll.scrollTop = want; } catch (e) { /* 零阻断 */ }
+    const st = scroll.scrollTop || 0;
+    const floor = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
+    observedTop = st;
+    atBottom = (floor - st) <= FOLLOW_THRESHOLD + 1;
+    anchor = null;
+    paintToBottom();
+  }
+
   function paintToBottom() {
     toBottomSlot.style.display = atBottom ? "none" : "";
     toBottomBtn.classList.toggle("has-new", !!hasNew);
@@ -252,6 +289,18 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     return seat ? seat.el : null;
   }
 
+  /** 列里的节点序是否已经是目标序？（骨架/空态/运行条不算节点） */
+  function _orderAlready(els) {
+    const cur = [];
+    for (const ch of column.children) {
+      if (ch === olderWrap || ch === emptyEl || ch === skeletonEl || ch === statusEl) continue;
+      cur.push(ch);
+    }
+    if (cur.length !== els.length) return false;
+    for (let i = 0; i < els.length; i++) if (cur[i] !== els[i]) return false;
+    return true;
+  }
+
   function flowTop(row) {
     return row.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
   }
@@ -320,15 +369,20 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
       seat.rev = rev;
       els.push(seat.el);
     }
-    // 落位：按序校正（已就位者 insertBefore 为 no-op ⇒ 零搬动）
-    // 起点是骨架块（older → empty → skeleton → 节点…），保证空态/骨架恒在节点之前。
-    let prev = skeletonEl;
-    for (const e of els) {
-      if (e.parentNode !== column || prev.nextSibling !== e) column.insertBefore(e, prev.nextSibling);
-      prev = e;
+    // 落位：按序校正
+    // [同批 DOM 更新 2026-11-20 · 性能批次一] 原来逐个 insertBefore：
+    // 每个都是一次**活树**变更 ⇒ N 次样式失效/布局边界重算，首屏 60 行
+    // 就是 60 次。现在：序**没变**时一次搬动都不做；变了就全部先进
+    // **DocumentFragment**（不在文档流 ⇒ 追加不碰活树），再**一次**插回
+    // ⇒ 活树变更合成一次。
+    // 顺序契约不变：骨架/空态恒在节点**之前**，运行条恒在末位之后。
+    if (!_orderAlready(els)) {
+      const frag = document.createDocumentFragment();
+      for (const e of els) frag.appendChild(e);   // 新建的元素：不在活树里，零代价
+      column.insertBefore(frag, skeletonEl.nextSibling);
+      // 运行条恒在末位之后（live 逐字槽已退役：正文进节点表，见 stream.js §五）
+      column.appendChild(statusEl);
     }
-    // 运行条恒在末位之后（live 逐字槽已退役：正文进节点表，见 stream.js §五）
-    column.appendChild(statusEl);
     paintEmpty();
 
     const newFirst = order[0] ?? null;
@@ -437,6 +491,10 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     markLoaded() { loading = false; paintEmpty(); },
     refresh,
     toBottom,
+    /* [滚动位置 · 视图独占 2026-11-20] 宿主存取滚动位置走这两个口
+       （宿主自己碰 #chatArea ——那不是滚动容器——是改前的病根）。 */
+    getScrollTop,
+    restoreScrollTop,
     paintOlder,
     paintStatus,
     setEmpty,

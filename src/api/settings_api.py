@@ -834,7 +834,20 @@ async def list_model_overrides() -> JSONResponse:
 
 @router.get("/model-overrides/{work_id}/effective")
 async def get_model_override_effective(work_id: str, card_id: str = "") -> JSONResponse:
-    """当前生效值（解析后）：项目级（card_id 空）或单卡级，供界面显示「实际用谁」。"""
+    """当前生效值（解析后）：项目级（card_id 空）或单卡级，供界面显示「实际用谁」。
+
+    [窄投影 2026-11-20 · 性能批次一] 新增四个字段，**旧字段逐字不变**：
+      · ``card_model``  —— 这张卡**自己那一行**的主模型（勾选态用；
+        没有自己的值 ⇒ 空串＝「继承」）
+      · ``work_model``  —— 表里各行一致时的项目默认（继承链的中间层）
+      · ``model_label`` —— 生效模型的**显示名**（前端不必为了一颗徽标
+        去下载整张模型覆盖表）
+      · ``model_provider`` —— 生效模型所属 provider
+
+    为什么加：对话页的模型徽标原来读 ``GET /model-overrides/{wid}``——
+    那个口回**整个项目每一行**（实测 work_073 975 行 ≈ 260KB），而徽标
+    只需要当前这一张卡的一个模型键。徽标改走本口后，首屏不再下载项目覆盖表。
+    """
     missing = _override_work_or_404(work_id)
     if missing is not None:
         return missing
@@ -853,11 +866,42 @@ async def get_model_override_effective(work_id: str, card_id: str = "") -> JSONR
         val = model_config.pick_one(rid, work_id=work_id, card_id=cid)
         if val is not None:
             role_eff[rid] = val
-    extra = {"card_id": card_id} if cid else {}
+    extra: dict[str, Any] = {"card_id": card_id} if cid else {}
+    # ── 窄投影字段（2026-11-20）：徽标只要「这张卡现在用谁」 ──────────────
+    card_model = ""
+    work_model = ""
+    try:
+        from ..storage import model_override as _mo
+        # project_default 返回的是**模型键**（字符串）或 None。
+        work_model = str(_mo.project_default(work_id) or "")
+        if cid:
+            row = _mo.get_row(work_id, cid) or {}
+            card_model = str(row.get("model") or "")
+    except Exception as exc:  # noqa: BLE001 读不到就当没设（不挡读）
+        logger.warning("[model-overrides] 读窄投影字段失败 work=%s card=%s: %s",
+                       work_id, card_id, exc)
+    label = ""
+    provider = ""
+    global_model = ""
+    try:
+        raw = _load_raw()
+        mdef = (raw.get("models") or {}).get(default) or {}
+        if isinstance(mdef, dict):
+            label = str(mdef.get("model") or default or "")
+            provider = str(mdef.get("provider") or "")
+        sysdef = (raw.get("system") or {})
+        global_model = str(sysdef.get("default_model") or "")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[model-overrides] 读模型显示名失败 work=%s: %s", work_id, exc)
     return JSONResponse({
         "ok": True, "work_id": work_id, **extra,
         "default_model": default,
         "bindings": role_eff,
+        "card_model": card_model,
+        "work_model": work_model,
+        "global_model": global_model,
+        "model_label": label,
+        "model_provider": provider,
     })
 
 

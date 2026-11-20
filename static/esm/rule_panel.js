@@ -5,7 +5,7 @@
    持有 ruleCardId，也不再为了保存而先建一张 card_type=rule 的卡。
    面板 DOM：#rulePanelBody（templates/work.html 由本模块动态填充）。
    导出：loadRulePanel / renderRulePanel / saveRuleSection / getRuleCardId。 */
-import { API } from "./api.js?v=55";
+import { API } from "./api.js?v=57";
 import { escapeHtml } from "./util.js?v=30";
 
 /* [惰性新建 2026-10-17] WORK_ID 改惰性读：草稿落库成功后 window.__WORK_ID__ 就地更新
@@ -37,6 +37,20 @@ const labelOf = (n) => SECTION_LABELS[n] || n;
 let ruleData = null;          // GET /rule 响应（含 sections/hashes/inject_type_counts）
 /* [规则节点 2026-10-28] 不再有 ruleCardId：规则是文件不是卡。 */
 
+/* [重复读 2026-11-20 · 性能批次一] 规则读口**共享**。
+   病根：冷开时有两处独立地读同一份规则——① 面板自己（loadRulePanel）
+   ② 审批探针（workspace.checkRulePending 查待决草案）。两次都是
+   整份规则正文（sections + hashes + pending 的全文），白白打两遍。
+   ⇒ 这里给一个共享 promise：同一时刻的多个调用合成**一次**请求。 */
+let _rulePromise = null;
+export function loadRule() {
+  if (!_rulePromise) {
+    _rulePromise = API.call("GET", `/api/works/${WID()}/rule`)
+      .finally(() => { _rulePromise = null; });
+  }
+  return _rulePromise;
+}
+
     async function loadRulePanel() {
       if (!rulePanelBody) return;
       // [D6] 草稿态：不查库（GET /rule 对 draft → 404）——渲染六个空区，可编辑，
@@ -44,7 +58,7 @@ let ruleData = null;          // GET /rule 响应（含 sections/hashes/inject_t
       if (isDraft()) { renderDraftRulePanel(); return; }
       rulePanelBody.innerHTML = `<div class="rule-sec-status">加载中…</div>`;
       try {
-        ruleData = await API.call("GET", `/api/works/${WID()}/rule`);
+        ruleData = await loadRule();
         renderRulePanel();
       } catch (e) {
         rulePanelBody.innerHTML = `<div class="rule-sec-status err">规则读取失败：${escapeHtml(e.message || "")}</div>`;

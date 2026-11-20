@@ -152,8 +152,12 @@ async def test_v1_v4_every_seat_gets_identity_in_turn_tail(sandbox, work, monkey
     seats = _seat_calls(gw)
     assert len(seats) == 3, [c["model"] for c in gw.calls]     # V4：三席各一次
     for c in seats:                                            # V1：每次入参都带
-        assert len(c["turn_tail"]) == 1
-        m = c["turn_tail"][0]
+        # [批二 2026-11-20] tail 不再只此一条——清单/子卡现状已迁 tail 槽，
+        # 身份注入仍在且排在最后（order 1020 ＞ 100/170）。
+        ident = [m for m in c["turn_tail"]
+                 if simple_service.SEAT_IDENTITY_MARK in str(m.get("content") or "")]
+        assert len(ident) == 1
+        m = c["turn_tail"][-1]
         assert m["role"] == "assistant"
         assert simple_service.SEAT_IDENTITY_MARK in m["content"]
         assert simple_service.SEAT_IDENTITY_NOTE in m["content"]
@@ -171,8 +175,11 @@ async def test_v2_v_n1_seat_system_unchanged(sandbox, work, monkeypatch):
     sys0 = seats[0]["system_prompt"]
     # 三席 system 同一份共享上下文
     assert all(c["system_prompt"] == sys0 for c in seats)
-    # 是共享的卡片上下文（含卡片清单），且**零指令**——身份不进 system
-    assert "## 卡片清单" in sys0
+    # 是共享的卡片上下文，且**零指令**——身份不进 system；
+    # [批二 2026-11-20] 卡片清单已迁 tail 槽：system 不再含，席位经 tail 收到。
+    assert "## 卡片清单" not in sys0
+    assert all(any("## 卡片清单" in str(m.get("content") or "")
+                   for m in c["turn_tail"]) for c in seats)
     assert simple_service.SEAT_IDENTITY_MARK not in sys0
     assert simple_service.SEAT_IDENTITY_NOTE not in sys0
     assert "观点审议席" not in sys0

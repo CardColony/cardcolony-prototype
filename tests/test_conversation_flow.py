@@ -301,10 +301,8 @@ async def test_i7_steer_lands_in_next_model_call_prior(client, sandbox):
     st = message_runner.RunState(work_id=wid, card_id="card_001", content="看看根卡")
     st.rounds = 2
     st.slot = _FakeSlot()
-    steer._pending[(wid, "card_001")] = ["插话：先说结论，别写报告"]
-    # _apply_steer 现在返回**被消费的原文消息列表**（不再是计数）——
-    # 下轮提示词要按真实来源报名（〔用户插话〕/〔卡间消息〕/〔系统消息〕）。
-    assert message_runner._apply_steer(st) == ["插话：先说结论，别写报告"]
+    assert message_runner._apply_steer(st) == [
+        steer.STEER_MARK + "插话：先说结论，别写报告"]
     assert any("先说结论" in str(m.get("content"))
                for m in st.slot.messages), "插话必须进轮槽（下一轮模型即可见）"
     assert steer.pending_steer(wid, "card_001") == 0, "插话取走即清（不重放）"

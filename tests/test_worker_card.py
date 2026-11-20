@@ -90,11 +90,11 @@ def test_toolset_fingerprints_and_switch_bindings():
     # [规则卡 2026-10-15] 18 → 19（第 19 件 draft_rule_edit，§六块3 硬判据 1）。
     # [依赖关联线 2026-10-16] 19 → 21（第 20/21 件 link_rel / unlink_rel）。
     # [更新现状按钮改造 2026-10-16] 21 → 22（第 22 件 propose_status，列 OP_ONLY_TOOLS）。
-    assert src.count('": ToolDef(') == 36  # [2026-11-09 画线看全图] 35→36（+list_cards）
+    assert src.count('": ToolDef(') == 37  # [声明式等待 2026-11-20] 36→37（+declare_wait）
     # [规则卡 2026-10-15] tc-5 → tc-6（新增 draft_rule_edit ＋第四段根卡闸）。
     # [依赖关联线 2026-10-16] tc-6 → tc-7（新增 link_rel / unlink_rel）。
     # [更新现状按钮改造 2026-10-16] tc-7 → tc-8（新增 propose_status）。
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-31"  # [2026-11-14] 委办线三件工具描述
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-33"  # [2026-11-20] memory_expand section/revision/cursor
     # [规则卡 2026-10-15] t20-1 → t21-1（新增「## 规则卡」节）。
     # [依赖关联线 2026-10-16] t21-1 → t22-1。
     assert prompts.BASE_PROMPT_VERSION == "t27-19"          # [2026-11-01] 随现配置对齐

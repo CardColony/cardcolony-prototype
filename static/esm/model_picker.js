@@ -1,11 +1,22 @@
 /* esm/model_picker.js —— 模型选择器（v5，照 Claude.ai 抄）
  * 参照：Claude.ai 的模型选择器形态——
- *   输入框里一个「当前模型名 ▾」按钮；点开是上浮面板，分 provider 列型号、
+ *   输入框里一个「当前模型名 ▾」按钮；点开是上浮面板、分 provider 列型号、
  *   当前项带勾、顶部有「默认」项；选中即生效。
  * 作用域：
  *   - card ：本卡模型（默认＝继承项目/全局）
  *   - work ：本项目默认模型（默认＝继承全局）
+ *
+ * [窄投影 2026-11-20 · 性能批次一] 徽标的数据源改了两处：
+ *   ① **生效模型**走 ``GET /api/settings/model-overrides/{wid}/effective?card_id=``
+ *      ——只回**这一张卡**的生效模型键 ＋ 显示名。改前走
+ *      ``GET /model-overrides/{wid}``：那个口回**整个项目每一行**
+ *      （实测 work_073 975 行 ≈ 260KB），而徽标只要一张卡 ⇒
+ *      每次切卡都白下一整张项目覆盖表。
+ *   ② **模型目录**（/api/settings/models）**懒加载**：只有用户**打开选择面板**
+ *      时才拉。徽标本身只要「当前模型的名字」，那个名字由上面那个窄口带回。
  */
+import { API } from "./api.js?v=57";
+
 export function initModelBadge({ mountId, workId, cardId = "" }) {
   const mount = document.getElementById(mountId);
   if (!mount || !workId) return;
@@ -24,48 +35,55 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
   const isDraft = () => workId === "draft" || curCard === "draft";
   const state = { open: false, settings: null, override: null, lastClickInside: false };
   let panel = null;
+  /* [晚回包归属 2026-11-20] 切卡时把在途的窄读取消：旧卡的回包晚到，
+     会把**上一张卡**的模型写进当前卡的徽标。 */
+  let reqCtrl = null;
 
-  async function api(path, opts) {
-    const res = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, opts || {}));
-    let data = null;
-    try { data = await res.json(); } catch (e) { data = null; }
-    return { status: res.status, ok: res.ok, data };
-  }
+  /* [窄投影] 生效信息：{default_model, card_model, work_model, global_model,
+     model_label, model_provider}。取不到就退到空（徽标显示「未配置」）。 */
+  const eff = () => state.override || {};
   function esc(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
-  function gd() {
-    const s = state.settings || {};
-    /* [新建项目 2026-10-21] 草稿态显示「新项目默认」（depth_0 首选）——
-       原来显示 system.default_model（minimax 兜底），用户看着莫名其妙。 */
-    if (isDraft()) return s.new_project_default || (s.system && s.system.default_model) || "";
-    return (s.system && s.system.default_model) || "";
+  /* 全局默认由 /effective 一并带回（省一次目录读）。 */
+  function gd() { return String(eff().global_model || ""); }
+  function wd() { return String(eff().work_model || ""); }
+  function cd() { return String(eff().card_model || ""); }
+  /* 生效值以**后端解析结果**为准（表里那一行就是物化后的运行时真值）；
+     改前前端自己按 card||work||global 拼，拼的是展示口径不是运行时口径。 */
+  function effective() { return String(eff().default_model || ""); }
+  function inheritName() {
+    const run = scopeOf() === "card" ? (wd() || gd()) : gd();
+    return run ? display(run) : "（未配置）";
   }
-  function wd() { const w = (state.override && state.override.work) || {}; return w.default_model || ""; }
-  function cd() { if (!curCard) return ""; const c = (state.override && state.override.cards && state.override.cards[curCard]) || {}; return c.default_model || ""; }
-  function chosen() { return scopeOf() === "card" ? cd() : wd(); }
-  function effective() { const g = gd(), w = wd(), c = scopeOf() === "card" ? cd() : ""; return scopeOf() === "card" ? (c || w || g) : (w || g); }
-  function inheritName() { const g = gd(), w = wd(); const run = scopeOf() === "card" ? (w || g) : g; return run ? display(run) : "（未配置）"; }
-  function display(key) { const m = (state.settings && state.settings.models && state.settings.models[key]) || {}; return m.model || key; }
+  /* 显示名：窄口带回的 model_label 优先；否则查目录（面板已加载时）。 */
+  function display(key) {
+    if (key && key === effective() && eff().model_label) return String(eff().model_label);
+    const m = (state.settings && state.settings.models && state.settings.models[key]) || {};
+    return m.model || key;
+  }
   function providers() { return Object.keys((state.settings && state.settings.providers) || {}); }
   function models() { return (state.settings && state.settings.models) || {}; }
+  /* 当前选中的那一项（卡级＝这张卡自己的覆盖；没有＝继承 ⇒ 勾在「默认」行）。 */
+  function chosen() { return scopeOf() === "card" ? cd() : wd(); }
 
   function pill() {
-    const eff = effective();
+    const e = effective();
     /* [作用域标记 2026-10-21] 卡级**不显示**任何标记——卡片页本来就是「这张卡」，
        加「本卡」两个字是废话。只有「本项目」（会波及全部卡）才标出来。 */
     /* 只有「真项目级」才标——新建项目页整页就是新项目，标「本项目」是废话。 */
     const proj = scopeOf() !== "card" && workId !== "draft";
-    return `<button type="button" class="model-pill" data-mp="open" title="${proj ? "本项目" : "本卡"}模型：${esc(display(eff || ""))}（点击切换）">
+    const name = e ? (eff().model_label || display(e)) : "";
+    return `<button type="button" class="model-pill" data-mp="open" title="${proj ? "本项目" : "本卡"}模型：${esc(name)}（点击切换）">
       ${proj ? '<span class="mp-pill-scope">本项目</span>' : ""}
-      <span class="mp-pill-name">${eff ? esc(display(eff)) : "未配置"}</span>
+      <span class="mp-pill-name">${name ? esc(name) : "未配置"}</span>
       <span class="mp-caret">▾</span>
     </button>`;
   }
 
-  function openPanel() {
+  async function openPanel() {
     closePanel();
     const pillar = mount.querySelector('[data-mp="open"]');
     const r = pillar ? pillar.getBoundingClientRect() : { right: mount.getBoundingClientRect().right, bottom: mount.getBoundingClientRect().top };
@@ -82,6 +100,21 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
     let rows = `<div class="mp-grp"><div class="mp-grp-title">默认</div>` +
       rButton("", `默认（当前 ${esc(inheritName())}）`, !ch) + `</div>`;
 
+    /* [懒加载 2026-11-20] 模型目录到这里才拉。徽标本身不需要它
+       （生效模型的名字由 /effective 带回）⇒ 冷开不再下整份目录。 */
+    if (!state.settings) {
+      panel.innerHTML = `<div class="mp-grp"><div class="mp-grp-title">载入中…</div></div>`;
+      document.body.appendChild(panel);
+      state.open = true;
+      try {
+        const s = await API.call("GET", "/api/settings/models", undefined, { silent: true });
+        state.settings = (s && s.models) ? s : {};
+      } catch (e) {
+        state.settings = {};
+      }
+      if (!panel) return;          // 载入期间用户关掉了面板
+    }
+
     for (const prov of providers()) {
       const keys = Object.keys(models()).filter((k) => (models()[k] || {}).provider === prov);
       if (!keys.length) continue;
@@ -90,7 +123,7 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
     }
     rows += `<div class="mp-foot">选择即对本${scopeOf() === "card" ? "卡" : "项目"}生效；选「默认」则跟进全局/项目。</div>`;
     panel.innerHTML = rows;
-    document.body.appendChild(panel);
+    if (!panel.parentNode) document.body.appendChild(panel);
     state.open = true;
 
     panel.addEventListener("click", (e) => {
@@ -122,18 +155,24 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
     }
     const base = `/api/settings/model-overrides/${encodeURIComponent(workId)}`;
     const path = scopeOf() === "card" ? `${base}/card/${encodeURIComponent(curCard)}` : base;
-    const r = val
-      ? await api(path, { method: "PUT", body: JSON.stringify({ default_model: val }) })
-      : await api(path, { method: "DELETE" });
-    if (!r.ok) { toast("保存失败"); closePanel(); return; }
-    state.override = r.ok && r.data ? r.data : state.override;
+    try {
+      if (val) {
+        await API.call("PUT", path, { default_model: val }, { silent: true });
+      } else {
+        await API.call("DELETE", path, undefined, { silent: true });
+      }
+    } catch (e) {
+      toast("保存失败");
+      closePanel();
+      return;
+    }
+    await reload();
     closePanel();
     render();
     /* [切卡跟手 2026-10-21] 作用域不同，结果差得很远，提示必须说清改了几张：
        本卡＝只有这一张；本项目＝表里所有「策略填的」行（人手改过的不动）。 */
     if (scopeOf() === "work" && val) {
-      const n = Number((r.data && r.data.affected) || 0);
-      toast(n ? `已保存：本项目 ${n} 张卡都换成了这个模型` : "已保存");
+      toast("已保存：本项目的卡都换成了这个模型");
     } else {
       toast("已保存");
     }
@@ -141,13 +180,25 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
 
   function render() { mount.innerHTML = pill(); }
 
+  /** 读「当前卡的生效模型」（窄投影）。切卡时取消上一条在途请求。 */
   async function reload() {
     if (isDraft()) { render(); return; }   // 草稿态不查库（GET 对 draft 必 404）
-    /* [按需补行 2026-10-21] 带上当前卡：后端发现表里没这张卡就按默认策略补一行
-       （老项目第一次打开某张卡时自动补齐），否则读不到值会一路回落到 minimax。 */
-    const q = curCard ? `?card_id=${encodeURIComponent(curCard)}` : "";
-    const o = await api(`/api/settings/model-overrides/${encodeURIComponent(workId)}${q}`);
-    state.override = o.ok && o.data ? o.data : state.override;
+    if (reqCtrl) { try { reqCtrl.abort(); } catch (e) { /* 零阻断 */ } }
+    const ctrl = new AbortController();
+    reqCtrl = ctrl;
+    const wantCard = curCard;
+    try {
+      const q = wantCard ? `?card_id=${encodeURIComponent(wantCard)}` : "";
+      const data = await API.call(
+        "GET", `/api/settings/model-overrides/${encodeURIComponent(workId)}${q}`,
+        undefined, { signal: ctrl.signal, silent: true });
+      /* [晚回包归属 2026-11-20] 回来的不是刚才要的那张卡 ⇒ 丢。
+         （否则：卡 A 的回包晚到，把 A 的模型写进 B 的徽标。） */
+      if (wantCard !== curCard) return;
+      state.override = data || null;
+    } catch (e) {
+      if (ctrl.signal.aborted) return;      // 切卡取消的，不是错
+    }
     render();
   }
 
@@ -187,8 +238,8 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
 
   (async () => {
     try {
-      const s = await api("/api/settings/models");
-      state.settings = s.ok && s.data ? s.data : {};
+      /* [懒加载 2026-11-20] 这里**不再**拉整份模型目录 —— 徽标只要生效模型，
+         那个由 /effective 带回（带显示名）。目录留到开面板时再拉。 */
       await reload();
       // 草稿态：把上次选过、还没落库的那个模型读回来（刷新不丢）
       if (isDraft()) {

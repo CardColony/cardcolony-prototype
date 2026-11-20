@@ -202,6 +202,22 @@ def is_auto(meta: dict[str, Any]) -> bool:
     return bool((meta or {}).get("auto_mode"))
 
 
+def active_children(work_id: str, card_id: str) -> list[str]:
+    """本卡的**未终止直系子卡**名单（``goal_state == "active"`` 者）。
+
+    口径同原 ``has_active_child``；拆出名单版是因为让位判据需要
+    「排除被独立等待覆盖的子卡」后再看还剩谁（验收修 2026-11-20）。
+    """
+    try:
+        metas = card_store.iter_card_metas(work_id)
+    except Exception:  # noqa: BLE001 读不出 ⇒ 不阻塞（宁可起轮，不可空转）
+        return []
+    return [cid for cid, m in metas.items()
+            if cid != card_id
+            and str(m.get("parent") or "") == card_id
+            and str(m.get("goal_state") or "") == GOAL_ACTIVE]
+
+
 def has_active_child(work_id: str, card_id: str) -> bool:
     """本卡是否有**未终止子卡**（直接子卡中 ``goal_state == "active"`` 者）。
 
@@ -212,18 +228,7 @@ def has_active_child(work_id: str, card_id: str) -> bool:
     取数走 ``iter_card_metas``（**已加载的卡 meta**，一次查询）——**不逐卡开连接**
     （迭代方案 §8 明令）。
     """
-    try:
-        metas = card_store.iter_card_metas(work_id)
-    except Exception:  # noqa: BLE001 读不出 ⇒ 不阻塞（宁可起轮，不可空转）
-        return False
-    for cid, m in metas.items():
-        if cid == card_id:
-            continue
-        if str(m.get("parent") or "") != card_id:
-            continue
-        if str(m.get("goal_state") or "") == GOAL_ACTIVE:
-            return True
-    return False
+    return bool(active_children(work_id, card_id))
 
 
 def _await_children_flag(meta: dict[str, Any]) -> bool:

@@ -26,6 +26,7 @@ from .types import (
     FinishReason,
     ReasoningBlock,
     ReasoningDelta,
+    ResponseMetaChunk,
     StopReason,
     StreamChunk,
     TextBlock,
@@ -65,6 +66,7 @@ class BlockAssembler:
         self._usage: Optional[TokenUsage] = None
         self._finish: Optional[FinishReason] = None
         self._replay_state: object = None
+        self._response_model: str = ""
 
     # -- push —— 原版 assembler.ts:47-94 ------------------------------------
     def push(self, chunk: StreamChunk) -> None:
@@ -104,6 +106,12 @@ class BlockAssembler:
         if kind == "usage":
             assert isinstance(chunk, UsageChunk)
             self._usage = chunk.usage
+            return
+        if kind == "response-meta":
+            assert isinstance(chunk, ResponseMetaChunk)
+            # 端点每帧重复同一 model——取首个非空值，后续同值帧不覆盖。
+            if not self._response_model and chunk.model:
+                self._response_model = chunk.model
             return
         if kind == "finish":
             self._finish = chunk.reason  # type: ignore[union-attr]
@@ -167,6 +175,11 @@ class BlockAssembler:
     def replay_state(self) -> object:
         """终帧携带的适配器私有重放状态（如有）。原版 assembler.ts:152-154。"""
         return self._replay_state
+
+    @property
+    def response_model(self) -> str:
+        """端点回包声明的模型名（ResponseMetaChunk，首个非空值）。"""
+        return self._response_model
 
     def message(self, source: Optional[MessageSource] = None) -> Message:
         """装配出的 assistant 消息。原版 assembler.ts:161-163。

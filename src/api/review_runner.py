@@ -28,7 +28,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from ..storage import card_db, card_store, function_store, review_store, session_facade
 from . import event_stream
@@ -60,18 +60,24 @@ _RUNNING: set[str] = set()
 
 # ---------------------------------------------------------------- 一步＝一次唤醒
 async def run_once(work_id: str, review_id: str, *,
-                   hint: str = "") -> dict[str, Any]:
+                   hint: str = "",
+                   expect: Optional[dict] = None) -> dict[str, Any]:
     """**跑一步**：机械读评审状态，做下一个动作（叫一席／派活／停）。
 
     ``hint``＝harness ``continue`` 送来的"为什么叫你"（一次性、不落历史），
     拼进这一步的 mandate 尾部。
+
+    ``expect``＝台账登记的**步骤身份** ``{batch,draft,next}``（harness
+    按策略 ``dedup_fields`` 解析值下发）——执行前与当前状态复核：
+    批次/稿次/下一步身份任一不符 ⇒ ``stale_step`` 销账返回，**不执行**
+    （批次A第三轮返工：rv_old 的待投动作不得在 rv_new 批次里执行）。
 
     与旧 `run_round` 的差别：这里**没有循环**。每步结束落
     `review_round_done`（带 seat/voted/draft_ver 等事实），要不要续由
     策略看事件决定——"还有活"这个事实代码只如实上报。
     """
     if os.environ.get(ENV_NO_AUTO) == "1":
-        return {"continued": False, "reason": "no_auto"}
+        return {"continued": False, "reason": "no_auto", "accepted": False}
     # [多进程 · 场卡属主分片 2026-11-08] 评审循环只能在**场卡属主**上跑：
     # 事件/journal/seq 按（进程×卡）分空间——循环在别处跑会把 review_* 事件
     # 写进**那个进程的**journal，与属主的回合事件两套 seq 撞车（文件里
@@ -91,22 +97,61 @@ async def run_once(work_id: str, review_id: str, *,
         pass
     key = f"{work_id}/{review_id}"
     if key in _RUNNING:
-        return {"continued": False, "reason": "already_running"}
+        return {"continued": False, "reason": "already_running",
+                "accepted": False}
     _RUNNING.add(key)
     try:
+        # [步骤身份复核 2026-11-20 · 批次A第三轮返工] expect 非空 ⇒
+        # 先重读当前状态核对 {batch,draft,next}——登记时的步骤已过期
+        # （批次推进/稿次变/下一步换了）⇒ stale_step 销账，不执行。
+        if isinstance(expect, dict) and expect:
+            cur = await _step_identity(work_id, review_id)
+            exp = {str(k): str(v) for k, v in expect.items()}
+            diff = {k: {"expect": exp.get(k), "current": cur.get(k)}
+                    for k in ("batch", "draft", "next")
+                    if k in exp
+                    and str(cur.get(k) or "") != str(exp.get(k) or "")}
+            if diff:
+                logger.info("[review] 步骤过期销账 review=%s diff=%s",
+                            review_id, diff)
+                return {"continued": False, "reason": "stale_step",
+                        "accepted": False, "stale": True,
+                        "expect": exp, "current": cur, "diff": diff}
         r = await _run_step(work_id, review_id, hint=hint)
     except Exception as exc:  # noqa: BLE001 步内异常＝一步的事实，如实报不续
         err = f"{type(exc).__name__}: {exc}"
         logger.warning("[review] 步内异常 review=%s: %s", review_id, err)
         r = {"continued": False, "reason": "step_error", "error": err,
+             "accepted": False,
              "_done": {"reason": "step_error", "continued": False,
                        "error": err}}
     finally:
         _RUNNING.discard(key)
+    # [受理显式回执 2026-11-20 · 批次A返工4] ``accepted`` 由评审入口说了算：
+    # continue 投递层不再按 reason 猜受理——入口闸/步崩/投递失败 ⇒ False，
+    # 台账记 failed 等 resume；到站/策略性唤不醒/已送达都是确定结局 ⇒ True。
+    if isinstance(r, dict) and "accepted" not in r:
+        r["accepted"] = _step_accepted(r)
     # **先放锁再报事实**——round_done 点火永远找不到占着的 _RUNNING。
     if isinstance(r, dict) and isinstance(r.get("_done"), dict):
         await _report(work_id, review_id, r.pop("_done"))
     return r
+
+
+#: 「拒收」＝请求没被真正处理、重试可能改观的结局——只有这几种记
+#: ``accepted=False``（台账 failed ⇒ resume 重投）：步内崩、派活/补唤醒
+#: 投递真失败、对齐批成员缺。到站各 stop_reason、策略性唤不醒
+#: （awaiting_halted/silenced/busy——信已在正卡会话，解停自查自接）、
+#: seat_done/dispatch_*/wake_delivered/delivered_quiet/align_* 都是
+#: 「评审逻辑跑完到确定结局」⇒ 受理；重试只会对同一状态空烧。
+_STEP_REFUSED = frozenset({
+    "step_error", "child_busy", "wake_failed", "advance_no_members",
+    "stale_step"})
+
+
+def _step_accepted(r: dict[str, Any]) -> bool:
+    """``run_once`` 结果的受理判定——reason 不在拒收集即受理。"""
+    return str((r or {}).get("reason") or "") not in _STEP_REFUSED
 
 
 async def _run_step(work_id: str, review_id: str, *,
@@ -138,7 +183,7 @@ async def _run_step(work_id: str, review_id: str, *,
     tail_seq = _tail_seq(work_id, target)
 
     # [harness 驱动 · 2026-11-01] 挑谁/挑什么动作是评审卡内部的事（成员序）；
-    # harness 只判"该不该点火"（has_next）。分类与 has_next 共用同一个
+    # harness 只判"该不该点火"（runnable）。分类与 has_next 共用同一个
     # `_classify`——事件里上报的"还有活"和这里挑的"下一个活"同源。
     action, stop_reason = _classify(st, st_now, spoken, promoted=promoted,
                                     tail_seq=tail_seq,
@@ -281,6 +326,16 @@ _DISPATCH_FAIL_CAP = 6
 _WAKE_NUDGE_CAP = 3
 
 
+def _vote_nudge_basis(st: dict[str, Any], status: dict[str, Any]) -> list:
+    votes = status.get("votes") or {}
+    return [
+        int(status.get("draft") or st.get("draft") or 1),
+        int(st.get("responded_seq") or 0),
+        [[role, vote.get("verdict"), vote.get("draft_ver")]
+         for role, vote in sorted(votes.items())],
+    ]
+
+
 def _classify(st: dict[str, Any], st_now: dict[str, Any],
               spoken: set, *, promoted: bool = False,
               tail_seq: int | None = None,
@@ -293,7 +348,8 @@ def _classify(st: dict[str, Any], st_now: dict[str, Any],
       dispatch_capped）。
 
     与 `_report` 的 ``has_next`` 同源——"还有活"不是推断，是这个函数
-    会不会返回一个动作。
+    会不会返回一个动作；至于现在能不能跑，`_report` 在 ``runnable``
+    里另判（步结局等外部条件不算）。
     """
     members = [str(x) for x in (st_now.get("members") or [])]
     votes = dict(st_now.get("votes") or {})
@@ -363,6 +419,8 @@ def _classify(st: dict[str, Any], st_now: dict[str, Any],
 
     # ---- 迭代区：按成员序挑下一席 ----
     blocked = False
+    awaiting_vote = False
+    nudge_basis = _vote_nudge_basis(st, st_now)
     for m in members:
         verdict = str((votes.get(m) or {}).get("verdict") or "")
         if verdict == "approve":
@@ -370,7 +428,9 @@ def _classify(st: dict[str, Any], st_now: dict[str, Any],
         if m not in spoken:
             return ("seat", m, "speak"), ""
         if not verdict:
-            return ("seat", m, "vote_nudge"), ""
+            if (seats.get(m) or {}).get("vote_nudge_basis") != nudge_basis:
+                return ("seat", m, "vote_nudge"), ""
+            awaiting_vote = True
         if verdict == "reject":
             _raw_seen = (seats.get(m) or {}).get("response_seen")
             # response_seen=0 是有效水位（被叫时还没有任何回应），不能用 `or`
@@ -405,7 +465,7 @@ def _classify(st: dict[str, Any], st_now: dict[str, Any],
             return ("dispatch", "revise"), ""
         return None, "dispatch_capped"
     # 兜底：pending 里没人可做（理论上到不了——pending 必属上述三类之一）。
-    return None, "stalled"
+    return None, "awaiting_vote" if awaiting_vote else "stalled"
 
 
 async def _target_facts(work_id: str, target: str) -> dict[str, bool]:
@@ -508,7 +568,11 @@ async def _seat_turn(work_id: str, review_id: str, seat: str,
 
     batch = str(st.get("batch") or "")
     target = str(st.get("target") or "")
-    await review_store.mark_seen(work_id, review_id, seat)
+    nudge_basis = None
+    if kind == "vote_nudge":
+        nudge_basis = _vote_nudge_basis(st, await review_store.status(work_id, review_id))
+    await review_store.mark_seen(work_id, review_id, seat, batch=batch,
+                                 vote_nudge_basis=nudge_basis)
     name = await _name_of(work_id, seat)
     try:
         event_stream.emit(work_id, review_id, "review_speaking", {
@@ -1125,9 +1189,10 @@ async def _report(work_id: str, review_id: str,
                   done: dict[str, Any]) -> None:
     """步收尾的事实上报——**只在 _RUNNING 释放之后**由 `run_once` 调。
 
-    `has_next`＝"再叫一步有没有事做"：拿**刚落盘的**状态再过一遍 `_classify`，
-    它会不会返回动作就是事实本身（与 `_run_step` 同源，不是推断）。
-    压制规则：这一步刚出错且下一个动作又是席位回合 ⇒ false——模型刚死就
+    `has_next`＝"还有未处理项"（包括补投后仍在等票）；``runnable``＝
+    "现在这一步真的能跑"——除有下一动作
+    外还要这一步的结局不是「等外部条件」（见下文注释）。压制规则沿旧：
+    这一步刚出错且下一个动作又是席位回合 ⇒ false——模型刚死就
     立刻重叫同一席只是空烧，等新事件（投票/回应/发言）自然再接；下一个动作
     是派活（机械件）则照常 true——seat 回合崩了但票已齐，派活不依赖模型。
     """
@@ -1140,17 +1205,21 @@ async def _report(work_id: str, review_id: str,
             return                       # 批次没了没什么可报的
         _facts = await _target_facts(work_id, str(st.get("target") or ""))
         promoted = bool(st_now.get("all_passed")) and _facts["promoted"]
-        nxt, _stop = _classify(st, st_now, spoken, promoted=promoted,
+        nxt, stop = _classify(st, st_now, spoken, promoted=promoted,
                                tail_seq=_tail_seq(
                                    work_id, str(st.get("target") or "")),
                                has_draft=_facts["has_draft"])
         err = str(done.get("error") or "")
         reason = str(done.get("reason") or "")
-        has_next = (
+        # [待处理项与可运行动作分家 2026-11-20 · Harness 方案 §二.1]
+        # 正卡还在等待解除停止、解除缄默或完成在途回合时，让后续状态变化再接力。
+        _WAIT_END = ("delivered_quiet", "wake_delivered")
+        runnable = bool(
             nxt is not None
             and reason != "step_error"          # 步内异常不自动续（防同类故障空转）
             and not (err and nxt[0] == "seat")  # 回合刚崩不立刻重叫同一席
-        )
+            and not reason.startswith("awaiting_")
+            and reason not in _WAIT_END)
         event_stream.emit(work_id, review_id, "review_round_done", {
             "batch": batch,
             "draft": int(st_now.get("draft") or 1),
@@ -1161,11 +1230,55 @@ async def _report(work_id: str, review_id: str,
             "voted": bool(done.get("voted")),
             "reason": str(done.get("reason") or ""),
             "continued": bool(done.get("continued")),
-            "has_next": bool(has_next),
+            "has_next": nxt is not None or stop == "awaiting_vote",
+            "runnable": runnable,
+            # [下一步身份 2026-11-20 · 批次A返工1] 由生产者上报"下一个
+            # 动作是什么"——同一步的重复上报同串（去重锚），步变了串变
+            # （dispatch:promote → wake:promote:consumed 是两个动作）。
+            "next": _next_tag(nxt),
             "error": err,
         })
     except Exception:  # noqa: BLE001 事件失败不影响主流程
         pass
+
+
+def _next_tag(nxt: Any) -> str:
+    """``_classify`` 下一动作 → 稳定身份串（评审事件 ``next`` 字段）。
+
+    同一步的重复上报产同串 ⇒ harness 按它去重；动作换了（派活→补唤醒、
+    换席、换 kind）串就变 ⇒ 各是各的投递义务。"""
+    if not nxt:
+        return ""
+    k = str(nxt[0] or "")
+    if k == "seat":
+        return f"seat:{nxt[1]}:{nxt[2]}"
+    if k == "dispatch":
+        return f"dispatch:{nxt[1]}"
+    if k == "wake":
+        return f"wake:{nxt[1]}:{nxt[2]}"
+    return k
+
+
+async def _step_identity(work_id: str, review_id: str) -> dict[str, str]:
+    """当前评审步骤身份 ``{batch, draft, next}``——与 ``_run_step``
+    前段同一组机械读数＋``_classify``，**只读不执行**。
+
+    ``run_once(expect=...)`` 用它做执行前复核：台账登记的步骤身份
+    与此处现状不符 ⇒ stale_step 销账。"""
+    st = await review_store.state_of(work_id, review_id)
+    st_now = await review_store.status(work_id, review_id)
+    batch = str(st.get("batch") or "")
+    draft = str(int(st_now.get("draft") or 1))
+    if not batch:
+        return {"batch": "", "draft": draft, "next": ""}
+    spoken = set(await review_store.spoken_round(work_id, review_id))
+    target = str(st.get("target") or "")
+    facts = await _target_facts(work_id, target)
+    promoted = bool(st_now.get("all_passed")) and facts["promoted"]
+    nxt, _stop = _classify(st, st_now, spoken, promoted=promoted,
+                           tail_seq=_tail_seq(work_id, target),
+                           has_draft=facts["has_draft"])
+    return {"batch": batch, "draft": draft, "next": _next_tag(nxt)}
 
 
 async def report_target_turn_end(work_id: str, child_id: str,
@@ -1232,6 +1345,62 @@ async def report_target_turn_end(work_id: str, child_id: str,
 
 
 # ---------------------------------------------------------------- 触发
+def _pending_target_ask(st: dict[str, Any]) -> tuple[str, Any] | None:
+    if st.get("promote_asked"):
+        return "promote", st.get("promote_asked_seq")
+    if int(st.get("asked_seq") or 0) > int(st.get("responded_seq") or 0):
+        return "revise", st.get("asked_at_seq")
+    return None
+
+
+async def activation_wake_is_current(work_id: str, target: str,
+                                     source: dict[str, Any]) -> bool:
+    st = await review_store.state_of(work_id, str(source.get("from") or ""))
+    ask = _pending_target_ask(st)
+    return bool(st.get("batch") and st["batch"] == source.get("batch")
+                and st.get("target") == target
+                and source.get("ask_seq") is not None
+                and ask == (source.get("step"), source["ask_seq"]))
+
+
+async def resume_activated_target(work_id: str, target: str) -> bool:
+    """解除缄默时接收当前批次已落账的请求。"""
+    from . import message_runner
+
+    if _wake_refusal(work_id, target):
+        return False
+    rid = await review_store.review_card_of(work_id, target)
+    if not rid:
+        return False
+    st = await review_store.state_of(work_id, rid)
+    ask = _pending_target_ask(st)
+    if not st.get("batch") or st.get("target") != target or ask is None:
+        return False
+    kind, seq = ask
+    if seq is None:
+        return False
+    return await message_runner.deliver_now(
+        work_id, target, text=_wake_kickoff(kind, "unread", st),
+        source={"kind": "review_activation", "from": rid, "batch": st["batch"],
+                "step": kind, "ask_seq": seq})
+
+
+async def resume_after_vote(work_id: str, review_id: str, batch: str) -> None:
+    """场外新票落账后，唤醒曾因缺票等待的评审。场内投票由本步收口接力。"""
+    if f"{work_id}/{review_id}" in _RUNNING:
+        return
+    st = await review_store.state_of(work_id, review_id)
+    if not batch or st.get("batch") != batch:
+        return
+    if not any("vote_nudge_basis" in seat for seat in (st.get("seats") or {}).values()):
+        return
+    status = await review_store.status(work_id, review_id)
+    if status.get("batch") != batch:
+        return
+    if not status.get("all_passed") or status.get("type") == "requirements_align":
+        spawn_round(work_id, review_id)
+
+
 async def rerun_if_pending(work_id: str, review_id: str) -> bool:
     """版本已被别处推进（撤销通过等）后，起一步重评。"""
     try:

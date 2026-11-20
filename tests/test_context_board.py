@@ -116,7 +116,7 @@ async def test_board_equiv_old_pipeline(sandbox, work, monkeypatch):
         + [{"actor": "tool", "tool_call_id": "t", "content": "r"}]
         + [{"role": "assistant", "content": "答"},
            {"role": "assistant", "content": "带思考",
-            "reasoning_content": "想过了"}]
+            "reasoning_content": "想过了", "model": "k3.1-pro"}]
     )
     await _append(wid, cid, blocks)
     mark = 3
@@ -131,7 +131,8 @@ async def test_board_equiv_old_pipeline(sandbox, work, monkeypatch):
         context_board.read_board(wid, cid), raw)
     new = context_regions.project_history_messages(merged, mark)
     assert new == old, f"板投影须与旧管线逐条一致\nold={old}\nnew={new}"
-    assert any(m.get("reasoning_content") == "想过了" for m in new)
+    assert any(m.get("reasoning_content") == "想过了" and m.get("_reasoning_model") == "k3.1-pro"
+               for m in new)
 
 
 # ================================================================

@@ -191,6 +191,12 @@ async def deliver_fired(work_id: str, fired: list[dict[str, Any]]) -> int:
         then = f.get("then") or {}
         ctx = dict(f.get("ctx") or {})
         pid = str(f.get("policy") or "")
+        if f.get("_matter_reused"):
+            # [动作身份去重 2026-11-20 · 任务书批次A] 命中的是已开事项：
+            # 动作沿用原 action_id（_actions 里已映射），本单不再投递——
+            # 旧动作未送达的重投归台账 resume，不由新事实代发。
+            logger.debug("[policy_runner] %s 复用事项动作，跳过投递", pid)
+            continue
         try:
             ctx = await _enrich(work_id, ctx)
             # [干预台账] record_fired 已把目标与动作行一并落账，优先复用；
@@ -212,6 +218,24 @@ async def deliver_fired(work_id: str, fired: list[dict[str, Any]]) -> int:
                               detail={"where": _where})
                 continue
             actions = f.get("_actions") or {}
+            # [台账完整性 2026-11-20 · 批次A返工] 本单过了 record_fired
+            # 记账（_ledger）⇒ 每个目标必须有可核对 action_id 才准投递：
+            # 动作登记失败 ⇒ 记错误台账并跳过，绝不产生"无动作编号"投递。
+            if f.get("_ledger"):
+                missing = [t for t in targets
+                           if not str(actions.get(t) or "")]
+                for t in missing:
+                    _record_error(work_id, stage="deliver",
+                                  kind="no_action_id", policy_id=pid,
+                                  card_id=t,
+                                  detail={"basis": f.get("basis") or {}})
+                    logger.warning("[policy_runner] %s 目标 %s 缺 action_id"
+                                   "（登记失败）——跳过投递", pid, t)
+                if missing:
+                    targets = [t for t in targets
+                               if str(actions.get(t) or "")]
+                    if not targets:
+                        continue
             # [deploy 2026-11-01] 派差事：独立 dispatch——落差事账＋场唤起，
             # 不进送话管线。spec/mandate 从动作行取（台账缺席时才现解）。
             if isinstance(then.get("deploy"), dict):
@@ -222,6 +246,7 @@ async def deliver_fired(work_id: str, fired: list[dict[str, Any]]) -> int:
                     aid = str(actions.get(t) or "")
                     spec: dict[str, Any] = {}
                     mandate = ""
+                    token = ""
                     if aid:
                         try:
                             if intervention_runner.action_skip(work_id, aid):
@@ -232,6 +257,13 @@ async def deliver_fired(work_id: str, fired: list[dict[str, Any]]) -> int:
                             _record_error(work_id, stage="deliver",
                                           kind="skip_check_exc", exc=exc,
                                           policy_id=pid, action_id=aid)
+                        # [并发领取 2026-11-20 · 批次A返工3/第三轮返工4]
+                        # 发出前原子领取拿凭据——同 action_id 的第二个
+                        # 投递者拿 None 跳过；写回须持本次 token。
+                        token = intervention_runner.claim_for_delivery(
+                                work_id, aid)
+                        if not token:
+                            continue
                         row = _st.get_action(work_id, aid) or {}
                         try:
                             spec = json.loads(str(row.get("spec") or "{}"))
@@ -248,7 +280,7 @@ async def deliver_fired(work_id: str, fired: list[dict[str, Any]]) -> int:
                         _st.mark_action(
                             work_id, aid,
                             "delivered" if res.get("ok") else "failed",
-                            receipt=res)
+                            receipt=res, claim_token=token)
                     if res.get("ok"):
                         n += 1
                     else:
@@ -269,6 +301,7 @@ async def deliver_fired(work_id: str, fired: list[dict[str, Any]]) -> int:
                     or "静默超阈值自动归档"
                 for t in targets:
                     aid = str(actions.get(t) or "")
+                    token = ""
                     if aid:
                         try:
                             if intervention_runner.action_skip(work_id, aid):
@@ -279,6 +312,10 @@ async def deliver_fired(work_id: str, fired: list[dict[str, Any]]) -> int:
                             _record_error(work_id, stage="deliver",
                                           kind="skip_check_exc", exc=exc,
                                           policy_id=pid, action_id=aid)
+                        token = intervention_runner.claim_for_delivery(
+                                work_id, aid)
+                        if not token:
+                            continue  # 已被领取/在途 ⇒ 不重复归档
                     try:
                         res = await _cs.archive_card(
                             work_id, t, reason=reason,
@@ -290,7 +327,7 @@ async def deliver_fired(work_id: str, fired: list[dict[str, Any]]) -> int:
                         _st.mark_action(
                             work_id, aid,
                             "delivered" if ok else "failed",
-                            receipt=res)
+                            receipt=res, claim_token=token)
                     if ok:
                         n += 1
                     else:
@@ -304,8 +341,10 @@ async def deliver_fired(work_id: str, fired: list[dict[str, Any]]) -> int:
             mode = str(then.get("mode") or "message")
             for t in targets:
                 aid = str(actions.get(t) or "")
+                expect = None
+                token = ""
                 if aid:
-                    from . import intervention_runner
+                    from . import intervention_runner, intervention_store as _ist
                     try:
                         if intervention_runner.action_skip(work_id, aid):
                             continue  # 已送过/事项已关/目标自解 ⇒ 不重复投递
@@ -315,14 +354,35 @@ async def deliver_fired(work_id: str, fired: list[dict[str, Any]]) -> int:
                         _record_error(work_id, stage="deliver",
                                       kind="skip_check_exc", exc=exc,
                                       policy_id=pid, action_id=aid)
+                    _arow = _ist.store().get_action(work_id, aid) or {}
+                    # [过期步骤销账 2026-11-20 · 批次A第三轮返工] 旧格式
+                    # 事件（runnable 但缺 next）只做诊断——零投递、
+                    # 动作销账；当前状态由评审属主/新事件另行立案。
+                    if intervention_runner.step_unverifiable(_arow):
+                        _ist.store().mark_action(
+                            work_id, aid, "stale",
+                            receipt={"reason": "unverifiable_step"})
+                        continue
+                    if mode == "continue":
+                        expect = intervention_runner.step_expect(_arow)
+                    # [并发领取 2026-11-20 · 批次A返工3/第三轮返工4]
+                    # 发出前原子领取拿凭据——biz/fire 去重给的是同一
+                    # action_id，并发第二个投递者拿 None 跳过，不会双发；
+                    # 写回须持本次 claim_token。
+                    token = intervention_runner.claim_for_delivery(
+                            work_id, aid)
+                    if not token:
+                        continue
                 # action_id 是台账回执通道——没有台账调用方（直调 deliver_fired
                 # 的旧用法）就不传，保持 deliver 签名向后兼容。
                 res = await harness.deliver(
                     work_id, t, text, rule_id=pid, wake=wake, mode=mode,
+                    expect=expect,
                     **({"action_id": aid} if aid else {}))
                 if aid:
-                    intervention_runner.mark_receipt(work_id, aid, res)
-                if res:
+                    intervention_runner.mark_receipt(
+                        work_id, aid, res, claim_token=token)
+                if harness.deliver_accepted(res):
                     n += 1
         except Exception as exc:  # noqa: BLE001 一条失败不拖垮其余
             logger.warning("[policy_runner] 投递失败 %s: %s", pid, exc)

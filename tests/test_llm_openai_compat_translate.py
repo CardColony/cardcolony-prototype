@@ -140,3 +140,37 @@ async def test_payload_source_ending_without_done_raises():
     with pytest.raises(LlmError) as exc:
         await _tr(_chunk(delta={"content": "x"}))
     assert exc.value.code == "STREAM_CLOSED"
+
+
+async def test_response_model_frame_captured_once():
+    """[B3 请求对账] SSE 帧的 ``model`` 字段 → ResponseMetaChunk：
+    首个非空值只发一次（后续帧同值/异值都不再发）。"""
+    from src.model_gateway.llm.types import ResponseMetaChunk
+    p1 = json.dumps({"model": "deepseek-v4.1-flash-eco",
+                     "choices": [{"delta": {"content": "好"},
+                                  "finish_reason": None}]})
+    p2 = json.dumps({"model": "deepseek-v4.1-flash-eco",
+                     "choices": [{"delta": {"content": "。"},
+                                  "finish_reason": "stop"}]})
+    p3 = json.dumps({"model": "other-model", "choices": []})
+    out = await _tr(p1, p2, p3, DONE)
+    metas = [c for c in out if getattr(c, "type", "") == "response-meta"]
+    assert metas == [ResponseMetaChunk(model="deepseek-v4.1-flash-eco")]
+
+
+async def test_response_model_absent_yields_no_frame():
+    """端点不回 model 字段 ⇒ 零 ResponseMetaChunk（如实空，不编造）。"""
+    out = await _tr(_chunk(delta={"content": "好"}, finish="stop"), DONE)
+    assert not [c for c in out
+                if getattr(c, "type", "") == "response-meta"]
+
+
+def test_assembler_response_model_first_nonempty_wins():
+    """装配器取首个非空 response_model，后续帧不覆盖。"""
+    from src.model_gateway.llm.assembler import BlockAssembler
+    from src.model_gateway.llm.types import ResponseMetaChunk
+    a = BlockAssembler()
+    a.push(ResponseMetaChunk(model=""))
+    a.push(ResponseMetaChunk(model="m-first"))
+    a.push(ResponseMetaChunk(model="m-second"))
+    assert a.response_model == "m-first"

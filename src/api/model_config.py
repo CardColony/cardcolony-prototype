@@ -909,6 +909,20 @@ def get_model(name: str) -> Optional[dict[str, Any]]:
     return entry if isinstance(entry, dict) else None
 
 
+def text_protocols(model_used: str = "", seat: str = "") -> frozenset:
+    """[正文协议按路由启用 2026-11-20 · §四] models.yaml
+    ``models.<名>.text_protocols`` —— 该路由声明直接支持的正文调用协议
+    集（如 ``[dsml, call]``）。未声明 ⇒ 空集，正文里这些壳只走疑似
+    标记/隔离路径，不产生调用（识别事实仍按异常事件记）。"""
+    for name in (model_used, seat):
+        entry = get_model(name) if name else None
+        tp = (entry or {}).get("text_protocols")
+        if tp:
+            return frozenset(
+                str(x).strip().lower() for x in tp if str(x).strip())
+    return frozenset()
+
+
 def list_providers() -> dict[str, Any]:
     return _load_raw_file().get("providers") or {}
 

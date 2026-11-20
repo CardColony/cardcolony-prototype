@@ -433,8 +433,10 @@ def assemble(block_seqs: list[int], groups: list[tuple[int, int]],
     """
     nodes: list[dict[str, Any]] = []
     descs: list[dict[str, Any]] = []
+    positions = {seq: i for i, seq in enumerate(block_seqs)}
     for gi, (g_from, g_to) in enumerate(groups):
-        covered = [s for s in block_seqs if g_from <= s <= g_to]
+        first, last = positions.get(g_from), positions.get(g_to)
+        covered = block_seqs[first:last + 1] if first is not None and last is not None else []
         if not covered:
             logger.warning("[two_layer] 组 %d 的块号区间 [%s,%s] 在原文里没有块（跳过）",
                            gi + 1, g_from, g_to)
@@ -463,15 +465,17 @@ def assemble(block_seqs: list[int], groups: list[tuple[int, int]],
         #   一个节点）。
         # [F6 低格式] 子题没标 end：**末位子题**兜底覆盖到组尾，非末位子题跳过
         # （没有坐标就不臆造区间）。
-        prev_end = covered[0]
+        prev_end = 0
+        group_positions = {seq: i for i, seq in enumerate(covered)}
         subs = list(l2[gi] if l2 and gi < len(l2) else [])
         for si, sub in enumerate(subs):
-            end = int(sub.get("end") or 0)
-            if not end and si == len(subs) - 1:
-                end = covered[-1]       # 末位子题未标 end ⇒ 覆盖到组尾
-            if end < covered[0] or end > covered[-1] or end <= prev_end:
+            end_seq = int(sub.get("end") or 0)
+            end = group_positions.get(end_seq)
+            if not end_seq and si == len(subs) - 1:
+                end = len(covered) - 1  # 末位子题未标 end ⇒ 覆盖到组尾
+            if end is None or end <= prev_end:
                 continue
-            sub_covered = [s for s in covered if prev_end < s <= end]
+            sub_covered = covered[prev_end + 1:end + 1]
             prev_end = end
             if not sub_covered:
                 continue
@@ -555,15 +559,15 @@ async def run_two_layer(blocks: list[dict[str, Any]],
 
     # L1/L2 的输入**必须带组头与组数**（dsh `buildBlockMessages` 口径：
     # `【组 i/N】（原文 idx a–b）`）。
+    positions = {seq: i for i, seq in enumerate(seqs)}
+
     def _grouped() -> str:
         parts: list[str] = []
         for gi, (g_from, g_to) in enumerate(groups):
-            idxs = [i for i, s in enumerate(seqs) if g_from <= s <= g_to]
-            if not idxs:
-                continue
-            inner = "\n\n".join(f"[idx {i}]\n{_text(i)}" for i in idxs)
+            first, last = positions[g_from], positions[g_to]
+            inner = "\n\n".join(f"[idx {i}]\n{_text(i)}" for i in range(first, last + 1))
             parts.append(f"【组 {gi + 1}/{len(groups)}】"
-                         f"（idx {idxs[0]}–{idxs[-1]}，块号 {g_from}–{g_to}）\n{inner}")
+                         f"（idx {first}–{last}，块号 {g_from}–{g_to}）\n{inner}")
         return "\n\n".join(parts)
 
     # L1 三栏（F7：解析失败/组数不符 ⇒ 同批带错误报告重试，最多 MAX_STAGE_RETRIES 次，
@@ -624,4 +628,5 @@ async def run_two_layer(blocks: list[dict[str, Any]],
 
     nodes, descs = assemble(seqs, groups, l1, l2, session_id)
     return {"ok": True, "stage": "done", "nodes": nodes, "descriptions": descs,
-            "groups": groups, "retries": total_retries}
+            "groups": groups, "retries": total_retries,
+            "consumed": positions[groups[-1][1]] + 1}

@@ -35,6 +35,7 @@ from ..llm.types import (
     FinishReason,
     ReasoningBlock,
     ReasoningDelta,
+    ResponseMetaChunk,
     StopReason,
     StreamChunk,
     TextBlock,
@@ -138,6 +139,7 @@ async def translate(payloads: AsyncIterable[str]) -> AsyncIterator[StreamChunk]:
         return block
 
     seen_done = False
+    seen_response_model = False
     async for payload in payloads:
         if payload == DONE:
             seen_done = True
@@ -147,6 +149,15 @@ async def translate(payloads: AsyncIterable[str]) -> AsyncIterator[StreamChunk]:
             chunk = json.loads(payload)
         except Exception as exc:  # noqa: BLE001
             raise LlmError(f"malformed SSE payload: {payload}", "MALFORMED_RESPONSE") from exc
+
+        # [B3 请求对账 2026-11-20] 端点回包声明的模型名：SSE 每帧都带
+        # ``model``——取首个非空值经内部观测帧回传（不进消息流），与请求
+        # 里的模型名、网关配置的线路名分账记录。
+        if not seen_response_model:
+            _rm = chunk.get("model")
+            if isinstance(_rm, str) and _rm.strip():
+                seen_response_model = True
+                yield ResponseMetaChunk(model=_rm.strip())
 
         # [端点反馈 2026-10-30] OpenAI 兼容流在出错时会发一帧 ``{"error": {...}}``，
         # 然后**可能不关连接**。原实现只读 ``choices`` ⇒ 这帧被当空帧跳过 ⇒ 上层

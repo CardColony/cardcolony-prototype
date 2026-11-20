@@ -1,6 +1,6 @@
 """模型面工具 —— 对应 ``tool-goal/src/index.ts``。
 
-三件工具，与原版同名同参：
+原版三件同名同参，外加本仓新增两件（resume_child / declare_wait）：
 
 - ``get_goal()``
 - ``create_goal(objective, max_goal_rounds?)`` —— 必须直接人类回合
@@ -491,6 +491,68 @@ async def h_resume_child(work_id: str, current_id: str,
     return _ok(data)
 
 
+async def h_declare_wait(work_id: str, current_id: str,
+                         arguments: dict[str, Any],
+                         cards: dict[str, Any]) -> dict[str, Any]:
+    """声明「这一步在等哪张卡的哪个回执」——声明式等待（2026-11-20 方案 §一）。
+
+    模型在自己的工作回合里说明下一步和等待条件；Harness 机械核对原派工
+    ID、目标版本与真实回执归属，goal 驱动统一负责起轮。缺 task/from_card
+    ⇒ 记「待核实」账（不拦轮次）；只剩等待 ⇒ 驱动让出回合（零模型请求）；
+    回执先于登记到达 ⇒ 登记时立即回扫核销（先订阅再回读的原子交接）。
+    """
+    from . import wait_store
+    if not wait_store.enabled(work_id):
+        return _err("denied", "当前 work 未启用声明式等待。")
+    try:
+        from ..storage import card_store as _cs
+        _meta = _cs._meta_of(work_id, current_id) or {}
+        if not _meta.get("auto_mode"):
+            return _err("validation", "声明式等待只在自动模式生效。")
+    except Exception:  # noqa: BLE001 读不出按非自动——与 _auto_enabled 同口径
+        return _err("not_found", f"卡 {current_id} 读不到，声明不了等待。")
+    service = get_service()
+    goal = await service.get(work_id, current_id)
+    if goal is None:
+        return _err("no_goal", "本卡当前没有目标，声明等待无从挂接。")
+    expect = str(arguments.get("expect") or "").strip()
+    if expect and expect not in wait_store.RECEIPT_TYPES:
+        return _err(
+            "validation",
+            f"expect 只能是 {sorted(wait_store.RECEIPT_TYPES)}，留空则两类都认。")
+    wid = wait_store.declare(
+        work_id, current_id,
+        task_id=str(arguments.get("task") or "").strip(),
+        from_card=str(arguments.get("from_card") or "").strip(),
+        expect=expect,
+        goal_id=goal.id, revision=int(goal.revision),
+        independent=bool(arguments.get("independent") or False),
+        note=str(arguments.get("note") or "").strip()[:240])["wait_id"]
+    res = wait_store.blocking_waits(
+        work_id, current_id, goal_id=goal.id, revision=int(goal.revision))
+    if wid in res["satisfied_now"] or any(w["wait_id"] == wid for w in res["ready"]):
+        _state = "satisfied"          # 回执先到了——登记即核销
+    elif wid in res["stale"]:
+        _state = "stale"
+    else:
+        _why = next((str(u.get("type") or "")
+                     for u in res["unverified"]
+                     if u.get("wait_id") == wid), "")
+        if _why:
+            _state = f"unverified:{_why}"   # 证不了归属/版本——如实挂待核实
+        else:
+            _state = "open"
+    held = len(res["held"])
+    return _ok({
+        "wait_id": wid,
+        "state": _state,
+        "held": held,
+        "reason": ("等待已登记：只剩等待时目标驱动让出回合；回执到达、"
+                   "归属核对一致后自动收口续轮。先到的回执也能认账。"
+                   "派工版本印与当前目标版本对不上时记「待核实」不拦轮次。"),
+    })
+
+
 # ---------------------------------------------------------------- schemas
 GET_GOAL_SCHEMA: dict[str, Any] = {
     "name": "get_goal",
@@ -563,5 +625,38 @@ RESUME_CHILD_SCHEMA: dict[str, Any] = {
             "card_id": {"type": "string", "description": "要恢复的子卡 id"},
         },
         "required": ["card_id"],
+    },
+}
+
+#: [声明式等待 2026-11-20 · 目标推进方案 §一] 模型在原工作回合声明下一步
+#: 与等待条件：等哪笔派工（task＝原派工消息 ID）、回执来自谁（from_card）、
+#: 认哪类回执（expect）。Harness 机械核对归属与目标版本，goal 驱动统一起轮。
+DECLARE_WAIT_SCHEMA: dict[str, Any] = {
+    "name": "declare_wait",
+    "description": (
+        "声明你这一步**在等哪张卡的哪个回执**（派工接力用）。task＝那笔派工的"
+        "原消息 ID（你发对方派工时拿到的 cm_… 回执 ID）；from_card＝回执来源卡。"
+        "普通子卡的回执是 msg_report（汇报），worker 的回执是 worker_done"
+        "（完工）——expect 可收窄只认一种，不写则两类都认。"
+        "登记后：只剩等待时目标驱动自动让出回合（零模型请求）；真实回执"
+        "核对归属一致后自动收口续轮；回执先于登记到达照样认账。"
+        "缺 task/from_card 会记「待核实」——不算等待、不拦轮次；"
+        "还有别的独立待办就勾 independent＝true，等回执不挡你自己干活。"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task": {"type": "string",
+                     "description": "等的是哪笔派工——你发给对方的原消息 ID（cm_…）。缺省记「待核实」。"},
+            "from_card": {"type": "string",
+                          "description": "回执来自哪张卡（你的派工对象）。缺省记「待核实」。"},
+            "expect": {"type": "string", "enum": ["worker_done", "msg_report"],
+                       "description": "可选：只认哪类回执；不给则两类都认。"},
+            "note": {"type": "string",
+                     "description": "可选：一句话说明在等什么结果。"},
+            "independent": {"type": "boolean",
+                            "description": "可选：true＝等它期间你还有别的独立待办，不挡续轮。"},
+        },
+        "required": [],
     },
 }

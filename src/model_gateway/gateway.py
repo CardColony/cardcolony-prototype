@@ -57,7 +57,7 @@ from .llm_siwc import (
     SiwcAdapter,
     SiwcAdapterOptions,
 )
-from .llm_openai_compat.serialize import RequestDefaults
+from .llm_openai_compat.serialize import REASONING_PLACEHOLDER, RequestDefaults
 from .llm_anthropic.adapter import (
     AnthropicAdapterOptions,
     AnthropicConnectionOptions,
@@ -173,15 +173,6 @@ def reasoning_echo_fill(model_name: str, model_config: dict[str, Any]) -> Option
     if kind == "empty":
         return ""
     return None
-
-
-#: 注入的 assistant 消息（判断协议等）无模型思考时可补的占位思考。
-#: [多轮思考回传 2026-10-23] 只对 ``echo_reasoning`` 登记的端点用——它们要求
-#: reasoning_content **非空**（实测空串照样 400 "Missing required parameter"）。
-#: 写明是系统注入，不冒充模型思考。
-#: 公开名：api 层（message_runner 构造本轮 assistant 消息）要引同一个值，
-#: 免得两层各写一份字面量日后漂移。
-REASONING_PLACEHOLDER = "(系统注入的消息，无模型思考记录)"
 
 
 def reasoning_echo_value(model_name: str, model_config: dict[str, Any],
@@ -535,6 +526,7 @@ class ModelGateway:
                 vendor=vendor,
                 thinking=thinking if isinstance(thinking, str) or thinking is None else str(thinking),
                 default_effort=default_effort if isinstance(default_effort, str) else None,
+                reasoning_fill=reasoning_echo_fill(model, mc),
             ),
             max_tokens=None,  # 拆闸铁律：不注入默认 max_tokens
             extra_headers=mc.get("extra_headers") if isinstance(mc.get("extra_headers"), dict) else None,
@@ -568,9 +560,14 @@ class ModelGateway:
         reasoning_effort: Optional[str] = None,
     ) -> GenerateOptions:
         mc = self.config["models"][model_name]
+        wire_model = str(mc.get("model") or model_name)
         messages: list[dict[str, Any]] = []
         if prior_messages:
             messages.extend(prior_messages)
+        # 宿主当轮指令放在用户输入之前。其他 once 消息保留各自原有位置。
+        once = turn_once or []
+        messages.extend(msg for msg in once
+                        if isinstance(msg, dict) and msg.get("role") == "system")
         # [工具轮去假 user 2026-10-21] **只有真的有用户发言才拼 user 消息**。
         # 工具轮的 prior 末尾是 role=tool（工具结果），模型据此直接续写即可——
         # 原来无条件拼一条 user，逼得调用方编「工具结果已返回。」塞进用户位，
@@ -578,10 +575,19 @@ class ModelGateway:
         # dsh 与 WorkBuddy 均无此占位；协议也不要求末尾必须是 user。
         if user_prompt:
             messages.append({"role": "user", "content": user_prompt})
-        if turn_once:
-            messages.extend(turn_once)
+        messages.extend(msg for msg in once
+                        if not isinstance(msg, dict) or msg.get("role") != "system")
         if turn_tail:
             messages.extend(turn_tail)
+        # 对实际出站模型求值，连兜底换路也从原消息重新投影。
+        for index, msg in enumerate(messages):
+            if not isinstance(msg, dict) or "_reasoning_model" not in msg:
+                continue
+            projected = dict(msg)
+            if projected.pop("_reasoning_model") != wire_model:
+                for key in ("reasoning_content", "reasoning", "reasoning_details"):
+                    projected.pop(key, None)
+            messages[index] = projected
         schemas = None
         if tools:
             schemas = tuple(
@@ -594,7 +600,7 @@ class ModelGateway:
             )
         return GenerateOptions(
             provider=_vendor_of(mc),
-            model=str(mc.get("model") or model_name),
+            model=wire_model,
             messages=tuple(messages),
             system=system_prompt,
             tools=schemas,
@@ -710,6 +716,9 @@ class ModelGateway:
                 "native_truncated": 1 if truncated_tool_call else 0,
                 "native_finish_tool_calls": (finish_reason or "") == "tool_calls",
                 "finish_reason": finish_reason or "stop",
+                # [B3 请求对账 2026-11-20] 端点回包声明的模型名——与请求
+                # 里的模型名、配置线路名分账（可能为空：端点不回该字段）。
+                "response_model": assembler.response_model,
             },
         }
 
@@ -793,6 +802,12 @@ class ModelGateway:
         max_attempts, backoff = self._retry_params(model_name)
         rg_enabled, rg_budget, rg_caps = self._retry_grading()
         loop_start = time.monotonic()
+        # [2026-11-19 返工·四段拆分] 序列化/用户可见首字两段（单位毫秒 float；
+        # 端点首事件 first_chunk_ms 已由 observe 在途台账采集）。serialize 取
+        # **成功 attempt** 的 _build_options 耗时；first_content 相对成功
+        # attempt 起点——思考前置的模型（reasoning 帧先到）不算首字。
+        _build_opts_ms: float | None = None
+        _json_dumps_ms: float | None = None
 
         def _emit(phase: str, attempt: int, **kw: Any) -> None:
             if not on_status:
@@ -810,17 +825,35 @@ class ModelGateway:
             _emit("start" if attempt == 0 else "retry", attempt,
                   **({} if attempt == 0 else {"reason": "unknown"}))
             started = time.monotonic()
+            _ser0 = time.monotonic()
+            # 〔2026-11-20 返工·按尝试归账〕首事件/首正文读数每 attempt 重置
+            # ——首试 503 的时刻不许沿给成功尝试（用户实测：模拟首试 503 时
+            # 首事件沿用了失败尝试的记录）。
+            _obs.reset_attempt_timings(_trace)
+            _think_sp = _make_think_splitter()
             try:
                 options = self._build_options(
                     model_name, system_prompt, user_prompt, temperature, max_tokens,
                     tools, prior_messages, turn_tail, turn_once, stream=False,
                     reasoning_effort=reasoning_effort,
                 )
+                _build_opts_ms = (time.monotonic() - _ser0) * 1000.0
                 assembler = BlockAssembler()
                 emitted: list[str] = []
                 async for chunk in _guarded_stream(self._sem_for(model_name), self._runtime.stream(options)):
+                    if chunk.type == "serialize-timing":
+                        # 〔返工3〕适配器实际发送编码耗时帧：入账后不透传、
+                        # 不计入端点首事件台账（编码发生在网络请求之前）。
+                        _json_dumps_ms = float(getattr(chunk, "ms", 0.0))
+                        continue
                     _obs.call_chunk(_trace)
                     if chunk.type == "text-delta":
+                        # [四段拆分] 首个**非空正文帧**＝用户可见首字（思考帧
+                        # 不计）——同一台账基准（call_begin）⇒ 与 first_chunk 可比
+                        if chunk.text:
+                            _bd_inc = _think_sp.feed(chunk.text)[1]
+                            if _bd_inc:
+                                _obs.call_content_chunk(_trace)
                         emitted.append(chunk.text)
                         if stream and on_chunk:
                             try:
@@ -848,6 +881,8 @@ class ModelGateway:
                                 "native_truncated": 1,
                                 "native_finish_tool_calls": True,
                                 "finish_reason": salvaged.get("finish_reason", "length"),
+                                # [B3 请求对账] 端点回包声明的模型名（可能为空）
+                                "response_model": assembler.response_model,
                             },
                         }
                     raise ModelCallFailure(failure.message, _classify(failure))
@@ -897,7 +932,12 @@ class ModelGateway:
                     # >0 而 reasoning_chars=0 ⇒ 想了但没回吐（合同允许），
                     # =0 ⇒ 真没想——「没 think 流」两种成因从此可分。
                     reasoning_tokens=(getattr(usage, "reasoning_tokens", None)
-                                      if usage else None))
+                                      if usage else None),
+                    # [2026-11-19 性能批次三] 首个提供方事件毫秒数（流式通道采集）
+                    first_chunk_ms=_obs.first_chunk_ms(_trace),
+                    serialize_ms=_build_opts_ms,
+                    json_dumps_ms=_json_dumps_ms,
+                    first_content_ms=_obs.content_chunk_ms(_trace))
                 _obs.call_end(_trace)
                 return result
 
@@ -930,7 +970,11 @@ class ModelGateway:
         _obs.log_model_call(trace_id=_trace, caller=caller, model=model_name,
                             work_id=work_id, card_id=card_id, seat=model_name,
                             latency_ms=int((time.monotonic() - loop_start) * 1000),
-                            error=f"重试 {max_attempts} 次后仍失败")
+                            error=f"重试 {max_attempts} 次后仍失败",
+                            first_chunk_ms=_obs.first_chunk_ms(_trace),
+                            serialize_ms=_build_opts_ms,
+                            json_dumps_ms=_json_dumps_ms,
+                            first_content_ms=_obs.content_chunk_ms(_trace))
         _obs.call_end(_trace)
         raise ModelError(ErrorCode.MODEL_CALL_FAILED, f"模型 {model_name} 重试 {max_attempts} 次后仍失败")
 
@@ -1034,6 +1078,12 @@ class ModelGateway:
             turn_tail = _ds_norm(turn_tail, _fill)
             turn_once = _ds_norm(turn_once, _fill)
         max_attempts, backoff = self._retry_params(model_name)
+        # [2026-11-19 返工3·流式路径四段] serialize（构建请求选项）/
+        # json_dumps（适配器实际发送编码，经 SerializeTimingChunk 回传）/
+        # first_content（首个非空正文帧）——与端点首事件（first_chunk 台账）
+        # 同一次 attempt 时间基准。取**成功 attempt** 的读数。
+        _build_opts_ms: float | None = None
+        _json_dumps_ms: float | None = None
 
         def _emit(phase: str, attempt: int, **kw: Any) -> None:
             if not on_status:
@@ -1049,15 +1099,33 @@ class ModelGateway:
             _emit("start" if attempt == 0 else "retry", attempt,
                   **({} if attempt == 0 else {"reason": "stream_error"}))
             started = time.monotonic()
+            _ser0 = time.monotonic()
+            # 〔返工·按尝试归账〕同 _call_once：首事件/首正文每 attempt 重置。
+            _obs.reset_attempt_timings(_trace)
+            _think_sp = _make_think_splitter()
             options = self._build_options(
                 model_name, system_prompt, user_prompt, temperature, max_tokens,
                 tools, prior_messages, turn_tail, turn_once, stream=True,
                 reasoning_effort=reasoning_effort,
             )
+            _build_opts_ms = (time.monotonic() - _ser0) * 1000.0
             assembler = BlockAssembler()
             try:
                 async for chunk in _guarded_stream(self._sem_for(model_name), self._runtime.stream(options)):
+                    if chunk.type == "serialize-timing":
+                        # 〔返工3〕适配器实际发送编码耗时帧：入账后不透传、
+                        # 不计入端点首事件台账（编码发生在网络请求之前）。
+                        _json_dumps_ms = float(getattr(chunk, "ms", 0.0))
+                        continue
                     _obs.call_chunk(_trace)
+                    if chunk.type == "text-delta":
+                        # 〔四段〕首个非空正文帧＝用户可见首字——同一台账基准。
+                        # `<think>` 内联思考**不算正文**（用户实测：140ms 是
+                        # think 内文本、正文 328ms 才出现）——过流式分流器。
+                        if chunk.text:
+                            _bd_inc = _think_sp.feed(chunk.text)[1]
+                            if _bd_inc:
+                                _obs.call_content_chunk(_trace)
                     if on_chunk:
                         try:
                             on_chunk(chunk.text if hasattr(chunk, "text") else "")
@@ -1097,7 +1165,12 @@ class ModelGateway:
                         len(b.text) for b in assembler.blocks()
                         if isinstance(b, ReasoningBlock)),
                     reasoning_tokens=(getattr(usage, "reasoning_tokens", None)
-                                      if usage else None))
+                                      if usage else None),
+                    # 〔返工3·四段〕流式路径与 call/_call_once 同口径
+                    first_chunk_ms=_obs.first_chunk_ms(_trace),
+                    serialize_ms=_build_opts_ms,
+                    json_dumps_ms=_json_dumps_ms,
+                    first_content_ms=_obs.content_chunk_ms(_trace))
                 yield result
                 _obs.call_end(_trace)
                 return
@@ -1130,6 +1203,13 @@ def _dedup_chain(primary: str, fallbacks: list[str] | None) -> list[str]:
         if m and m not in out:
             out.append(m)
     return out
+
+
+def _make_think_splitter():
+    """流式 `<think>` 分流器（返工3）：first_content 的正文判定过它——
+    `<think>` 内的 text-delta 不算用户可见首字。延迟 import 防 api↔gateway 环。"""
+    from ..api.think_strip import ThinkStreamSplitter
+    return ThinkStreamSplitter()
 
 
 class ModelCallFailure(Exception):

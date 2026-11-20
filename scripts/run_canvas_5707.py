@@ -36,6 +36,12 @@ ensure_utf8_console()
 #: 数据根：默认本工作树下，可用 ECO_5707_DATA 覆盖。
 DATA_ROOT = Path(os.environ.get("ECO_5707_DATA") or (BASE_DIR / "_data5707")).resolve()
 
+#: 静态资源与模板根：默认本仓；可用 ECO_5707_STATIC / ECO_5707_TEMPLATES 覆盖。
+#: 用途（性能批次一）：同一套后端、同一份数据根，量「改动前 / 改动后」两棵前端树
+#: ⇒ 前后读数同条件可比。覆盖目录须与本仓同构（static/…、templates/…）。
+STATIC_DIR = Path(os.environ.get("ECO_5707_STATIC") or (BASE_DIR / "static")).resolve()
+TEMPLATES_DIR = Path(os.environ.get("ECO_5707_TEMPLATES") or (BASE_DIR / "templates")).resolve()
+
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(BASE_DIR / ".env")   # 与 main.py 同款：先加载 .env 再导入路由
@@ -89,7 +95,7 @@ app = FastAPI(title="推演agent 5707 画布开发实例")
 
 app.include_router(api_router)
 app.include_router(settings_router)
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 # 与 main.py 一致：静态资源回源校验（否则改样式看的是旧文件）。
 install_asset_cache(app)
 
@@ -97,19 +103,19 @@ install_asset_cache(app)
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
     """与 main.py 同步：根地址渲染 home.html。"""
-    html = (BASE_DIR / "templates" / "home.html").read_text(encoding="utf-8")
+    html = (TEMPLATES_DIR / "home.html").read_text(encoding="utf-8")
     return HTMLResponse(content=html)
 
 
 def _render_work(work_id: str) -> str:
     """与 main.py 逐行一致（[阶段3 A3.2] 画布页只注入 WORK_ID）。"""
-    html = (BASE_DIR / "templates" / "work.html").read_text(encoding="utf-8")
+    html = (TEMPLATES_DIR / "work.html").read_text(encoding="utf-8")
     return html.replace("{{WORK_ID}}", work_id).replace("{{CARD_ID}}", "")
 
 
 def _render_card(work_id: str, card_id: str) -> str:
     """与 main.py 逐行一致（对话页渲染 card.html）。"""
-    html = (BASE_DIR / "templates" / "card.html").read_text(encoding="utf-8")
+    html = (TEMPLATES_DIR / "card.html").read_text(encoding="utf-8")
     return html.replace("{{WORK_ID}}", work_id).replace("{{CARD_ID}}", card_id)
 
 
@@ -147,5 +153,5 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 5707
-    print(f"[5707] base={BASE_DIR}  data={_DATA}  port={port}", flush=True)
+    print(f"[5707] base={BASE_DIR}  data={_DATA}  static={STATIC_DIR}  tpl={TEMPLATES_DIR}  port={port}", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=port)

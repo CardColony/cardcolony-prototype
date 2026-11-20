@@ -555,11 +555,8 @@ async def test_all_passed_inside_failed_turn_still_promotes(
         {"id": "review_step_not_finished", "active": True,
          "scope": {"kind": "card"}, "watch": ["review_round_done"],
          "window": "none",
-         "when": {"any": [
-             {"event": {"types": ["review_round_done"],
-                        "where": {"continued": True}, "within": "turn"}},
-             {"event": {"types": ["review_round_done"],
-                        "where": {"has_next": True}, "within": "turn"}}]},
+         "when": {"event": {"types": ["review_round_done"],
+                            "where": {"runnable": True}, "within": "turn"}},
          "then": {"target": "self", "mode": "continue", "wake": True,
                   "message": "（续接）评审还没结束，继续跑下一步。"}},
     ]}

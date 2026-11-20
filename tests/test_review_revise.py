@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from src.api import card_tools, model_service, review_runner, routes
 from src.storage import (card_store, function_store, review_store, session_facade,
                          work_store)
@@ -762,6 +764,130 @@ async def test_dispatch_to_halted_child_delivers_quiet_no_fail(sandbox,
         control.unhalt(wid, cid, by="t", via="test")
     st3 = await review_store.state_of(wid, rid)
     assert int(st3.get("dispatch_fails") or 0) == 0
+
+
+async def test_missing_vote_waits_and_real_vote_resumes_review(sandbox, monkeypatch):
+    from src.api import message_runner
+    from src.infra import policy_runner, policy_set
+    from tests import async_settle
+    from tests.test_policy_set import _real_policies
+
+    wid, _cid, _fids, rid = await _setup()
+    members = (await review_store.status(wid, rid))["members"]
+    calls = 0
+    resumed = []
+
+    async def no_vote(**kwargs):
+        nonlocal calls
+        calls += 1
+        assert calls <= len(members) * 3, "评审未进入等待"
+        return ({"content": "已读，尚未表态。", "tool_calls": []}, "fake-model")
+
+    policies = policy_set.PolicySet()
+    assert policies.load([p for p in _real_policies()
+                          if p["id"] == "review_step_not_finished"]) == []
+    policy_set.reset_set(policies)
+    monkeypatch.setattr(model_service, "call_main", no_vote)
+    monkeypatch.delenv(review_runner.ENV_NO_AUTO, raising=False)
+
+    spawn_round = review_runner.spawn_round
+
+    def track_resume(*args):
+        task = spawn_round(*args)
+        resumed.append(task)
+        return task
+
+    monkeypatch.setattr(review_runner, "spawn_round", track_resume)
+
+    await review_runner.run_once(wid, rid)
+    await async_settle.wait_until(lambda: calls >= 2 * len(members), what="各席发言及补投")
+    while await policy_runner.drain():
+        pass
+    waiting = await review_runner.run_once(wid, rid)
+    assert waiting["reason"] == "awaiting_vote"
+    assert calls == 2 * len(members)
+
+    cards = card_store.iter_card_metas(wid)
+    first = members[0]
+    vote = await card_tools._h_approve(wid, first, {"review_card_id": rid}, cards)
+    assert vote["ok"]
+    expected = calls + len(members) - 1
+    assert len(resumed) == 1
+    await message_runner.await_spawned(resumed[0])
+    await async_settle.wait_until(lambda: calls >= expected, what="新票后的补投")
+    while await policy_runner.drain():
+        pass
+    assert (await review_runner.run_once(wid, rid))["reason"] == "awaiting_vote"
+    assert calls == expected
+    assert (await card_tools._h_approve(wid, first, {"review_card_id": rid}, cards))["ok"]
+    assert await policy_runner.drain() == 0
+    assert len(resumed) == 1
+    assert calls == expected
+
+
+@pytest.mark.parametrize("case", ["waiting", "empty", "new_batch", "halted", "queued_stale"])
+async def test_activate_only_delivers_current_review_ask(sandbox, monkeypatch, case):
+    from src.api import control, message_runner
+
+    wid, cid, _fids, rid = await _setup()
+    root = work_store.work_card_id_of(wid)
+    cards = card_store.iter_card_metas(wid)
+    assert (await card_tools._h_silence_card(wid, root, {"card_id": cid}, cards))["ok"]
+    monkeypatch.delenv("ECO_NO_AUTO_DELIVER", raising=False)
+    monkeypatch.delenv(review_runner.ENV_NO_AUTO, raising=False)
+    calls = 0
+    scheduled = []
+
+    async def reply(**kwargs):
+        nonlocal calls
+        calls += 1
+        return ({"content": "已收到本批评审请求。", "tool_calls": []}, "fake-model")
+
+    spawn = message_runner._spawn_tracked
+
+    def track(coro, **kwargs):
+        task = spawn(coro, **kwargs)
+        if kwargs.get("card_id") == cid:
+            scheduled.append(task)
+        return task
+
+    monkeypatch.setattr(model_service, "call_main", reply)
+    monkeypatch.setattr(message_runner, "_spawn_tracked", track)
+    if case != "empty":
+        members = (await review_store.status(wid, rid))["members"]
+        for seat in members:
+            await _rejecting_seat(wid, rid, seat)
+        waiting = await review_runner.run_once(wid, rid)
+        assert (waiting["reason"], waiting["why"]) == ("delivered_quiet", "silenced")
+        assert calls == 0 and not scheduled
+    if case == "new_batch":
+        await review_store.open_batch(wid, rid, "新批", target=cid)
+    if case == "halted":
+        control.halt(wid, cid, reason="人工停止", by="user")
+    if case == "queued_stale":
+        acquire = routes.serial_gate.acquire
+
+        async def change_batch(work_id, session_id):
+            await acquire(work_id, session_id)
+            await review_store.open_batch(wid, rid, "排队期间换批", target=cid)
+
+        monkeypatch.setattr(routes.serial_gate, "acquire", change_batch)
+
+    try:
+        for _ in range(2):
+            out = await card_tools._h_silence_card(
+                wid, root, {"card_id": cid, "action": "activate"}, cards)
+            assert out["ok"]
+        for task in scheduled:
+            await message_runner.await_spawned(task)
+        assert len(scheduled) == (1 if case in {"waiting", "queued_stale"} else 0)
+        assert calls == (1 if case == "waiting" else 0)
+        assert not session_facade.turn_holder(wid, cid)
+        if case == "halted":
+            assert control.is_halted(wid, cid) is not None
+    finally:
+        if case == "halted":
+            control.unhalt(wid, cid, by="test", via="test")
 
 
 async def test_vote_rearms_dispatch_fails(sandbox):

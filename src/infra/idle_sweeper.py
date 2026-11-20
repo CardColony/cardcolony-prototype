@@ -111,6 +111,8 @@ async def _sweep_once() -> int:
             logger.warning("[idle_sweeper] 读卡表失败 %s: %s", wid, exc)
             continue
         for cid, m in metas.items():
+            # 扫描与回合共用主循环，每张卡之间让等待的请求推进。
+            await asyncio.sleep(0)
             state = str((m or {}).get("state") or "")
             if state in ("archived", "deleted"):
                 continue  # 死卡没有"静默"可言

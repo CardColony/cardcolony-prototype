@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { createChatView } from "../static/esm/flow/chat-view.js";
 import { createMessageItem } from "../static/esm/flow/message-item.js";
 import {
-  setupDom, makeScrollable, stubRects, JSDOM_AVAILABLE, SKIP_REASON,
+  setupDom, makeScrollable, stubRects, nextFrame, JSDOM_AVAILABLE, SKIP_REASON,
 } from "./dom_scaffold.mjs";
 
 /* ---- jsdom 可选依赖：没装就整体跳过（不误红，也不假装跑过） ---- */
@@ -136,8 +136,12 @@ test("节点改版：rev 变了 ⇒ 原地换元素（不追加重复行）", { 
 /* ================================================================ 回到底部 */
 
 /* [5715 · 网抓] 回底按钮的显隐是「跟随权」的对外表达：
-   在底部 ⇒ 藏；读者上翻 ⇒ 冒出来。 */
-test("回到底部：读者上翻后按钮出现，点它回到底部后按钮又藏起来", { skip: SKIP }, (t) => {
+   在底部 ⇒ 藏；读者上翻 ⇒ 冒出来。
+   [2026-11-20 · 修断言时序] scroll 处理是**按帧合并**的（同一帧的多个
+   scroll 事件只处理最后一次）⇒ 派发后必须**等一帧**再断言。
+   改前这条断言紧跟 dispatchEvent 同步跑 ⇒ 断言在处理之前 ⇒ 假红
+   （2026-11-20 复跑时它与另两条一起红；产品行为本身是对的）。 */
+test("回到底部：读者上翻后按钮出现，点它回到底部后按钮又藏起来", { skip: SKIP }, async (t) => {
   const { view, scroll, scrollState } = mountView(t);
   view.render(["a"], () => 1);
   view.markLoaded();
@@ -147,6 +151,7 @@ test("回到底部：读者上翻后按钮出现，点它回到底部后按钮�
   // 读者真上滚：改 scrollTop 再派 scroll
   scroll.scrollTop = 100;
   scroll.dispatchEvent(new window.Event("scroll"));
+  await nextFrame();
   assert.notEqual(slot.style.display, "none", "读者上翻后回底按钮必须出现");
   assert.equal(view.isAtBottom(), false, "上翻后不该还说自己在底部");
 
@@ -158,13 +163,15 @@ test("回到底部：读者上翻后按钮出现，点它回到底部后按钮�
 });
 
 /* [5715 · 网抓] 「读者上翻时来了新消息」必须**说一声**（按钮带"新消息"），
-   否则用户以为界面死了。 */
-test("新消息：非跟随态来了新内容 ⇒ 回底按钮标出「新消息」", { skip: SKIP }, (t) => {
+   否则用户以为界面死了。
+   [2026-11-20] 同样要等一帧（scroll 处理按帧合并）。 */
+test("新消息：非跟随态来了新内容 ⇒ 回底按钮标出「新消息」", { skip: SKIP }, async (t) => {
   const { view, scroll } = mountView(t);
   view.render(["a"], () => 1);
   view.markLoaded();
   scroll.scrollTop = 100;
   scroll.dispatchEvent(new window.Event("scroll"));
+  await nextFrame();
 
   // 再来一条新节点（末键变化 ⇒ followSig 变）
   view.render(["a", "b"], () => 1);
@@ -198,8 +205,10 @@ test("分页：没有更多 ⇒ 「加载更早」隐藏；有更多 ⇒ 可见�
 /* ================================================================ 分页锚点 */
 
 /* [5715 · 补网] 上翻加载后**锚点保位**：更早的一页插到前面后，
-   原来那行必须回到同一位置（否则读者正看的内容被顶走）。 */
-test("分页锚点保位：插入更早的行后，被锚定的那行回到同一位置", { skip: SKIP }, (t) => {
+   原来那行必须回到同一位置（否则读者正看的内容被顶走）。
+   [2026-11-20] scroll 处理按帧合并 ⇒ 两段滚动之间要等一帧，
+   否则两段会被合并成一次（只看到最后一段的状态）。 */
+test("分页锚点保位：插入更早的行后，被锚定的那行回到同一位置", { skip: SKIP }, async (t) => {
   let loaded = 0;
   const { view, scroll, rows } = mountView(t, {
     hasMore: () => true,
@@ -213,9 +222,11 @@ test("分页锚点保位：插入更早的行后，被锚定的那行回到同�
   // 读者先滚一段（scrollTop 与程序台账不同 ⇒ 判为「读者真滚动」）
   scroll.scrollTop = 200;
   scroll.dispatchEvent(new window.Event("scroll"));
+  await nextFrame();
   // 再滚到顶 ⇒ 触发上翻加载，并记下锚（首行 b 的位置）
   scroll.scrollTop = 0;
   scroll.dispatchEvent(new window.Event("scroll"));
+  await nextFrame();
   assert.equal(loaded, 1, "滚到顶必须触发上翻加载");
 
   // 更早的一页到了 ⇒ 布局整体下移（b 从 100 挪到 160，被顶下去 60px）

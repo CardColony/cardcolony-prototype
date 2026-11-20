@@ -3,6 +3,7 @@
 
 启动时初始化数据目录、方法论文件、canvas.json、git 仓库与 .server.pid。
 """
+import asyncio
 import json
 import logging
 import os
@@ -43,6 +44,22 @@ ensure_utf8_console()
 # 经 on_main 委托回主循环 A——startup 钩子与端点共用同一套边界。
 from src.infra.loops import install_main_dispatch, on_main
 from src.infra import procs as _procs
+
+
+_listener_ready: asyncio.Event | None = None
+
+
+def _start_after_listen(fn) -> None:
+    """在调用方事件循环安排恢复任务，等服务端开始监听再扫库。"""
+    async def _run() -> None:
+        if _listener_ready is not None:
+            await _listener_ready.wait()
+        try:
+            await fn()
+        except Exception:
+            logger.exception("[startup] 后台恢复失败: %s", fn.__qualname__)
+
+    asyncio.create_task(_run())
 
 
 def init_directories() -> None:
@@ -171,24 +188,13 @@ except Exception as _exc:  # noqa: BLE001 日志装不上也不阻断启动
 
 @app.on_event("startup")
 @on_main
-async def _start_goal_driver() -> None:
-    """[goal 重启恢复 2026-10-28] 装载续轮驱动 + 把还在跑的目标重新授上权。
-
-    两件事一起做，缺一都白搭：
-      ① ``install()``：挂 ``goal/changed`` 监听（改完目标要能立刻点火）；
-         改前这里**从来没被调用过**，所以 `/goal resume` 只置 armed、没人点火。
-      ② ``rearm_active_goals()``：``activation`` 永不落盘，重启后全部 disarmed——
-         不恢复的话，数据库里 goal 还 active、界面上看着在跑，驱动却再也不认它
-         （用户实测「goal 明明没完成却停下了」就是这个）。
-
-    失败不阻断启动（起不来只是不自动续轮，服务本身该能用）。
-    """
-    try:
+async def _start_goal_recovery() -> None:
+    """端口就绪后恢复 active 目标。goal/changed 监听在启动时安装。"""
+    async def _rearm() -> None:
         from src.goal import driver as goal_driver
-        goal_driver.install()
         await goal_driver.rearm_active_goals()
-    except Exception as _exc:  # noqa: BLE001
-        print(f"[startup] goal 驱动装载失败（不阻断启动）: {_exc}", flush=True)
+
+    _start_after_listen(_rearm)
 
 
 @app.on_event("startup")
@@ -235,9 +241,8 @@ async def _start_auto_scheduler() -> None:
     # [角色机制 5710 v2] 重启续跑：同步队列在 SQLite，重启后把 active 角色的
     # pending 同步重新唤醒。fail-open，不阻断启动。
     try:
-        import asyncio as _asyncio
         from src.api import role_room as _role_room
-        _asyncio.create_task(_role_room.startup_sweep_all())
+        _start_after_listen(_role_room.startup_sweep_all)
     except Exception as exc:  # noqa: BLE001
         print(f"[startup] 角色续跑启动失败（不阻断）: {exc}", flush=True)
     # [2026-10-29 删] 这里原来照角色版抄了一行
@@ -269,17 +274,12 @@ async def _start_goal_driver() -> None:
 @app.on_event("startup")
 @on_main
 async def _start_idle_sweeper() -> None:
-    """[执行卡静默自动归档 2026-11-12 · 用户令] 装静默清扫器。
-
-    每个 runner 各扫自己属主的卡（单卡单写者）——非 0 号 runner 的
-    startup 表被 _runner_local_startup 整个换掉，那边另装；web 角色
-    钩子早被清空，根本到不了这里。
-    """
-    try:
+    """端口就绪后，每个 runner 在主循环扫描自己属主的卡。"""
+    async def _install() -> None:
         from src.infra import idle_sweeper
         idle_sweeper.install()
-    except Exception as exc:  # noqa: BLE001 装载失败不阻断主服务
-        print(f"[startup] 静默清扫器装载失败（不阻断）: {exc}", flush=True)
+
+    _start_after_listen(_install)
 
 @app.on_event("startup")
 @on_main
@@ -293,7 +293,6 @@ async def _resume_reviews() -> None:
     fail-open：任何一张失败只打印，不影响启动和其他卡。
     """
     try:
-        import asyncio as _asyncio
         from src.storage import work_store as _ws
         from src.storage import card_db as _cdb
         from src.api import review_runner as _rr
@@ -327,7 +326,7 @@ async def _resume_reviews() -> None:
                     except Exception as exc:  # noqa: BLE001 单张失败不影响别的
                         print(f"[startup] 评审续跑失败 {wid}/{rid}: {exc}", flush=True)
 
-        _asyncio.create_task(_run())
+        _start_after_listen(_run)
     except Exception as exc:  # noqa: BLE001
         print(f"[startup] 评审续跑装载失败（不阻断）: {exc}", flush=True)
 
@@ -342,7 +341,6 @@ async def _resume_interventions() -> None:
     按原文重投（投前查重 + 事项复核，不复活已解决的问题）。fail-open。
     """
     try:
-        import asyncio as _asyncio
         from src.storage import work_store as _ws
         from src.infra import intervention_runner as _ir
 
@@ -358,7 +356,7 @@ async def _resume_interventions() -> None:
                 except Exception as exc:  # noqa: BLE001 单项目失败不影响别的
                     print(f"[startup] 干预接责失败 {wid}: {exc}", flush=True)
 
-        _asyncio.create_task(_run())
+        _start_after_listen(_run)
     except Exception as exc:  # noqa: BLE001
         print(f"[startup] 干预接责装载失败（不阻断）: {exc}", flush=True)
 
@@ -718,13 +716,12 @@ if __name__ == "__main__":
     #   主循环 A（本线程）：runner/scheduler/harness + 一切写与 emit；
     #   服务循环 B（serving-loop 线程）：uvicorn + 静态 + 白名单读 + SSE。
     # 线程间由 OS 抢占调度 ⇒ HTTP 永不被跑卡域的同步段饿死。
-    import asyncio as _asyncio
     import threading as _threading
 
     from src.infra import loops as _loops
 
-    _main_loop = _asyncio.new_event_loop()
-    _asyncio.set_event_loop(_main_loop)
+    _main_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_main_loop)
     _loops.set_main_loop(_main_loop)
     _loops.start_lag_monitor(_main_loop)
     # [runner 分槽环 2026-11-05] 卡按子树根亲和散到 K 条环（lane0＝A）。
@@ -738,30 +735,32 @@ if __name__ == "__main__":
     if _procs.is_web():
         app.router.on_startup.clear()
     elif _procs.is_runner() and not _procs.is_primary_runner():
+        @on_main
         async def _runner_local_startup() -> None:
-            try:
-                from src.goal import driver as goal_driver
-                goal_driver.install()
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                # [执行卡静默自动归档 2026-11-12] 非 0 号 runner 也装——
-                # 每个 runner 只扫自己属主的卡（单卡单写者）。
-                from src.infra import idle_sweeper
-                idle_sweeper.install()
-            except Exception:  # noqa: BLE001
-                pass
+            await _start_goal_driver()
+            await _start_idle_sweeper()
+
         app.router.on_startup[:] = [_runner_local_startup]
     if _procs.runner_side():
+        _listener_ready = asyncio.Event()
         _loops.start_runner_lanes(
             int(os.environ.get("ECO_RUNNER_LOOPS", "1") or "1"))
 
     _holder: dict = {}
 
+    class _Server(uvicorn.Server):
+        async def startup(self, sockets=None) -> None:
+            await super().startup(sockets=sockets)
+            if self.started and _listener_ready is not None:
+                _main_loop.call_soon_threadsafe(_listener_ready.set)
+
     def _serve() -> None:
-        loop_b = _asyncio.new_event_loop()
-        _asyncio.set_event_loop(loop_b)
+        loop_b = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop_b)
         _loops.set_serving_loop(loop_b)
+        # [2026-11-19 返工] 服务循环 B 的迟滞仪表——SSE 池占满复验实测
+        # fanin 与 40 条泵同刻恢复的 ~20s 尖峰，B 侧仪表用于定责。
+        _loops.start_lag_monitor(loop_b, serving=True)
         # [多进程拆分 2026-11-06] web 守 5700（对外）；runner-i 守
         # ECO_RUNNER_BASE_PORT+i（缺省 5701+i，回环只接 web 反代与
         # runner 间转发）；all＝旧行为单进程 5700。
@@ -773,7 +772,7 @@ if __name__ == "__main__":
             app, host="127.0.0.1", port=_port, timeout_keep_alive=30,
             loop="asyncio",
         )
-        server = uvicorn.Server(config)
+        server = _Server(config)
         _holder["server"] = server
         try:
             loop_b.run_until_complete(server.serve())

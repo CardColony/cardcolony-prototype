@@ -179,8 +179,8 @@ def test_b2_tool_table_and_versions():
     列 OP_ONLY_TOOLS、不进常规工具面）；TOOL_TABLE_VERSION tools-tc-7 → tools-tc-8。
     """
     src = (ROOT / "src" / "api" / "card_tools.py").read_text(encoding="utf-8")
-    assert src.count('": ToolDef(') == 36  # [2026-11-09 画线看全图] 35→36（+list_cards）
-    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-31"  # [2026-11-02] 新增 create_ui_card
+    assert src.count('": ToolDef(') == 37  # [声明式等待 2026-11-20] 36→37（+declare_wait）
+    assert card_tools.TOOL_TABLE_VERSION == "tools-tc-33"  # [2026-11-20] memory_expand section/revision/cursor
     assert prompts.BASE_PROMPT_VERSION == "t27-19"  # [2026-11-01] 随现配置对齐（事实分层 t27-2→t27-3）
     assert "link_rel" in card_tools.TOOL_REGISTRY
     assert "unlink_rel" in card_tools.TOOL_REGISTRY
@@ -418,9 +418,11 @@ def test_b3_region_table_16_regions_with_250():
     # [2026-10-21] 配置演进至 v9：新增 91/92/93/145/175 五区，17→22 同步快照。
     # [2026-11-01] 22→23：新增 order 88 区（类型思考等），快照随行。
     # [2026-11-10] 23→24：新增 order 160「上游需求文档」（执行/差事卡参照尺）。
-    assert len(context_regions.REGION_TABLE) == 24
+    # [2026-11-20] 24→25：新增 order 1002「工具调用与汇报回合提示」（并行线）。
+    assert len(context_regions.REGION_TABLE) == 25
     assert orders == [0, 88, 85, 90, 91, 92, 93, 95, 100, 145, 150, 152, 155,
-                      160, 170, 175, 200, 250, 300, 900, 999, 1000, 1010, 1020]
+                      160, 170, 175, 200, 250, 300, 900, 999, 1000, 1002,
+                      1010, 1020]
     by_key = {r["key"]: r for r in context_regions.REGION_TABLE}
     assert by_key["goal"]["name"] == "自动模式·目标"
     assert by_key["relations"]["name"] == "依赖关联"
@@ -461,6 +463,72 @@ def test_b3_render_both_directions():
     inn = context_regions.render_dep_relations_region(
         [], [{"source": "card_001", "kind": "影响", "detail": "同模块"}])
     assert "- 依赖/关联我的：card_001（影响·同模块）" in inn
+
+
+# ── 成本优化任务书批一（2026-11-20）：同请求内依赖正稿无损去重 ────────────
+
+def test_dedup_same_target_two_edges():
+    """同一卡被两条语义不同的正向边指着 ⇒ 两边两说明都在，正稿只全文一份。"""
+    doc = "A3 契约正文\n第 1 条：接口冻结"
+    out = context_regions.render_dep_relations_region([
+        {"target": "card_007", "kind": "影响", "detail": "波及 L4 实现",
+         "requirements": doc},
+        {"target": "card_007", "kind": "依赖", "detail": "消费 A3 公开能力",
+         "requirements": doc},
+    ], [])
+    assert "- 我依赖/关联：card_007（影响·波及 L4 实现）" in out
+    assert "- 我依赖/关联：card_007（依赖·消费 A3 公开能力）" in out
+    # 正稿逐字只出现一份；第二处留指针行
+    assert out.count("card_007 的需求文档（随它卡面更新）：") == 1
+    assert out.count(doc.split("\n")[0]) == 1
+    assert "同一卡面同一正文，此处不重复展开" in out
+
+
+def test_dedup_empty_doc_no_line():
+    """目标无正稿 ⇒ 边照常，不产生文档行（原行为不变）。"""
+    out = context_regions.render_dep_relations_region(
+        [{"target": "card_007", "kind": "依赖", "detail": "d",
+          "requirements": "  "}], [])
+    assert "- 我依赖/关联：card_007" in out
+    assert "需求文档" not in out
+
+
+def test_dedup_two_cards_same_text_each_kept():
+    """不同卡号即便正文逐字相同，各有自己的文档身份 ⇒ 两份都展示。"""
+    doc = "同一份模板生成的正稿"
+    out = context_regions.render_dep_relations_region([
+        {"target": "card_007", "kind": "依赖", "detail": "d1",
+         "requirements": doc},
+        {"target": "card_009", "kind": "依赖", "detail": "d2",
+         "requirements": doc},
+    ], [])
+    assert out.count("的需求文档（随它卡面更新）：") == 2
+    assert out.count(doc) == 2
+
+
+def test_dedup_same_target_changed_text_both_shown():
+    """同卡两次投影文本不同（版本变化）⇒ 指纹不同 ⇒ 两份各自展示，不混来源。"""
+    out = context_regions.render_dep_relations_region([
+        {"target": "card_007", "kind": "依赖", "detail": "旧版",
+         "requirements": "v1 正文"},
+        {"target": "card_007", "kind": "依赖", "detail": "新版",
+         "requirements": "v2 正文"},
+    ], [])
+    assert "v1 正文" in out and "v2 正文" in out
+    assert out.count("card_007 的需求文档（随它卡面更新）：") == 2
+
+
+def test_dedup_no_dup_unchanged():
+    """无重复 ⇒ 渲染逐字与旧行为一致（每条边各带各的正稿）。"""
+    out = context_regions.render_dep_relations_region([
+        {"target": "card_a", "kind": "依赖", "detail": "d",
+         "requirements": "A 的正稿"},
+        {"target": "card_b", "kind": "依赖", "detail": "e",
+         "requirements": "B 的正稿"},
+    ], [{"source": "card_c", "kind": "影响", "detail": "反向"}])
+    assert "A 的正稿" in out and "B 的正稿" in out
+    assert "不重复展开" not in out
+    assert "- 依赖/关联我的：card_c（影响·反向）" in out
 
 
 async def test_b3_injection_two_directions(sandbox):

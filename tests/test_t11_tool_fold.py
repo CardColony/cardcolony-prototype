@@ -65,6 +65,9 @@ def test_t10_readonly_whitelist():
         "read_archive",
         # [F19 2026-10-31] memory_expand 展开工具（只读下探）
         "memory_expand",
+        # [wait/list_cards 只读化] wait＝声明等待不改状态；list_cards＝清单只读
+        "wait",
+        "list_cards",
     } & set(card_tools.TOOL_REGISTRY)
 
     assert card_tools.READONLY_TOOLS == frozenset(expected)

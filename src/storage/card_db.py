@@ -1471,12 +1471,20 @@ def row_to_meta(row: sqlite3.Row) -> dict[str, Any]:
     旧读侧（``parse_front_matter``）的键集＝「front matter 里写了的键」；
     这里等价为「列非 NULL 才出键」——NULL 即「没写过」。tags/links/relations 例外：
     旧渲染恒写 ``[]``，故 NULL 也给 ``[]``。
+
+    [窄投影 2026-11-20] 行里**没有**的列直接跳过（而不是报错）——
+    ``get_card_row_cols`` 取的是列子集，sqlite3.Row 取不存在的列会抛 IndexError。
+    全行读的键集与改前逐字一致（每个列都取得到 ⇒ 行为不变）。
     """
     meta: dict[str, Any] = {}
     for col in _CARD_COLUMNS:
         if col in _BODY_COLUMNS or col == "work_id":
             continue
-        val = row[col]
+        try:
+            val = row[col]
+        except (IndexError, KeyError):
+            continue          # 窄投影没取这列 ⇒ 这条 meta 键不存在
+
         if col in _JSON_COLUMNS:
             if val is None:
                 if col in _JSON_LIST_COLUMNS:

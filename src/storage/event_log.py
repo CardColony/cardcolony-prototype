@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import json
 import mmap
+import sys
 
 #: json.loads 的**模块内别名**：测试可数「解析了多少行」，
 #: 用来钉住「尾部窗口不许退回全量解析」这条性能契约（不碰全局 json）。
@@ -53,6 +54,11 @@ from typing import Any, Iterable, Optional
 from . import session_store
 
 logger = logging.getLogger("storage.event_log")
+
+# 〔2026-11-19 返工2〕文件身份校验只在 Windows 生效（st_ctime=创建时间、
+# st_ino=文件索引号——追加不变、替换必变、os.utime 伪装不了）。POSIX 上
+# st_ctime＝inode change time（追加也变）语义不同，回退指纹行为。
+_WIN_IDENTITY = sys.platform == "win32" 
 
 # 七键定死——落盘记录的键集恒定（新增语义走 data 内部，不动骨架）
 RECORD_KEYS = ("seq", "card_id", "run_id", "round", "type", "data", "model")
@@ -520,14 +526,22 @@ _SCAN_STATE: dict[str, dict[str, Any]] = {}
 #: 撤区间缓存的条目上限（超出按插入顺序丢最旧）。
 _REVOKE_CACHE_MAX = 512
 #: 单路径索引的行数上限（超过就弃用索引，翻页回退全量路径）。
-_INDEX_MAX_ENTRIES = 200_000
+#: 〔2026-11-19 返工·反例③〕原来只有条目闸（20 万条最坏 ~30-46MB/路径，
+#: 512 路径最坏 20GB+）。改**条目+字节双闸**：每条估算开销＝ts 字节 + 120B
+#: 固定（tuple + int + bool），任一闸到顶即弃用索引（spans 照常扫完，
+#: 翻页回退全量路径——正确性不受影响，只是回退到旧性能）。
+_INDEX_MAX_ENTRIES = 100_000
+_INDEX_MAX_BYTES = 24 * 1024 * 1024
 #: 「小行」阈值：以内整行 json.loads 抽 seq/ts，超过走行首/行尾正则。
 _INDEX_PARSE_MAX = 64 * 1024
 
 #: 索引行条目：(归一化 ts, seq, 行起偏移, 行止偏移, 是否控制记录)。
 #: ts 归一化与 ``_chrono_key`` 同一函数 ⇒ 排序语义逐字一致。
-_SCAN_LOCKS: dict[str, threading.Lock] = {}
-_SCAN_LOCKS_GUARD = threading.Lock()
+#: 〔2026-11-19 返工·反例③〕扫描锁改**恒定容量分桶**：原来按路径一把锁，
+#: 锁 dict 随卡数无限涨（512+ 卡的服务里就是 512+ 把常驻锁）。现在 256 把
+#: 锁按路径 md5 哈希映射——锁数恒定；不同路径偶共享同一把锁只是多等一下，
+#: 互斥语义（同路径扫描串行、并发追加只发布完整边界结果）不破。
+_SCAN_LOCKS: list[threading.Lock] = [threading.Lock() for _ in range(256)]
 _SCAN_STATS: dict[str, int] = {"full_rebuilds": 0, "delta_scans": 0,
                                "cache_hits": 0, "bytes_scanned": 0,
                                "bytes_skipped": 0, "index_lines": 0}
@@ -560,6 +574,25 @@ _SEQ_HEAD_RE = re.compile(rb'"seq"\s*:\s*(\d+)')
 _TS_TAIL_RE = re.compile(rb'"ts"\s*:\s*("([^"]*)"|\d+(?:\.\d+)?)')
 
 
+def _top_ts_of(raw: "mmap.mmap", pos: int, end: int) -> "bytes | None":
+    """行 [pos,end) 的**顶层** ts 原始值片段（含引号/数字），取不到 ⇒ None。
+
+    〔2026-11-19 返工·反例②〕骨架里 ts 是**最后一个键**（其后只有 ``}``），
+    但 data 尾部内容里可能恰好出现 ``"ts": "…"` 字样——`search` 取第一个
+    匹配会被 data 污染 ⇒ 顶层 ts 错 ⇒ (ts,seq) 排序错 ⇒ 翻页旧页漏/错记录。
+    这里 ``rfind(b'"ts"')`` 从行尾取**最后一次**键名出现（顶层 ts 一定在
+    data 之后），从那个位置起再匹配值——data 再怎么嵌都污染不到。
+    """
+    i = raw.rfind(b'"ts"', pos, end)
+    if i < 0:
+        return None
+    mt = _TS_TAIL_RE.match(raw, i)
+    if mt is None:
+        # 键名后不是合法值形态（畸形行）⇒ 交整行解析兜底
+        return None
+    return mt.group(1)
+
+
 def _index_key_of(raw: "mmap.mmap", pos: int, end: int) -> "tuple[str, int] | None":
     """行 [pos,end) 的 (归一化 ts, seq)。小行整行解析；巨型行只切头尾小片，
     抽取失败（畸形/极端结构）才整行解析兜底——正确性优先于速度。
@@ -580,9 +613,8 @@ def _index_key_of(raw: "mmap.mmap", pos: int, end: int) -> "tuple[str, int] | No
     if m is None:
         return None
     seq = int(m.group(1))
-    tail = raw[max(pos, end - 1024):end]
-    mt = _TS_TAIL_RE.search(tail)
-    if mt is None:
+    val = _top_ts_of(raw, pos, end)
+    if val is None:
         # 兜底：整行解析（巨型行一次 ~200ms，只在极端结构时发生）
         try:
             rec = _loads(raw[pos:end].decode("utf-8", errors="replace"))
@@ -592,17 +624,29 @@ def _index_key_of(raw: "mmap.mmap", pos: int, end: int) -> "tuple[str, int] | No
         if seq2 is None:
             return None
         return _norm_ts(rec.get("ts")), seq2
-    val = mt.group(1)
     ts = val[1:-1].decode("utf-8", errors="replace") if val.startswith(b'"') \
         else val.decode("ascii", errors="replace")
     return _norm_ts(ts), seq
 
 
 def _prefix_ok(path: Path, s: dict) -> bool:
-    """头 ``fp_len`` 字节指纹一致 ⇒ 已扫前缀可信任（追加场景的廉价确认）。"""
+    """头 ``fp_len`` 字节指纹一致 ⇒ 已扫前缀可信任（追加场景的廉价确认）。
+
+    〔2026-11-19 返工〕补**尾指纹**：``size_scanned`` 边界往前 64B 也核对——
+    「头尾都没动、中段被原地替换」的改写现在会被第二道指纹拦下（mtime
+    仍是主防线；同长同 mtime 的中段改写从『不可检测』降为『需连边界 64B
+    都恰好不动』）。核对读的是**旧文件已扫前缀的尾部**，与当前文件无关。
+    """
     try:
         with open(path, "rb") as f:
-            return _md5(f.read(s["fp_len"])) == s["fp"]
+            head = f.read(s["fp_len"])
+            ok = _md5(head) == s["fp"]
+            if ok and s.get("tail_fp"):
+                tail_off = max(0, s["size_scanned"] - 64)
+                if s["size_scanned"] > 0:
+                    f.seek(tail_off)
+                    ok = _md5(f.read(min(64, s["size_scanned"]))) == s["tail_fp"]
+            return ok
     except OSError:
         return False
 
@@ -625,13 +669,22 @@ def _scan_state(path: Path, want_index: bool) -> "tuple[list, list | None]":
     except OSError:
         return [], None
     size, mtime = st.st_size, st.st_mtime_ns
-    lock = _SCAN_LOCKS.get(key)
-    if lock is None:
-        with _SCAN_LOCKS_GUARD:
-            lock = _SCAN_LOCKS.setdefault(key, threading.Lock())
-    with lock:
+    # 〔2026-11-19 返工2·文件身份〕替换检测的关键信号：**Windows 上
+    # st_ino（文件索引号）与 st_ctime（创建时间）**。追加写两者不变；
+    # 「用更大的文件替换旧事件文件」（os.replace/重写再改名）两者**必变**，
+    # 且 os.utime 改不了创建时间——对抗性伪装不了。头/尾 64B 指纹可以被
+    # 「保留端点、只改中段」的真实替换绕过（原样反例实测），身份信号抓得住。
+    # POSIX 上 st_ctime＝inode change time（追加也会变）语义不同 ⇒ 仅
+    # Windows 启用（生产平台 win32）；其他平台回退指纹行为。
+    ino, ctime = st.st_ino, getattr(st, "st_ctime_ns", 0)
+    import hashlib as _hl
+    _bucket = int(_hl.md5(key.encode("utf-8")).hexdigest()[:8], 16) % len(_SCAN_LOCKS)
+    with _SCAN_LOCKS[_bucket]:
         s = _SCAN_STATE.get(key)
-        if (s is not None and s["mtime_ns"] == mtime and s["size"] == size
+        _identity_same = (not _WIN_IDENTITY) or (
+            s is not None and s.get("ino") == ino and s.get("ctime") == ctime)
+        if (s is not None and _identity_same
+                and s["mtime_ns"] == mtime and s["size"] == size
                 and (not want_index or s["has_index"] or s["index_dropped"])):
             _SCAN_STATS["cache_hits"] += 1
             return s["spans"], (s["index"] if want_index and s["has_index"]
@@ -639,6 +692,7 @@ def _scan_state(path: Path, want_index: bool) -> "tuple[list, list | None]":
 
         need_full = (s is None or size < s["size_scanned"]
                      or (mtime != s["mtime_ns"] and size <= s["size_scanned"])
+                     or (not _identity_same)
                      or (not _prefix_ok(path, s))
                      or (want_index and not s["has_index"]
                          and not s["index_dropped"]))
@@ -656,15 +710,26 @@ def _scan_state(path: Path, want_index: bool) -> "tuple[list, list | None]":
                 and not need_full):
             prev_index = s["index"]
         index: list | None
+        # 字节账随索引携带（增量延伸接着累计；全量重建清零重算）
+        _index_bytes = 0
         if need_full:
             index = [] if want_index else None
+        elif s is not None and s["index_dropped"]:
+            # 〔2026-11-19 返工3·反例⑥〕弃用期间**始终回退**：增量片段（只含
+            # 新增行的残缺索引）不许当索引用——否则翻页锚在旧历史时 vis 无
+            # 该锚 ⇒ 历史页返回**空页**（实测：5 条历史页返回空）。
+            index = None
         elif prev_index is not None:
             index = list(prev_index)
+            _index_bytes = sum(len(e[0]) + 120 for e in prev_index)
         elif want_index:
             index = []
         else:
             index = None
-        index_dropped = False
+        # 〔返工2〕弃用状态**跨扫描保持**：delta 重扫时不许重置——否则
+        # 「索引超限弃用后追加普通事件」的下一次翻页又会触发全量重建。
+        index_dropped = bool(s["index_dropped"]) if (s is not None and not need_full) \
+            else False
         try:
             start = 0 if need_full else min(s["size_scanned"], size)
             # 完整记录边界＝最后一个 \n 之后（半行留给下次补读）
@@ -715,7 +780,9 @@ def _scan_state(path: Path, want_index: bool) -> "tuple[list, list | None]":
                             ctrl = (mt is not None
                                     and mt.group(1) == b"revoke")
                             index.append((ik[0], ik[1], pos, end, ctrl))
-                            if len(index) > _INDEX_MAX_ENTRIES:
+                            _index_bytes += len(ik[0]) + 120
+                            if (len(index) > _INDEX_MAX_ENTRIES
+                                    or _index_bytes > _INDEX_MAX_BYTES):
                                 # 弃用索引：**继续**扫完 spans（不许因索引
                                 # 超限截断撤销区间），仅索引永久停用
                                 index = None
@@ -724,6 +791,9 @@ def _scan_state(path: Path, want_index: bool) -> "tuple[list, list | None]":
             scanned = boundary
             fp_len = min(_PREFIX_FP_BYTES, scanned)
             fp = _md5(raw[:fp_len]) if fp_len > 0 else ""
+            # 尾指纹：已扫边界往前 64B（同长原地改写的第二道闸）
+            tail_off = max(0, scanned - 64)
+            tail_fp = _md5(raw[tail_off:scanned]) if scanned > 0 else ""
             dt = (time.perf_counter() - t0) * 1000.0
             if need_full:
                 _SCAN_STATS["full_rebuilds"] += 1
@@ -743,12 +813,18 @@ def _scan_state(path: Path, want_index: bool) -> "tuple[list, list | None]":
             if index is not None:
                 _SCAN_STATS["index_lines"] = max(_SCAN_STATS["index_lines"],
                                                  len(index))
+            # 〔P25 口径〕**先淘汰后写入**——顺序反了（写入后 key 恒在 state，
+            # prune 的 `key not in` 守卫永不成立 ⇒ 路径上限从未生效，2026-11-19
+            # 反例③实证）。
+            _prune_scan_state(key)
             _SCAN_STATE[key] = {"mtime_ns": mtime, "size": size,
+                                "ino": ino, "ctime": ctime,
                                 "size_scanned": scanned, "spans": spans,
                                 "index": index, "has_index": index is not None,
                                 "index_dropped": index_dropped,
-                                "fp": fp, "fp_len": fp_len}
-            _prune_scan_state(key)
+                                "fp": fp, "fp_len": fp_len,
+                                "tail_fp": tail_fp,
+                                "index_bytes": _index_bytes}
             return spans, index
         finally:
             raw.close()
@@ -760,6 +836,35 @@ def _prune_scan_state(key: str) -> None:
         for old in list(_SCAN_STATE.keys())[:len(_SCAN_STATE)
                                             - _REVOKE_CACHE_MAX + 1]:
             _SCAN_STATE.pop(old, None)
+
+
+def invalidate_scan_cache(path: Optional[Path] = None,
+                          work_id: Optional[str] = None,
+                          card_id: Optional[str] = None) -> int:
+    """显式失效撤销/索引读侧缓存（2026-11-19 返工3）。
+
+    **供原地改写事件文件的入口调用**——原地覆盖写（同 inode、同创建时间）
+    无法被身份信号检测，改写方**必须**在写后调用本函数；否则热读会沿用
+    旧 spans/index（已撤销记录复现/旧页错乱）。走**原子替换**
+    （写临时文件 + ``os.replace``）的入口不需要它——inode/创建时间变化
+    会被身份校验自动识别。
+
+    参数：``path``＝事件文件路径；或 ``work_id``+``card_id`` 组合；
+    全缺省＝清空全部（谨慎：多卡场景会让下一次读全部走重建）。
+    返回清掉的条目数。
+    """
+    keys: list[str]
+    if path is not None:
+        keys = [str(path)]
+    elif work_id and card_id:
+        keys = [str(event_path(work_id, card_id))]
+    else:
+        keys = list(_SCAN_STATE.keys())
+    n = 0
+    for k in keys:
+        if _SCAN_STATE.pop(k, None) is not None:
+            n += 1
+    return n
 
 
 def _revoke_spans(path: Path) -> list[tuple[int, int]]:

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -32,6 +33,7 @@ from ..llm.errors import (
 )
 from ..llm.retry import ResolvedRetryPolicy
 from ..llm.runtime import LlmAdapter
+from ..llm.types import SerializeTimingChunk
 from ..llm.types import GenerateOptions, StreamChunk
 from .serialize import RequestDefaults, serialize_request
 from .sse import parse_sse
@@ -153,7 +155,13 @@ class OpenAICompatAdapter(LlmAdapter):
             api_key = await self._config.resolve_api_key(connection)
 
         body = serialize_request(options, connection.defaults)
+        _jd0 = time.monotonic()
         payload = json.dumps(body, ensure_ascii=False)
+        _jd_ms = (time.monotonic() - _jd0) * 1000.0
+        # 〔2026-11-19 返工3〕**实际发送编码**采样：结果帧回传网关
+        # （计入 model_call 行 json_dumps_ms，对上层消费者不可见）。
+        yield SerializeTimingChunk(ms=_jd_ms,
+                                   payload_bytes=len(payload.encode("utf-8")))
         headers = {
             "authorization": f"Bearer {api_key}",
             "content-type": "application/json",

@@ -70,6 +70,12 @@ _WEB_LOCAL_GET_TPLS: tuple[str, ...] = (
     "/api/works/{}/cards/{}/review-status",
     "/api/works/{}/rule",
     "/api/settings/model-overrides/{}",
+    # [窄投影 2026-11-20 · 性能批次一] 「当前卡生效模型」的口。
+    # 原来只有 ``/model-overrides/{}``（整项目每卡一行）进白名单；徽标要的是
+    # **一张卡的一个模型键**，走 ``/effective?card_id=``。
+    # 不进白名单 ⇒ 每次徽标刷新都被转发到 runner-0（多一跳）。
+    # 它是**磁盘读**（模型配置表 ＋ models.yaml）⇒ 适合本地答。
+    "/api/settings/model-overrides/{}/effective",
     "/api/settings/models",
 )
 
@@ -245,9 +251,21 @@ _LOOP_CLIENTS_GUARD = __import__("threading").Lock()
 
 _LOOPBACK_PLAIN = all(str(u).lower().startswith("http://") for u in _URLS)
 
+# 卡级 SSE 直通端点标记（与 access_log._SSE_MARKERS 同族；/events 是工作级
+# 扇入口、走 sse 池不经 _forward，故这里只列卡级两条）。
+_CARD_SSE_MARK = "/stream"
+_TOKENS_MARK = "/tokens"
+
 
 def _new_loop_client(kind: str) -> httpx.AsyncClient:
-    """按用途建一份回环客户端（容量按短查询/长流分池）。"""
+    """按用途建一份回环客户端（容量按短查询/普通转发/常驻流分池）。
+
+    〔2026-11-19 返工〕relay 与 sse **分池**：原来两者共用 stream 池——
+    工作级 SSE 扇入泵是常驻连接（每订阅者 × 每 runner 一条），订阅者一多
+    就把池占满 ⇒ 普通转发（进度/exec-backend 等经 _forward 的请求）排队
+    饿死。分池后：sse 池被常驻流占满，不影响 relay（普通转发/卡级流直通）
+    与 short（状态扇入）、ctl（控制转发）。
+    """
     kw: dict[str, Any]
     if kind == "short":
         n = max(2 * _RUNNER_COUNT, 8)
@@ -261,7 +279,24 @@ def _new_loop_client(kind: str) -> httpx.AsyncClient:
                   limits=httpx.Limits(max_connections=max(n, 16),
                                       max_keepalive_connections=n,
                                       keepalive_expiry=25.0))
-    else:  # stream：浏览器转发中继 + SSE 扇入泵
+    elif kind == "sse":
+        # 工作级 SSE 扇入泵：**常驻**连接（不设 keepalive 过期——连接
+        # 该由泵退出时的 async with 关闭，不该被空闲过期拆掉重连）。
+        # 32 ≈ 8 个并发订阅者 × 4 runner；超出的订阅者排队等连接释放。
+        kw = dict(timeout=None,
+                  limits=httpx.Limits(max_connections=32,
+                                      max_keepalive_connections=32,
+                                      keepalive_expiry=None))
+    elif kind == "card_stream":
+        # 〔2026-11-19 返工2〕卡级 SSE（/stream、/tokens）经 _forward 的
+        # **直通长流**——常驻连接与普通转发 relay 池隔离：卡级流占满
+        # card_stream 池不影响 progress/exec-backend 等普通转发（relay）
+        # 与状态扇入（short）。32 ≈ 8 个并发订阅 × 4 runner。
+        kw = dict(timeout=None,
+                  limits=httpx.Limits(max_connections=32,
+                                      max_keepalive_connections=32,
+                                      keepalive_expiry=None))
+    else:  # relay：浏览器请求转发中继（普通 POST/GET + 卡级 SSE 直通）
         kw = dict(timeout=None,
                   limits=httpx.Limits(max_connections=64,
                                       max_keepalive_connections=16,
@@ -287,11 +322,27 @@ def _loop_clients() -> "dict[str, httpx.AsyncClient]":
         for dead in [k for k, (r, _f) in _LOOP_CLIENTS.items() if r() is None]:
             _LOOP_CLIENTS.pop(dead, None)   # 循环已死的旧族：引用清掉
         fam = {kind: _new_loop_client(kind)
-               for kind in ("short", "stream", "ctl")}
+               for kind in ("short", "relay", "sse", "card_stream", "ctl")}
         _LOOP_CLIENTS[key] = (weakref.ref(loop), fam)
         logger.info("[procs] 回环客户端族已建 loop=0x%x role=%s "
-                    "kinds=short/stream/ctl verify_bypass=%s",
+                    "kinds=short/relay/sse/card_stream/ctl verify_bypass=%s",
                     key, _ROLE, _LOOPBACK_PLAIN)
+        # [2026-11-19 返工·预热] fanin 客户端建好即对每台 runner 各发一次
+        # 轻量 GET，把 keepalive 连接**预先**建进池——否则「SSE 连接风暴之后
+        # 第一次 fanin 现场新建 TCP」会撞 Windows loopback 的 SYN 丢弃窗口
+        # （实测：三片 0ms 到达、第四片 SYN 重传 ~17s 后才到 runner；两次
+        # flood 复验均复现）。预热失败零影响（连接该建时自然建）。
+        if _ROLE == "web" and _RUNNER_COUNT > 0:
+            async def _warm() -> None:
+                try:
+                    await asyncio.gather(
+                        *(fam["short"].get(runner_url(i) + "/api/health",
+                                           timeout=5.0)
+                          for i in range(_RUNNER_COUNT)),
+                        return_exceptions=True)
+                except Exception:  # noqa: BLE001 预热失败不影响服务
+                    pass
+            loop.create_task(_warm())
         return fam
 
 
@@ -359,7 +410,12 @@ async def _forward(request: Request, base: str = "") -> Response:
         if k.lower() not in ("host", "content-length", "connection",
                              "transfer-encoding")
     }
-    client = _loop_clients()["stream"]
+    # 〔2026-11-19 返工2〕卡级 SSE（/stream、/tokens）直通长流走
+    # **card_stream** 池（与普通转发 relay 隔离）；其余请求走 relay。
+    _p = request.url.path
+    client = _loop_clients()["card_stream" if (_CARD_SSE_MARK in _p
+                                               or _TOKENS_MARK in _p)
+                            else "relay"]
     upstream = client.build_request(
         request.method, url, content=body, headers=headers)
     # [启动窗口 2026-11-19] 整组重启时 runner 可能还在建索引/绑端口，此刻
@@ -479,21 +535,26 @@ def _merge_payloads(payloads: list) -> Any:
 async def _fanin_sse_stream(work_id: str, query: str) -> StreamingResponse:
     """工作级 SSE 扇入：向全部 runner 各开一条 /events 流，行级合并转发。
 
-    [2026-11-19 性能批次一] 泵复用循环名下 stream 客户端（原来每泵一个
-    新客户端）；退出时只 cancel 泵任务（async with 退出即归还连接），
-    客户端随事件循环存续。
+    [2026-11-19 性能批次一/返工] 泵复用循环名下 **sse 池**客户端（常驻
+    连接与普通转发 relay 池隔离——订阅者占满 sse 池不影响 relay/short）；
+    退出时只 cancel 泵任务（async with 退出即归还连接），客户端随循环存续。
     """
     url = lambda i: (runner_url(i)
                      + f"/api/works/{work_id}/events"
                      + (("?" + query) if query else ""))
-    stream_cli = _loop_clients()["stream"]
+    sse_cli = _loop_clients()["sse"]
 
     async def _merged():
         q: asyncio.Queue = asyncio.Queue(maxsize=1000)
 
         async def _pump(i: int) -> None:
+            # [2026-11-19 返工·错峰] 泵按序号错开 50ms 启动——一次性 4×订阅
+            # 条连接同时 SYN 会撞 Windows loopback 的丢弃窗口（实测一次
+            # 40 泵风暴后 fanin 现建连接 SYN 重传 ~17s）。错峰后建立平滑。
+            if i:
+                await asyncio.sleep(0.05 * i)
             try:
-                async with stream_cli.stream("GET", url(i)) as resp:
+                async with sse_cli.stream("GET", url(i)) as resp:
                     async for line in resp.aiter_lines():
                         await q.put(line)
             except asyncio.CancelledError:

@@ -80,8 +80,10 @@ def test_region_table_six_regions_no_current_turn_region():
     names = {r["name"] for r in context_regions.REGION_TABLE}
     # [2026-10-31] 配置演进：22 区 → 23 区——新增 88「本轮提示」（动态注入通道，
     # 表序在 85 规则之前）。按 REGION_TABLE 实际值同步（不是照抄别处）。
+    # [2026-11-20] 25 区现状：160「上游需求」＋1002「工具回执提示」入列（并行线）。
     assert orders == [0, 88, 85, 90, 91, 92, 93, 95, 100, 145, 150, 152, 155,
-                      170, 175, 200, 250, 300, 900, 999, 1000, 1010, 1020]
+                      160, 170, 175, 200, 250, 300, 900, 999, 1000, 1002,
+                      1010, 1020]
     assert names == {
         "使用说明", "规则注入", "本轮提示", "卡片职责", "卡片思维", "卡片清单", "当前卡",
         "自动模式·目标",
@@ -91,6 +93,7 @@ def test_region_table_six_regions_no_current_turn_region():
         "本轮工具轮",
         "用户消息", "判断协议注入", "工作规范与流程注入", "三席身份注入",
         "组建职能", "卡片能力", "现有职能", "你的职能",
+        "上游需求文档", "工具调用与汇报回合提示",
     }
     # 不再把动态上下文泛称为独立「当前轮」内容区。
     assert "当前轮" not in names
@@ -168,7 +171,8 @@ async def test_v1_byte_equal_current_card_missing(sandbox):
     regions = context_assembler.build_context_regions(wid, "card_999")
     # [2026-10-22] 新增 92 卡片能力 区；[2026-10-31] 85 规则区对无规则 work 也出
     # （缺省规则文案有来源）⇒ 按实际渲染同步
-    assert [r["order"] for r in regions] == [85, 90, 92, 100]
+    # [批二 2026-11-20] 100 card_list 迁 tail 槽，system 视图不再有它。
+    assert [r["order"] for r in regions] == [85, 90, 92]
 
 
 async def test_v1_empty_and_rstrip_paths_of_build_system_prompt():
@@ -200,7 +204,10 @@ async def test_v1_context_regions_join_equals_neutral_context(sandbox):
     # 无规则卡 → order 85 渲染空串，「没有来源就不出现这个区」，join 不含它。
     # [第二层区 2026-10-20 · card_004] 多卡树的根卡 ⇒ 175 有来源（≥2 张工作卡、无角色）。
     # [2026-10-22] 新增 92 卡片能力 区（有内容才出现）；[2026-10-31] 85 规则区入列
-    assert [r["order"] for r in regions] == [85, 90, 92, 100, 150, 155, 170, 175]  # [钉翻新] 170 child_status 2026-10-15 即有
+    # [批二·清单/子卡走当轮 2026-11-20] 100 card_list 与 170 child_status 迁 tail
+    # 槽（当轮事实消息），system 区序列不再含它们——build_context_regions 只渲染
+    # deliveries={"system"}，断言改为迁移后的集合。
+    assert [r["order"] for r in regions] == [85, 90, 92, 150, 155, 175]  # [钉翻新] 170 child_status 2026-10-15 即有
     # regions 条目只带指针性元数据，不带正文复制字段以外的意外大字段
     for r in regions:
         assert set(r) == {"order", "name", "channel", "seats", "text", "entries"}
@@ -226,7 +233,9 @@ async def test_region_log_entries_shape(sandbox):
     # 不是"它们是第几个"——后者属于另一条快照测试的职责）。
     by_name = {e["name"]: e for e in entries}
     assert "卡片职责" in by_name and by_name["卡片职责"]["entries"] >= 1
-    assert "卡片清单" in by_name and by_name["卡片清单"]["entries"] >= 1
+    # [批二 2026-11-20] 卡片清单已迁 tail 槽——system 区行里不再有它
+    # （tail 侧的落点与体积由 test_turn_tail_regions / observe.log_regions 证）。
+    assert "卡片清单" not in by_name
     assert "当前卡" in by_name and by_name["当前卡"]["entries"] == 1
     assert all(set(e) == {"order", "name", "channel", "seats", "bytes",
                           "fingerprint", "entries"} for e in entries)

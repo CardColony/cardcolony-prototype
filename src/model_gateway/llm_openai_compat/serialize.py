@@ -21,6 +21,9 @@ from .dialects import ThinkingSpec, apply_thinking
 
 __all__ = ["RequestDefaults", "serialize_messages", "serialize_request"]
 
+# 部分端点要求非空的兼容占位。入站过滤与出站填充共享这个值。
+REASONING_PLACEHOLDER = "(系统注入的消息，无模型思考记录)"
+
 
 @dataclass(frozen=True)
 class RequestDefaults:
@@ -35,6 +38,7 @@ class RequestDefaults:
     thinking: Optional[str] = None
     default_effort: Optional[str] = None
     reasoning_effort: Optional[str] = None
+    reasoning_fill: Optional[str] = None
 
 
 def _flatten_text(blocks: tuple[ContentBlock, ...]) -> str:
@@ -114,23 +118,18 @@ def serialize_request(options: GenerateOptions, defaults: Optional[RequestDefaul
         messages.append({"role": "system", "content": options.system})
     messages.extend(serialize_messages(tuple(options.messages)))
 
-    # [2026-11-04 实测修复] 带 tool_calls 的 assistant 消息**必须回传非空推理
-    # 字段**：commandcode 的 reflection/beam:free、stealth/glyph-cluster:free
-    # 实测缺字段 / 空串 → 400 "Invalid request"（AI_APICallError），补非空
-    # reasoning_content 或 reasoning → 200。字段在投影链上会丢：
-    #   · context_regions 只在 `m.get("reasoning_content")` 非空时保留；
-    #   · 旧会话消息、系统注入消息本就没有该字段；
-    #   · _serialize_assistant 只在有 reasoning 块时写。
-    # 故在 wire 出口统一兜底（只补缺失，绝不改写已有内容）——与 runner 的
-    # REASONING_PLACEHOLDER 同文案，非新机制。
-    _NO_REASONING = "(系统注入的消息，无模型思考记录)"
     for msg in messages:
-        if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+        if msg.get("role") != "assistant":
             continue
-        if any(str(msg.get(k) or "").strip()
-               for k in ("reasoning_content", "reasoning")):
-            continue
-        msg["reasoning_content"] = _NO_REASONING
+        # 旧请求可能已经带有宿主占位。只有声明了对应要求的路由才能再补。
+        if defaults.reasoning_fill != REASONING_PLACEHOLDER:
+            for key in ("reasoning_content", "reasoning"):
+                if msg.get(key) == REASONING_PLACEHOLDER:
+                    msg.pop(key)
+        if (msg.get("tool_calls") and defaults.reasoning_fill is not None
+                and not any(str(msg.get(key) or "").strip()
+                            for key in ("reasoning_content", "reasoning"))):
+            msg["reasoning_content"] = defaults.reasoning_fill
 
     body: dict[str, Any] = {
         "model": options.model,
@@ -151,7 +150,8 @@ def serialize_request(options: GenerateOptions, defaults: Optional[RequestDefaul
         ]
         if tools:
             body["tools"] = tools
-    if options.temperature is not None:
+    # Fallback 可能携带首选路由的采样设置。Kimi Coding 的采样参数固定。
+    if options.temperature is not None and defaults.vendor != "kimi":
         body["temperature"] = options.temperature
     if options.max_tokens is not None:
         body["max_tokens"] = options.max_tokens

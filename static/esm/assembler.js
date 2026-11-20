@@ -50,6 +50,7 @@ export const REGISTRY = {
   synthesize: { kind: "sys" }, deliver: { kind: "sys" }, proposal: { kind: "sys" },
   done: { kind: "sys" }, error: { kind: "sys" }, rescue: { kind: "sys" },
   rescue_refused: { kind: "sys" }, pseudo_call_unparsed: { kind: "sys" },
+  pseudo_receipt: { kind: "sys" }, text_proto_refused: { kind: "sys" },
   card_idle: { kind: "sys" },
   // [断言检出 harness 化 2026-11-10] 回复断言检出的机械事实行（频次可见性）
 

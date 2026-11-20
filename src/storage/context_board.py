@@ -76,8 +76,14 @@ def upsert_blocks_tx(conn: Any, work_id: str, card_id: str,
         rows.append((
             card_id, seq,
             str(b.get("role") or ""), str(b.get("actor") or ""),
-            str(b.get("content") or ""),
-            str(b.get("reasoning_content") or "") or None,
+            # [异常正文隔离 2026-11-20] 板上物化的是**供模型使用的内容**：
+            # 隔离块存 ctx_content（残部＋状态行）而非原文——重建同口径
+            # （rebuild 走同一钩子），原文只在 session_blocks/事件档案面。
+            predicates.context_content(b),
+            # 同跳思考是"生成坏调用"的那部分——隔离块思考不上板
+            # （方案：排除该跳原文及其思考字段）。
+            (None if b.get("quarantine")
+             else (str(b.get("reasoning_content") or "") or None)),
             str(b.get("pair_id") or b.get("pair") or "") or None,
             is_rev,
         ))
@@ -131,14 +137,20 @@ def read_board(work_id: str, card_id: str) -> list[dict[str, Any]]:
 
 def _select_board(work_id: str, card_id: str) -> list[dict[str, Any]]:
     def _fn(conn: Any) -> list[dict[str, Any]]:
+        # 按主键补有思考块的模型归属，已存在的物化板也能继续使用。
         return [{
             "seq": int(r["seq"]), "role": r["role"] or "",
             "actor": r["actor"] or "", "content": r["content"] or "",
             "reasoning_content": r["reasoning_content"],
+            "model": r["reasoning_model"],
             "pair_id": r["pair_id"], "is_review": int(r["is_review"] or 0),
         } for r in conn.execute(
-            "SELECT seq, role, actor, content, reasoning_content, pair_id, is_review "
-            "FROM context_board WHERE card_id=? ORDER BY seq", (card_id,))]
+            "SELECT b.seq, b.role, b.actor, b.content, b.reasoning_content, "
+            "b.pair_id, b.is_review, CASE WHEN json_valid(s.data) "
+            "THEN json_extract(s.data, '$.model') END AS reasoning_model "
+            "FROM context_board b LEFT JOIN session_blocks s "
+            "ON b.reasoning_content IS NOT NULL AND s.card_id=b.card_id AND s.seq=b.seq "
+            "WHERE b.card_id=? ORDER BY b.seq", (card_id,))]
     try:
         return card_db.read_sync(work_id, _fn, []) or []
     except Exception:  # noqa: BLE001 表未建/库不在 → 空板，绝不阻断装配
@@ -149,11 +161,11 @@ def _select_board(work_id: str, card_id: str) -> list[dict[str, Any]]:
 _REBUILD_TRIED: dict[tuple[str, str], float] = {}
 
 
-def _maybe_rebuild(work_id: str, card_id: str) -> None:
+def _maybe_rebuild(work_id: str, card_id: str) -> bool:
     key = (work_id, card_id)
     last = _REBUILD_TRIED.get(key, 0.0)
     if time.time() - last < 60:
-        return
+        return False
 
     def _state(conn: Any) -> tuple:
         bmax = conn.execute(
@@ -166,39 +178,40 @@ def _maybe_rebuild(work_id: str, card_id: str) -> None:
     try:
         bmax, smax = card_db.read_sync(work_id, _state, (None, None))
     except Exception:  # noqa: BLE001
-        return
+        return False
     if smax is None:
-        return  # 原文无货，板空是合法态
+        return False  # 原文无货，板空是合法态
     # 板落后原文 ⇒ 有新块没进板（钩子失败/部署前漂移）。尾部块可能全被
     # 过滤 ⇒ 重建零写入——一次 tail 读的成本，60s 节流兜底。
     if bmax is not None and int(bmax) >= int(smax):
-        return
+        return False
     _REBUILD_TRIED[key] = time.time()
     rebuild_board(work_id, card_id)
+    return True
 
 
 def rebuild_board(work_id: str, card_id: str) -> int:
     """整份重建：删板 → 从原文账按 mark/enters_context/评审政策重算 → 进板。
 
     幂等、可重跑；原文账（session_blocks）是唯一事实，板随时可由它派生。
+    水位、原文和替换操作在同一写事务内，避免旧重建覆盖同水位的追加或隔离变更。
     """
-    try:
-        from . import memory_store, origin_store  # 延迟：避免 storage 内部循环
-        st = memory_store.load_memory(work_id, card_id)
-        mark = int((st or {}).get("mark", 0) or 0)
-        blocks = origin_store.read_blocks(work_id, card_id, mark)
-        rows = [b for b in blocks if predicates.enters_context(b)]
-        rows = review_scope.drop_stale_review(work_id, card_id, rows)
-    except Exception as exc:  # noqa: BLE001 取数失败不破坏旧板
-        logger.warning("[board] 重建取数失败（保留旧板）card=%s: %s", card_id, exc)
-        return 0
+    from . import origin_store
+    review_scope.review_card_ids(work_id)
 
-    def _fn(conn: Any) -> int:
+    def _fn(conn: Any) -> tuple[int, int]:
+        row = conn.execute(
+            "SELECT condense_mark FROM memory WHERE card_id=?",
+            (card_id,)).fetchone()
+        mark = int(row["condense_mark"] or 0) if row else 0
+        blocks = origin_store.read_blocks_tx(conn, card_id, mark)
+        visible = [b for b in blocks if predicates.enters_context(b)]
+        rows = review_scope.drop_stale_review(work_id, card_id, visible)
         conn.execute("DELETE FROM context_board WHERE card_id=?", (card_id,))
-        return upsert_blocks_tx(conn, work_id, card_id, rows)
+        return mark, upsert_blocks_tx(conn, work_id, card_id, rows)
 
     try:
-        n = int(card_db._write_sync(work_id, _fn) or 0)  # noqa: SLF001 同包写事务边界
+        mark, n = card_db._write_sync(work_id, _fn)  # noqa: SLF001 同包写事务边界
     except Exception as exc:  # noqa: BLE001
         logger.error("[board] 重建落库失败 card=%s: %s", card_id, exc)
         return 0

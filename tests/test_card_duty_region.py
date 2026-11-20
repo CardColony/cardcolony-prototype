@@ -88,7 +88,9 @@ async def test_v2_lines_match_registry_exactly(sandbox):
 async def test_v3_order_before_card_list(sandbox):
     wid, cid = await _make_work()
     orders = [r["order"] for r in context_assembler.build_context_regions(wid, cid)]
-    assert orders.index(90) < orders.index(100)
+    # [批二 2026-11-20] card_list 已迁 tail 槽，system 区序列里不再有 100——
+    # 原判据「90 卡片职责在清单之前」改写为「在 150 当前卡之前」（职责仍最前）。
+    assert orders.index(90) < orders.index(150)
     assert orders == sorted(orders)
 
 
@@ -131,7 +133,8 @@ async def test_v7_fail_open_missing_registry(sandbox, monkeypatch, tmp_path):
     monkeypatch.setattr(card_store, "TYPE_REGISTRY_PATH", tmp_path / "nope.json")
     regions = context_assembler.build_context_regions(wid, cid)  # 不抛
     # [2026-10-22] 新增 92 卡片能力 区
-    assert [r["order"] for r in regions] == [92, 100, 150, 155]
+    # [2026-11-20] 85 规则区有缺省文案即有来源（并行线既况）；批二 100 迁 tail。
+    assert [r["order"] for r in regions] == [85, 92, 150, 155]
     assert not any(r["name"] == "卡片职责" for r in regions)
 
 
@@ -156,11 +159,14 @@ async def test_v8_log_regions_contains_90(sandbox):
 
 async def test_n6_duty_not_in_card_list(sandbox):
     wid, cid = await _make_work()
-    regions = context_assembler.build_context_regions(wid, cid)
-    r100 = next(r for r in regions if r["order"] == 100)
-    assert "## 卡片职责" not in r100["text"]
+    # [批二 2026-11-20] card_list 迁 tail 槽后 build_context_regions（system
+    # 视图）不再含它——直调渲染函数做同一判据：职责文本不得混进清单。
+    cards = card_store.iter_card_metas(wid)
+    r100 = context_regions.render_card_list_region(
+        list(cards.values()), work_store.read_work(wid)["work_card_id"], cid, [])
+    assert "## 卡片职责" not in r100
     for t in _registry_types(card_store.load_type_registry()):
-        assert t["description"] not in r100["text"]
+        assert t["description"] not in r100
 
 
 # ---------------------------------------------------------------------------

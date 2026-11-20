@@ -1,0 +1,671 @@
+{
+ "provenance": "works/*/events/*.jsonl 逐字段复制（盲回放输入；不含后见之明标注）",
+ "extracted": "2026-11-20",
+ "fragments": {
+  "card_050_halted_streak": {
+   "work": "work_073",
+   "card": "card_050",
+   "why": "同一评审等待状态（awaiting_halted）连发新事件——活锁样本，盲回放时无 runnable 字段",
+   "events": [
+    {
+     "seq": 160,
+     "card_id": "card_050",
+     "run_id": "e9a14054590940f4acfcb103febeca09",
+     "round": 2,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_429afe597e",
+      "draft": 1,
+      "all_passed": false,
+      "passed": [
+       "card_001"
+      ],
+      "pending": [
+       "fn_001",
+       "fn_002"
+      ],
+      "seat": "",
+      "voted": false,
+      "reason": "awaiting_halted",
+      "continued": false,
+      "has_next": true,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-15T00:49:50.933+08:00"
+    },
+    {
+     "seq": 161,
+     "card_id": "card_050",
+     "run_id": "e9a14054590940f4acfcb103febeca09",
+     "round": 2,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_429afe597e",
+      "draft": 1,
+      "all_passed": false,
+      "passed": [
+       "card_001"
+      ],
+      "pending": [
+       "fn_001",
+       "fn_002"
+      ],
+      "seat": "",
+      "voted": false,
+      "reason": "awaiting_halted",
+      "continued": false,
+      "has_next": true,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-15T00:49:50.954+08:00"
+    },
+    {
+     "seq": 163,
+     "card_id": "card_050",
+     "run_id": "e9a14054590940f4acfcb103febeca09",
+     "round": 2,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_429afe597e",
+      "draft": 1,
+      "all_passed": false,
+      "passed": [
+       "card_001"
+      ],
+      "pending": [
+       "fn_001",
+       "fn_002"
+      ],
+      "seat": "",
+      "voted": false,
+      "reason": "awaiting_halted",
+      "continued": false,
+      "has_next": true,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-15T00:49:50.967+08:00"
+    }
+   ]
+  },
+  "card_050_finalize": {
+   "work": "work_073",
+   "card": "card_050",
+   "why": "正常派定稿（dispatch_promote has_next=False）",
+   "events": [
+    {
+     "seq": 904,
+     "card_id": "card_050",
+     "run_id": "736078e580d64762ba5ea21bd07ec885",
+     "round": 2,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_f4c8e2d213",
+      "draft": 13,
+      "all_passed": true,
+      "passed": [
+       "card_001",
+       "fn_001",
+       "fn_002"
+      ],
+      "pending": [],
+      "seat": "",
+      "voted": false,
+      "reason": "dispatch_promote",
+      "continued": false,
+      "has_next": false,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-20T02:18:54.185+08:00"
+    }
+   ]
+  },
+  "card_050_seat_confirm": {
+   "work": "work_073",
+   "card": "card_050",
+   "why": "席位确认恢复（seat:confirm continued）",
+   "events": [
+    {
+     "seq": 412,
+     "card_id": "card_050",
+     "run_id": "86cea668fcc248d8bcde5d481d27732f",
+     "round": 4,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_1e6c688008",
+      "draft": 3,
+      "all_passed": true,
+      "passed": [
+       "card_001",
+       "fn_001",
+       "fn_002"
+      ],
+      "pending": [],
+      "seat": "card_001",
+      "voted": true,
+      "reason": "seat:confirm",
+      "continued": true,
+      "has_next": true,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-15T08:35:56.358+08:00"
+    }
+   ]
+  },
+  "card_050_normal_rounds": {
+   "work": "work_073",
+   "card": "card_050",
+   "why": "正常推进片段（seat:speak/align_passed continued）",
+   "events": [
+    {
+     "seq": 26,
+     "card_id": "card_050",
+     "run_id": "90eef9f060dd48e4abe44c3cd4ca9c6f",
+     "round": 3,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_456739b79a",
+      "draft": 1,
+      "all_passed": true,
+      "passed": [
+       "card_001"
+      ],
+      "pending": [],
+      "seat": "card_001",
+      "voted": true,
+      "reason": "seat:speak",
+      "continued": true,
+      "has_next": true,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-15T00:29:53.131+08:00"
+    },
+    {
+     "seq": 28,
+     "card_id": "card_050",
+     "run_id": "90eef9f060dd48e4abe44c3cd4ca9c6f",
+     "round": 3,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_429afe597e",
+      "draft": 1,
+      "all_passed": false,
+      "passed": [],
+      "pending": [
+       "card_001",
+       "fn_001",
+       "fn_002"
+      ],
+      "seat": "",
+      "voted": false,
+      "reason": "align_passed",
+      "continued": true,
+      "has_next": true,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-15T00:29:54.801+08:00"
+    },
+    {
+     "seq": 99,
+     "card_id": "card_050",
+     "run_id": "7219aace858540e69d7343459801ba4c",
+     "round": 13,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_429afe597e",
+      "draft": 1,
+      "all_passed": false,
+      "passed": [
+       "card_001"
+      ],
+      "pending": [
+       "fn_001",
+       "fn_002"
+      ],
+      "seat": "card_001",
+      "voted": true,
+      "reason": "seat:speak",
+      "continued": true,
+      "has_next": true,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-15T00:35:34.254+08:00"
+    },
+    {
+     "seq": 155,
+     "card_id": "card_050",
+     "run_id": "e9a14054590940f4acfcb103febeca09",
+     "round": 2,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_429afe597e",
+      "draft": 1,
+      "all_passed": false,
+      "passed": [
+       "card_001"
+      ],
+      "pending": [
+       "fn_001",
+       "fn_002"
+      ],
+      "seat": "fn_002",
+      "voted": true,
+      "reason": "seat:vote_nudge",
+      "continued": true,
+      "has_next": true,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-15T00:42:44.845+08:00"
+    },
+    {
+     "seq": 158,
+     "card_id": "card_050",
+     "run_id": "e9a14054590940f4acfcb103febeca09",
+     "round": 2,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_429afe597e",
+      "draft": 1,
+      "all_passed": false,
+      "passed": [
+       "card_001"
+      ],
+      "pending": [
+       "fn_001",
+       "fn_002"
+      ],
+      "seat": "",
+      "voted": false,
+      "reason": "dispatch_revise",
+      "continued": false,
+      "has_next": false,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-15T00:42:45.459+08:00"
+    }
+   ]
+  },
+  "card_230_nudge_streak": {
+   "work": "work_027",
+   "card": "card_230",
+   "why": "同一评审状态连发（seat:vote_nudge ×81106 的头部样本）",
+   "events": [
+    {
+     "seq": 3249,
+     "card_id": "card_230",
+     "run_id": "",
+     "round": 0,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_8c8c993a78",
+      "draft": 1,
+      "all_passed": false,
+      "passed": [],
+      "pending": [
+       "card_001",
+       "fn_004",
+       "fn_005"
+      ],
+      "seat": "card_001",
+      "voted": false,
+      "reason": "seat:vote_nudge",
+      "continued": true,
+      "has_next": true,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-08T01:12:06.189+08:00"
+    },
+    {
+     "seq": 3253,
+     "card_id": "card_230",
+     "run_id": "",
+     "round": 0,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_8c8c993a78",
+      "draft": 1,
+      "all_passed": false,
+      "passed": [],
+      "pending": [
+       "card_001",
+       "fn_004",
+       "fn_005"
+      ],
+      "seat": "card_001",
+      "voted": false,
+      "reason": "seat:vote_nudge",
+      "continued": true,
+      "has_next": true,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-08T01:12:06.733+08:00"
+    },
+    {
+     "seq": 3257,
+     "card_id": "card_230",
+     "run_id": "",
+     "round": 0,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_8c8c993a78",
+      "draft": 1,
+      "all_passed": false,
+      "passed": [],
+      "pending": [
+       "card_001",
+       "fn_004",
+       "fn_005"
+      ],
+      "seat": "card_001",
+      "voted": false,
+      "reason": "seat:vote_nudge",
+      "continued": true,
+      "has_next": true,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-08T01:12:07.190+08:00"
+    }
+   ]
+  },
+  "card_230_seat_recovery": {
+   "work": "work_027",
+   "card": "card_230",
+   "why": "席位恢复链（awaiting_busy→wake_delivered→seat:re_eval）",
+   "events": [
+    {
+     "seq": 262,
+     "card_id": "card_230",
+     "run_id": "dfdbb5bd412e4ddba186f21de7a98946",
+     "round": 4,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_b359f39357",
+      "draft": 14,
+      "all_passed": false,
+      "passed": [],
+      "pending": [
+       "card_001",
+       "fn_004",
+       "fn_005"
+      ],
+      "seat": "",
+      "voted": false,
+      "reason": "awaiting_busy",
+      "continued": false,
+      "has_next": false,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-04T01:22:11.975+08:00"
+    },
+    {
+     "seq": 265,
+     "card_id": "card_230",
+     "run_id": "dfdbb5bd412e4ddba186f21de7a98946",
+     "round": 4,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_b359f39357",
+      "draft": 14,
+      "all_passed": false,
+      "passed": [],
+      "pending": [
+       "card_001",
+       "fn_004",
+       "fn_005"
+      ],
+      "seat": "",
+      "voted": false,
+      "reason": "wake_delivered",
+      "continued": false,
+      "has_next": false,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-04T01:26:24.374+08:00"
+    },
+    {
+     "seq": 530,
+     "card_id": "card_230",
+     "run_id": "2d6d91fa58b448f6822da2b61cf1c3ec",
+     "round": 4,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_b359f39357",
+      "draft": 33,
+      "all_passed": false,
+      "passed": [],
+      "pending": [
+       "card_001",
+       "fn_004",
+       "fn_005"
+      ],
+      "seat": "card_001",
+      "voted": true,
+      "reason": "seat:re_eval",
+      "continued": true,
+      "has_next": true,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-04T02:22:37.935+08:00"
+    }
+   ]
+  },
+  "card_230_wake_failed": {
+   "work": "work_027",
+   "card": "card_230",
+   "why": "唤醒失败的重复片段（wake_failed）",
+   "events": [
+    {
+     "seq": 292881,
+     "card_id": "card_230",
+     "run_id": "c5102897a6074b7095a22bac5678f7f2",
+     "round": 2,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_8c8c993a78",
+      "draft": 2,
+      "all_passed": true,
+      "passed": [
+       "card_001",
+       "fn_004",
+       "fn_005"
+      ],
+      "pending": [],
+      "seat": "",
+      "voted": false,
+      "reason": "wake_failed",
+      "continued": false,
+      "has_next": true,
+      "error": "dispatch_failed"
+     },
+     "model": "",
+     "ts": "2026-11-08T18:20:07.522+08:00"
+    }
+   ]
+  },
+  "card_230_finalize": {
+   "work": "work_027",
+   "card": "card_230",
+   "why": "正常派定稿（dispatch_promote has_next=False）",
+   "events": [
+    {
+     "seq": 293054,
+     "card_id": "card_230",
+     "run_id": "b8fa945a5f2347debb4a4089c2d25093",
+     "round": 2,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_bb2141c4f0",
+      "draft": 4,
+      "all_passed": true,
+      "passed": [
+       "card_001",
+       "fn_004",
+       "fn_005"
+      ],
+      "pending": [],
+      "seat": "",
+      "voted": false,
+      "reason": "dispatch_promote",
+      "continued": false,
+      "has_next": false,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-10T00:23:38.560+08:00"
+    }
+   ]
+  },
+  "card_230_normal_rounds": {
+   "work": "work_027",
+   "card": "card_230",
+   "why": "正常推进片段（seat:speak/dispatch_revise/child_busy）",
+   "events": [
+    {
+     "seq": 61,
+     "card_id": "card_230",
+     "run_id": "2f35899facfd4f1fb389a8f86ebcd3b1",
+     "round": 8,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_b359f39357",
+      "draft": 1,
+      "all_passed": false,
+      "passed": [],
+      "pending": [
+       "card_001",
+       "fn_004",
+       "fn_005"
+      ],
+      "seat": "card_001",
+      "voted": true,
+      "reason": "seat:speak",
+      "continued": true,
+      "has_next": true,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-04T00:14:48.388+08:00"
+    },
+    {
+     "seq": 102,
+     "card_id": "card_230",
+     "run_id": "454ba28c2d5043088d6407a29d02155d",
+     "round": 3,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_b359f39357",
+      "draft": 1,
+      "all_passed": false,
+      "passed": [],
+      "pending": [
+       "card_001",
+       "fn_004",
+       "fn_005"
+      ],
+      "seat": "fn_004",
+      "voted": true,
+      "reason": "seat:speak",
+      "continued": true,
+      "has_next": true,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-04T00:53:50.362+08:00"
+    },
+    {
+     "seq": 140,
+     "card_id": "card_230",
+     "run_id": "daf410ec90b1438995e6f6910a502d26",
+     "round": 4,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_b359f39357",
+      "draft": 1,
+      "all_passed": false,
+      "passed": [],
+      "pending": [
+       "card_001",
+       "fn_004",
+       "fn_005"
+      ],
+      "seat": "fn_005",
+      "voted": true,
+      "reason": "seat:speak",
+      "continued": true,
+      "has_next": true,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-04T00:57:12.780+08:00"
+    },
+    {
+     "seq": 143,
+     "card_id": "card_230",
+     "run_id": "daf410ec90b1438995e6f6910a502d26",
+     "round": 4,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_b359f39357",
+      "draft": 1,
+      "all_passed": false,
+      "passed": [],
+      "pending": [
+       "card_001",
+       "fn_004",
+       "fn_005"
+      ],
+      "seat": "",
+      "voted": false,
+      "reason": "dispatch_revise",
+      "continued": false,
+      "has_next": false,
+      "error": ""
+     },
+     "model": "",
+     "ts": "2026-11-04T00:57:13.013+08:00"
+    },
+    {
+     "seq": 260,
+     "card_id": "card_230",
+     "run_id": "dfdbb5bd412e4ddba186f21de7a98946",
+     "round": 4,
+     "type": "review_round_done",
+     "data": {
+      "batch": "rv_b359f39357",
+      "draft": 14,
+      "all_passed": false,
+      "passed": [],
+      "pending": [
+       "card_001",
+       "fn_004",
+       "fn_005"
+      ],
+      "seat": "",
+      "voted": false,
+      "reason": "child_busy",
+      "continued": false,
+      "has_next": true,
+      "error": "dispatch_failed"
+     },
+     "model": "",
+     "ts": "2026-11-04T01:22:11.869+08:00"
+    }
+   ]
+  }
+ }
+}

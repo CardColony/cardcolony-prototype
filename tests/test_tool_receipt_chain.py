@@ -342,14 +342,19 @@ async def test_receipt_gate_directive_zero_call(work, sandbox, monkeypatch):
                  "tool_calls": []}, "fake")
 
     monkeypatch.setattr(routes.model_service, "call_main", fake_call_main)
-    result = await routes._run_message(wid, "card_001", "按这个方案，发指令给它",
-                                       source_kind="directive")
+    result = await routes._run_message(
+        wid, "card_001", "按这个方案，发指令给它", source_kind="directive",
+        source={"kind": "card_msg", "from": "card_888",
+                "require_report": True})
     assert "error" not in result
     kinds = [t for t, _ in events]
     assert "action_not_executed" in kinds
-    # 交付文本带系统回执行：模型自述「已发」与执行事实可区分
+    # 交付文本带系统回执行：指令回合核对项＝「是否已向发令卡汇报」，
+    # 模型自述「已发」与执行事实可区分；业务完成与否按各项回执。
     assert "〔系统回执〕" in result["reply"]
-    assert "仍待执行" in result["reply"]
+    assert "尚未向发令卡汇报" in result["reply"]
+    # 指令回合系统结果行可见（零执行事实）
+    assert "〔系统结果〕本轮未执行工具" in result["reply"]
 
 
 async def test_receipt_gate_satisfied_no_line(work, sandbox, monkeypatch):
@@ -421,7 +426,17 @@ def test_bound_action_minimal_trust_set():
     assert tool_receipt.bound_action(s)["kind"] == "op"
     s2 = message_runner.RunState(work_id="w", card_id="c", content="x")
     s2.source_kind = "directive"
+    s2.source = {"kind": "card_msg", "from": "card_888",
+                 "require_report": True}
     assert tool_receipt.bound_action(s2)["kind"] == "directive"
+    # 无汇报标志/无发令卡 ⇒ 不绑定（普通指令只展示执行事实）
+    s2b = message_runner.RunState(work_id="w", card_id="c", content="x")
+    s2b.source_kind = "directive"
+    assert tool_receipt.bound_action(s2b) is None
+    s2c = message_runner.RunState(work_id="w", card_id="c", content="x")
+    s2c.source_kind = "directive"
+    s2c.source = {"kind": "card_msg", "require_report": True}
+    assert tool_receipt.bound_action(s2c) is None
     s3 = message_runner.RunState(work_id="w", card_id="c", content="去查一下")
     assert tool_receipt.bound_action(s3) is None         # 弱话术不误绑定
 
@@ -430,10 +445,15 @@ def test_receipt_verdict_ignores_unrelated_success():
     """一次成功的无关读取无法证明文件已写入——回执核对只认要求工具。"""
     s = message_runner.RunState(work_id="w", card_id="c", content="x")
     s.source_kind = "directive"
+    s.source = {"kind": "card_msg", "from": "card_888",
+                "require_report": True}
     s.tool_events = [{"tool": "read_card", "ok": True, "origin": "native"}]
     v = tool_receipt.receipt_verdict(s)
     assert v["satisfied"] is False   # read_card ≠ 卡间通信类工具
-    s.tool_events.append({"tool": "direct", "ok": True, "origin": "native"})
+    s.tool_events.append({"tool": "direct", "ok": True, "origin": "native",
+                          "send": {"recipients": [
+                              {"to": "card_888", "msg_id": "cmsg-9",
+                               "state": "delivered"}]}})
     v = tool_receipt.receipt_verdict(s)
     assert v["satisfied"] is True
 

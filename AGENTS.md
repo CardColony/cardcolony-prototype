@@ -68,6 +68,147 @@
 - `session_facade.BLOCK_FIELDS` 已含 `reasoning_content`（Kimi 保留式
   思考持久化依赖它落盘）。
 
+## 动态材料走当轮输入口＋按任务范围缩量（2026-11-20·成本优化批二）
+
+- **清单/子卡现状已离开 system**：分区表 `card_list`(100) 与 `child_status`(170)
+  是 `delivery="tail"`——材料一字不动包进当轮事实消息（`〔卡片清单〕`／
+  `〔直接子卡现状〕`），首跳随用户消息之后下发、工具续跳每跳仍在。
+  ⇒ 稳定前缀不再随卡面变化分叉（实测：可缓存前缀 79% → 100%）。
+- **按可信任务范围缩量**（新增两模块）：
+  - `src/api/task_scope.py`：只用**结构化字段**（回合来源／身份锚／卡型／
+    子卡卡型／差事账对象／活板当前步）判 `single`/`global`/`unknown`；
+    **判不出来一律 unknown＝完整材料**（正文里的卡号只供查漏，不用于选材）。
+  - `src/api/doc_locator.py`：依赖正稿**条款定位**（条款号锚／标题短语锚）⇒
+    给「条目标题＋行段坐标＋版本指纹＋`read_card` 行段回读命令」；
+    条款号必须是正文自己标出来的（加粗/标题首词/表格首列），散文同形词不认；
+    定位不到 ⇒ single 回退全文、global 只给坐标、**无 `read_card` 一律回退全文**。
+- 缩量**只对 main 档**生效；三席（viewpoint）与起草（draft）保持原有材料；
+  评审/场授/席位回合（`source.kind=review_step|align_turn`、`act_as`≠本卡）
+  本批明确不缩量。
+- **同回合当轮事实要刷新**：工具续跳前 `context_assembler.refresh_tail_facts()`
+  刷新清单/子卡现状的数据源（system 通道不动）——回合里建的新卡、跑过一步的
+  子卡，下一跳看得见。
+- 开关：**`CONTEXT_SCOPE=0`** ⇒ 范围一律 unknown ⇒ 三处材料逐字同旧
+  （与 `CONTEXT_BOARD=0` 同族口径；回退不用回滚代码）。
+- 回报与证据：`docs/模型调用成本优化-第二批施工回报-20261120.md`
+  （三组读数、前缀分歧、验收矩阵对照、完整回退场景与放行条件）；
+  用例 `tests/test_batch2_outbound.py`（实际出站）＋`tests/test_batch2_scope.py`
+  （缩量语义）；回放脚本 `scripts/perf_batch2_outbound_replay.py`（只读生产样本）。
+
+## 水位结算与一致发布（修复方案 §三，2026-11-20）
+
+- **水位只按连续消耗前缀推进**：`_condense_one_batch` 返回结构化
+  `{ok,status,committed_mark(mark),consumed,covered_seqs,failure_stage,
+  failure_detail,batch_no}`；分片覆盖在「送凝块号」空间做不动点结算——
+  大块（seq≥2e9 分片）须**全片**被候选覆盖才算消耗，缺任一分片原块
+  保持可见、越界候选不提交；`consumed`＝窗口位前缀（空块/工具块随批销账）。
+  `orig_seq=0` 合法（判空用 `is not None`，勿用 `or`）。
+- **失败留账**：S2a/截断/超时/模型调用/产出解析/commit 任一阶段失败 ⇒
+  mark 不动＋`condense_debt{stage,detail,committed_mark,batches_committed,
+  next_retry_ts}` 落 `batch_starts` 列；`condense_turn_end` 记
+  failed/partial 账、退避到期重试成功才清。`_run_condense_pipeline` 每批
+  成功后**从已提交水位 `_read_origin` 重定位**（DB 真相优先；合成
+  pending 直喂时 `_read_origin` 为空 ⇒ 窗口前缀切片兜底，window 恒为
+  pending 前缀、consumed 是窗口位）。
+- **一致发布**：`save_memory`/`_save_to_db` 统一走 `_publish_memory`——
+  memory 行（链+condense_mark+batch_starts 簿记）＋ `_sync_nodes_tx`
+  （编号分配在同事务连接上读旧索引）＋ `trim_below_tx`，一个
+  `_write_sync`（BEGIN IMMEDIATE），任一失败整体回滚。**链列载荷＝
+  entries 原样**（load_memory 下游依赖原始字段形态；归一化只在
+  memory_nodes 派生侧 `_plan_node_rows`）。
+- **同版本读**：`read_snapshot` 在单读事务（显式 BEGIN）取
+  {state,nodes,board_rows}；板不新鲜先 `rebuild_board`（带水位版本闸：
+  事务内 mark 变了整建作废）最多两轮，仍不新鲜 `board_rows=None` 走
+  懒重建。`build_ctx`/装配消费快照，不再分三次读跨版本。
+- **CAS/局部复活**：`memory_domain.save_chain(expected_chain=)` 事务内
+  比对当前链，不一致整链不写（migrate/reclaim 用）；`revive_sunk`＝
+  读-改-写同事务的局部生命周期更新（sunk→False＋lastUsedAt，连带
+  memory_nodes.sunk 同事务翻位），`memory_expand` 复活走它——旧整链
+  快照覆盖不了新记忆。`context_board.rebuild_board` 提交前复核水位。
+- 验收：`tests/test_section3_watermark_publish.py`（10 例：分片全/缺覆盖、
+  S2a/截断/部分批留账、节点索引/裁板注入失败整体回滚、并发读旧或新整版、
+  CAS 拒旧链、快照三件套同版本）。
+
+## 异常正文隔离（quarantine/ctx_content，2026-11-20）
+
+- 模型把调用写进正文且未派发（`pseudo_call_unparsed`/`pseudo_call_refused`/
+  `rescue_refused`）⇒ 收口回复块打 `quarantine`（原因标记）＋
+  `ctx_content`（剥掉坏片段的残部＋宿主一行状态，JSON 单行）。
+  原文原样留 session/事件/界面档案面；**供模型使用的内容**统一走
+  `predicates.context_content`（历史投影/缓存板/凝练同口径），同跳
+  reasoning 不上板不回传。
+- 残部判据只用已知调用族（func/invoke/parameter/tool_calls/antml:*/
+  funccall/DSML 竖线等行首标签＋行尾家具串），代码示例/引用不误伤；
+  无宿主异常事件的块不打标（`scripts/quarantine_blocks.py` 列出候选
+  供人工核对，`--include-seq` 显式并入）。
+- **假结果同口径**（card_049 实录）：模型自写 `<function_results>` 整段、
+  `<function_calls>{json}</function_calls>` 结果壳（剥壳留 content 报告）、
+  `〔系统结果〕`/`〔系统…〕` 仿写行均随块退出投影。
+  **检测只在逐跳模型原始正文上判**（assistant_content）——finish 的
+  clean_text 已拼入宿主生成的真实系统结果行（复现误标先例）；
+  存量块分类只信 function_results/结果壳硬家具（include_sys_lines=False），
+  〔系统结果〕在落存块里有真有假（宿主行会落进块正文）。
+- **解析遮蔽口径**：`_mask_regions`（围栏代码 + function_results 结果区）
+  等长空格遮蔽后才进解析/疑似判定——围栏及结果区里的调用样例只供
+  审计、零派发；形态B（```json``` 数组）因此被遮蔽（代码示例红线＞
+  兼容抢救）。`<call>` 块剥完 name/parameter 须只剩空白才成立；
+  DSML 参数按声明类型还原（string 不翻布尔、number 转数值）。
+
+## 正文协议按路由启用（text_protocols，2026-11-20 · 方案 §四）
+
+- `models.yaml models.<名>.text_protocols: [dsml, call]` 声明该路由直接
+  支持的正文协议：`extract_text_tool_calls(content, protocols=…)` 只在
+  声明集内解析形态E（DSML `｜｜DSML｜｜ invoke`，单/双竖线变体）与
+  形态F（`<call><name>` 块）。**开关查网关回报的实际座位键**
+  （`result["model_used"]`；fallback 时＝请求座）——请求启用、实际
+  回退到未启用路由 ⇒ 零派发只记识别事实（`proto_hint`）。
+- 首轮试点＝ECO 五座（ds-v41-flash-eco-{amr,amr2,amr3,volc,volc2}）且
+  **只读闸**：textE_dsml/textF_call 解析出的调用 ∉ READONLY_TOOLS
+  ⇒ `text_proto_refused` 事件 + ledger `proto_side_effect_denied`，不派发；
+  只读调用照常走兼容代执行链（origin=pseudo_compat 台账）。
+- `<function_calls>` 结果壳不是调用：识别外壳零派发（假结果规则治理）。
+
+## 记忆找回第一批（read_memory/memory_expand，2026-11-20 · 方案 §二）
+
+- `read_memory`＝锚点**索引**：只列可展开的 gist 条目（含沉底/归拢），
+  锚点升序 20 条/页；`cursor` 绑目标卡+筛选+索引版本+页位（串卡/改筛/
+  索引变 ⇒ validation 提示从第一页重翻）；`has_more`/`next_cursor`/
+  `index_rev`；每项 ≤200 字 gist 预览+level+timeline/recorded。
+  锚点规则唯一：`anchor.seq` 优先、旧顶层 `seq` 兜底、0 合法——
+  索引与展开共用（`memory_expand._anchor_seq`）。
+- `memory_expand`＝逐字原文找回：新节点按 `coveredSeqs` 去重升序精确取块
+  （**空洞保持空洞**——min/max 区间曾把覆盖外几十条无关块回灌）；旧条目
+  回退 `seq_from/seq_to` 闭区间或单锚点；`coverage` 报
+  exact/legacy_range/anchor/unknown（合成锚点不伪装有覆盖）。
+- `page`＝**字符偏移**（0 起；next_page＝本页实际末偏移）——截短页在
+  下一页从断点续读不跳字；每页 ≤6000 字且 `render_tool_result` ≤32KiB
+  （先压缩结论和提示等预览，超限时据实际序列化体积一起缩短正文及
+  对应坐标，返回能装下的连续前缀；每个返回字符都有来源坐标；
+  无法容纳有效页时返回 `result_too_large`）。`section=details`
+  按同样的体积上限分页看结论+描述+子条目；缺块
+  `missing` 独立页轴 `missing_page`（50/页）；`text` 只放本页逐字
+  （纯拼接零分隔），`fragments` 带块号/角色/时间/隔离标记与
+  原文·text 双半开区间（sender 认 data.from 卡间发信卡）。
+- **版本＝逐段内容哈希**（记长度会被等长改写骗过，整文哈希会被跨块
+  挪字符骗过，少字段会被同正文来源改写骗过）：expand revision 对
+  coverage/seqs/section/missing + 逐 (seq, 型|发信者|时间|隔离态|正文)
+  取 sha256——拼接全文不变、块边界变了、发信卡 card_017→card_049
+  也换版；read_memory index_rev 对 [seq,gist,level,sunk,degraded,
+  timeline,coveredSeqs] 逐条取 sha256。不匹配 → 空页+提示回 page=0 /
+  validation 提示从第一页重翻。索引回执同按实际序列化 ≤32KiB
+  （超限逐条让位、游标续页补回，长字段先封顶）。
+- **归拢回灌口**（`_expand_for_fold`）：`sanitized=True`——与凝练结算
+  **完全同一筛选**（`review_scope.drop_stale_review(keep=0)`＋
+  `enters_context`：评审消息/工具块/调用壳/留痕块正文一律略去，隔离块
+  投 ctx_content 净化视图）；被略块换一行宿主状态行——保块号/型/
+  发信者/**结构化 status**（失败工具如实写出），正文绝不回归拢模型；
+  `revive=False` 不触发复活写入；单条按 page_chars 分摊、总产出封顶
+  page_chars（**截断标记计入预算**）。
+  显式 `memory_expand` 工具仍发逐字原文。
+- **复活以写入结果为准**：`revived=bool(md.save_chain(...))`，落库
+  失败如实报没复活。精确覆盖集走 `read_origin_seqs`（IN 查询），
+  旧闭区间走 `read_origin_span`。
+
 ## "commit" 的含义
 
 用户说 **"commit"＝同步到 GitHub**，不是只本地落账。完整动作链：

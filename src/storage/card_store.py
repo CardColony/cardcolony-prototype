@@ -1264,6 +1264,14 @@ def _append_issued(conn: Any, card_id: str) -> None:
     card_db.set_meta_value(conn, "issued", json.dumps(issued, ensure_ascii=False))
 
 
+#: 卡面 **body 的键集**（读侧契约）。
+#: read_card 与窄投影 read_card_meta 共用这一份 ⇒ 不会出现「整卡有 requirements、
+#: 窄读没有」的漂移。前端据此判「这张卡有没有第三块」（需求确定/定论确认）。
+CARD_BODY_KEYS: tuple[str, ...] = (
+    "mission", "status_block", "requirements", "goal", "history",
+)
+
+
 async def read_card(work_id: str, card_id: str) -> dict[str, Any]:
     """读卡（库查）。
 
@@ -1341,6 +1349,71 @@ async def read_card_sessions_light(work_id: str,
         }
 
     return await card_db.run_read(work_id, _fn, None)
+
+
+#: 窄投影（2026-11-20 性能批次一）：**首屏**需要的卡面元信息列。
+#:
+#: 为什么单列一张清单：``read_card`` 是 ``SELECT *`` ⇒ 把 mission /
+#: status_block / requirements / goal 与 1800+ 行 card_history 一并捞出。
+#: 实测 work_073/card_007：整张卡面 530KB 的 JSON 里 **99.5% 是 body**，
+#: meta 只有 2.7KB。首屏（面包屑/空态/角色卡自动展开/模型徽标）只要 meta，
+#: 正文是右栏「卡详情」的区域载荷 ⇒ 那个区域打开时再读全文。
+#:
+#: 刻意排除的列：
+#:   · body 三块：mission / status_block / requirements（正文大列）
+#:   · 其它重文本：goal / pending_inject / requirements_draft /
+#:     toolcard_* / thinkchain_final / sessions
+#:   · work_id（对外不露）
+#: 保留的是「归属与运行态」那组小字段：标题、类型、父子、模式、自动模式、
+#: goal 的状态机字段（goal_state/goal_rounds/goal_id…）。
+_CARD_META_LIGHT_COLUMNS: tuple[str, ...] = (
+    "card_id", "title", "source", "card_type", "parent", "project_class",
+    "owner_card_id", "state", "tags", "links", "relations", "session_ref",
+    "mode", "abilities", "created_at", "updated_at",
+    "auto_mode", "requirements_state",
+    "goal_state", "goal_rounds", "goal_await_children", "goal_await_wakes",
+    "goal_id", "goal_revision", "goal_max_rounds",
+    "goal_created_at", "goal_updated_at", "goal_blocked_code",
+    "created_by",
+)
+
+
+async def read_card_meta(work_id: str, card_id: str) -> dict[str, Any]:
+    """窄读（2026-11-20 性能批次一）：只取首屏要的 meta，不带 body。
+
+    返回 ``{"meta": {...}}``——**没有 body 键**（调用方据此知道「正文未读」，
+    需要正文时走 read_card）。卡不存在抛 CardNotFoundError（与 read_card 同语义）。
+
+    meta 的键集与 read_card 的 meta **同源同口径**（同一套 row_to_meta ＋
+    同一套边表叠算 ＋ 同一套兜底），只是少了几个重文本列 ⇒ 首屏拿到的
+    card_type/title/card_id 等判据与改前逐字一致。
+    """
+    def _fn(conn: Any) -> Optional[dict[str, Any]]:
+        row = card_db.get_card_row_cols(conn, card_id, _CARD_META_LIGHT_COLUMNS)
+        if row is None:
+            return None
+        meta = card_db.row_to_meta(row)
+        if not meta.get("card_type"):
+            meta["card_type"] = "线索"          # 旧卡兜底（与 _meta_from_row 同）
+        if meta.get("parent") is None:
+            meta["parent"] = work_store.work_card_id_of(work_id)
+        # [三线边表 2026-11-01] 与 read_card 同口径叠边表。
+        e = card_db.edges_of(conn, card_id)
+        if e:
+            meta["parent"] = e.get("parent", "")
+            meta["links"] = e.get("links") or []
+            meta["relations"] = e.get("relations") or []
+            meta["relations_in"] = e.get("relations_in") or []
+        meta["card_id"] = card_id
+        meta.pop("status", None)               # 二态废除：不外露（与 read_card 同）
+        # body 键集一并给出（**不是正文**，只是「有没有第三块」的判据）——
+        # 与 read_card 的 body 键集同源 ⇒ 前端两种读口下行为一致。
+        return {"meta": meta, "body_keys": list(CARD_BODY_KEYS)}
+
+    result = await card_db.run_read(work_id, _fn, None)
+    if result is None:
+        raise CardNotFoundError(f"卡片不存在: {card_id}")
+    return result
 
 
 def iter_card_titles(work_id: str) -> dict[str, str]:

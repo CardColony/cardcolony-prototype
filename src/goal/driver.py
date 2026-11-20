@@ -45,6 +45,12 @@ class RoundAttempt:
     phase: str = "queued"       # queued | claimed | admitted
     cancelled: bool = False
     stale: bool = False
+    wait_ids: tuple[str, ...] = ()
+    model_started: bool = False
+
+    def matches(self, source: dict[str, Any]) -> bool:
+        return (source.get("goalId"), source.get("revision"), source.get("round")) == (
+            self.goal_id, self.revision, self.round)
 
 
 @dataclass
@@ -96,7 +102,8 @@ def notify_human_input(work_id: str, card_id: str) -> None:
 
 
 # ---------------------------------------------------------------- 回合结束（idle 事件）
-def notify_idle(work_id: str, card_id: str, outcome: str = "ok") -> None:
+def notify_idle(work_id: str, card_id: str, outcome: str = "ok", *,
+                source: Optional[dict[str, Any]] = None) -> None:
     """**回合结束事件**：成功/出错/取消三条路径都走这里。
 
     ``outcome``：``ok`` / ``error`` / ``aborted`` / ``max-tokens``。
@@ -107,15 +114,25 @@ def notify_idle(work_id: str, card_id: str, outcome: str = "ok") -> None:
         # 原版：agent/error 与 turn/end(max-tokens) 都 ⇒ disarm（异常结果不自动重试）
         logger.warning("[goal] 回合异常/截断，撤销续轮 card=%s outcome=%s", card_id, outcome)
         disarm(work_id, card_id)
+        from . import shadow_eval
+        shadow_eval.note(work_id, card_id, "disarm:outcome", outcome=outcome)
         return
     if outcome == "aborted":
         attempt = st.attempt
         if attempt is not None and attempt.phase in ("claimed", "admitted"):
             attempt.cancelled = True
             asyncio.get_running_loop().create_task(_pause_cancelled(work_id, card_id))
+            from . import shadow_eval
+            shadow_eval.note(work_id, card_id, "pause:aborted", outcome=outcome)
         else:
             disarm(work_id, card_id)
+            from . import shadow_eval
+            shadow_eval.note(work_id, card_id, "disarm:aborted", outcome=outcome)
         return
+    from . import wait_store
+    if wait_store.enabled(work_id) and st.attempt is not None and (
+            st.attempt.stale or st.attempt.matches(source or {})):
+        st.attempt = None
     request_drive(work_id, card_id)
 
 
@@ -168,16 +185,22 @@ async def _run_loop(work_id: str, card_id: str, st: DriverState) -> None:
             request_drive(work_id, card_id)
 
 
-def _yield_to_children(work_id: str, card_id: str) -> bool:
+def _yield_to_children(work_id: str, card_id: str,
+                       skip: frozenset[str] = frozenset()) -> bool:
     """**我们的层，不在原版 goal 包里**：有未终止子卡 ⇒ 父卡让位。
 
     原版用 subagent family 表达父子（子 agent 在一次工具调用里阻塞返回），
     我们的卡树是"建完子卡就结束回合、等回报"，所以必须在这里显式让位；
     否则父卡的 goal 是 active+armed，驱动会一直给它续轮，与子卡抢。
+
+    [independent 豁免 2026-11-20 · 验收修] ``skip`` 里是被「独立等待」覆盖
+    的子卡——模型声明过「它的回执我不拦着等，我还有独立活」⇒ 该子卡在跑
+    不再让位（没豁免的子卡照旧，串行约束一条不松）。
     """
     try:
         from ..api import auto_driver
-        return auto_driver.has_active_child(work_id, card_id)
+        return any(c not in skip
+                   for c in auto_driver.active_children(work_id, card_id))
     except Exception:  # noqa: BLE001 判不出来就不让位（宁可按原版跑）
         return False
 
@@ -206,23 +229,65 @@ async def drive(work_id: str, card_id: str, st: Optional[DriverState] = None) ->
     st = st or _state_for(work_id, card_id)
     if st.stopping or st.competing_queued:
         return
+    # [旁路对照 2026-11-20] 每个决策出口落一条影子记录（现行决定＋候选
+    # 判断＋现场签名）——只记结果，不改任何行为。
+    from . import shadow_eval, wait_store
     # [停止失效修复 2026-10-24] 用户开关优先：auto_mode 关掉就不驱动。
     # 位置在 goal 判定**之前**——开关关掉时连 goal 都不用读。
     if not _auto_enabled(work_id, card_id):
         logger.debug("[goal] auto_mode 已关，不驱动 card=%s", card_id)
+        shadow_eval.note(work_id, card_id, "skip:auto_off")
         return
     service = get_service()
     goal = await service.get(work_id, card_id)
     if goal is None or goal.phase != "active" or goal.activation != "armed":
         logger.debug("[goal] drive 跳过 card=%s goal=%s", card_id,
                      None if goal is None else (goal.phase, goal.activation))
+        shadow_eval.note(work_id, card_id, "skip:goal_inactive")
         return
     if goal.rounds_started >= goal.max_goal_rounds:
         await service.block(work_id, card_id, goal.ref(), "round-limit",
                             f"Goal reached its configured limit of {goal.max_goal_rounds} rounds.")
+        shadow_eval.note(work_id, card_id, "block:round-limit", goal=goal)
         return
-    if _yield_to_children(work_id, card_id):
-        logger.debug("[goal] drive 让位给子卡 card=%s", card_id)
+    # [人工停止闸 2026-11-20 · 目标推进方案] 停着的卡不许自动起轮——
+    # 恢复只有显式解除（用户发话/resume）一条，idle 事件到这也得刹住。
+    try:
+        from ..api import control as _ctl
+        if _ctl.is_halted(work_id, card_id) is not None:
+            shadow_eval.note(work_id, card_id, "hold:halted", goal=goal)
+            return
+    except Exception:  # noqa: BLE001 停表读不出不挡主链
+        pass
+    eligible = []
+    free_sources = frozenset()
+    if wait_store.enabled(work_id):
+        from ..api import serial_gate
+        from ..storage import session_facade
+        if st.attempt is not None or session_facade.turn_holder(work_id, card_id):
+            return
+        try:
+            gate = wait_store.blocking_waits(work_id, card_id, goal_id=goal.id,
+                                             revision=goal.revision)
+        except Exception:
+            logger.warning("[goal] 等待账读失败 card=%s", card_id, exc_info=True)
+            shadow_eval.note(work_id, card_id, "hold:wait_store_unavailable", goal=goal)
+            serial_gate.release(work_id, card_id)
+            return
+        eligible = gate["ready"] + [wait for wait in gate["waiting_but_free"]
+                                    if not wait.get("independent_started")]
+        free_sources = frozenset(str(wait["from"]) for wait in
+                                 gate["ready"] + gate["waiting_but_free"])
+        if gate["held"] and not eligible:
+            shadow_eval.note(work_id, card_id, "hold:waiting", goal=goal)
+            serial_gate.release(work_id, card_id)
+            return
+        if gate["resumed"] and not eligible:
+            shadow_eval.note(work_id, card_id, "hold:no_new_work", goal=goal)
+            serial_gate.release(work_id, card_id)
+            return
+    if _yield_to_children(work_id, card_id, skip=free_sources):
+        shadow_eval.note(work_id, card_id, "yield_children", goal=goal)
         return
 
     round_no = goal.rounds_started + 1
@@ -241,12 +306,16 @@ async def drive(work_id: str, card_id: str, st: Optional[DriverState] = None) ->
     # 不需要再靠 pause/clear 去同步状态机。
     if not _obj:
         logger.debug("[goal] 卡面 goal 为空，不驱动 card=%s", card_id)
+        shadow_eval.note(work_id, card_id, "skip:no_objective", goal=goal)
         return
     content = render_goal_round_prompt(goal, round_no, objective=_obj)
     source = GoalMessageSource(goal_id=goal.id, revision=goal.revision, round=round_no)
     st.attempt = RoundAttempt(goal_id=goal.id, revision=goal.revision, round=round_no,
-                              content=content, phase="queued")
+                              content=content, phase="queued",
+                              wait_ids=tuple(wait["wait_id"] for wait in eligible))
     try:
+        shadow_eval.note(work_id, card_id, "spawn", goal=goal,
+                         detail=f"round={round_no}")
         await _spawn_goal_round(work_id, card_id, content, source)
     except Exception as exc:  # noqa: BLE001 排队失败 ⇒ block(queue-failed)
         st.attempt = None
@@ -263,6 +332,7 @@ async def _spawn_goal_round(work_id: str, card_id: str, content: str,
     from ..api import message_runner
     from ..api import routes as _routes
     from ..storage import event_log
+    from . import wait_store
 
     # [轮次脱钩 2026-10-20] 先把这一轮记进事件流（几十字节），再起轮。
     # 会话里**一个字都不写**：目标/目标态/已跑轮次已由 system prompt 的
@@ -273,10 +343,22 @@ async def _spawn_goal_round(work_id: str, card_id: str, content: str,
         "data": {"goalId": source.goal_id, "revision": source.revision,
                  "round": source.round},
     })
-    message_runner._spawn_tracked(  # noqa: SLF001 与 auto_driver 同一条起轮路径
-        _routes._run_message(work_id, card_id, content, None,
-                             append_user=False, source=source.as_json())
-    )
+    source_data = source.as_json()
+    turn = _routes._run_message(
+        work_id, card_id, content, None, append_user=False, source=source_data)
+    if wait_store.enabled(work_id):
+        owner_attempt = _state_for(work_id, card_id).attempt
+
+        async def run_pilot_turn():
+            try:
+                return await turn
+            finally:
+                st = _state_for(work_id, card_id)
+                if st.attempt is owner_attempt:
+                    st.attempt = None
+        message_runner._spawn_tracked(run_pilot_turn(), work_id=work_id, card_id=card_id)
+    else:
+        message_runner._spawn_tracked(turn)
     print(f"[goal] 续轮已排队 card={card_id} round={source.round}", flush=True)
 
 
@@ -289,16 +371,21 @@ def validate_reservation(work_id: str, card_id: str,
     """
     st = _state_for(work_id, card_id)
     attempt = st.attempt
+    why = ""
     if attempt is None:
-        return False, "no reservation"
-    if attempt.phase not in ("queued", "claimed"):
-        return False, f"attempt phase {attempt.phase}"
-    if attempt.stale or attempt.cancelled:
-        return False, "stale or cancelled"
-    if (source.get("goalId") != attempt.goal_id
-            or source.get("revision") != attempt.revision
-            or source.get("round") != attempt.round):
-        return False, "reservation mismatch"
+        why = "no reservation"
+    elif attempt.phase not in ("queued", "claimed"):
+        why = f"attempt phase {attempt.phase}"
+    elif attempt.stale or attempt.cancelled:
+        why = "stale or cancelled"
+    elif not attempt.matches(source):
+        why = "reservation mismatch"
+    if why:
+        # [意图与实际分账 2026-11-20] 预约没兑现成模型请求——与 spawn
+        # 意图分开记（等待期新增模型请求=实际请求，不含被丢的意图）。
+        from . import shadow_eval
+        shadow_eval.note(work_id, card_id, "intent_dropped", detail=why)
+        return False, why
     return True, ""
 
 
@@ -306,8 +393,23 @@ def mark_admitted(work_id: str, card_id: str, source: dict[str, Any]) -> None:
     """消息被接纳（已落 user_message 事件）⇒ attempt 进入 admitted。"""
     st = _state_for(work_id, card_id)
     attempt = st.attempt
-    if attempt is not None and source.get("round") == attempt.round:
+    if attempt is not None and attempt.matches(source):
         attempt.phase = "admitted"
+
+
+def accept_model_request(work_id: str, card_id: str, source: dict[str, Any]) -> None:
+    """试点续轮在首个模型请求前消费本次选中的回执或独立待办。"""
+    from . import wait_store
+    if not wait_store.enabled(work_id) or source.get("kind") != "goal":
+        return
+    attempt = _state_for(work_id, card_id).attempt
+    if attempt is None or not attempt.matches(source) or attempt.model_started:
+        return
+    if attempt.wait_ids:
+        wait_store.consume_resume(work_id, card_id, attempt.goal_id,
+                                  attempt.revision, attempt.wait_ids)
+    attempt.model_started = True
+    attempt.phase = "admitted"
 
 
 def drop_attempt(work_id: str, card_id: str) -> None:

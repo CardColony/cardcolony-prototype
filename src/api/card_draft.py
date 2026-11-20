@@ -229,6 +229,9 @@ async def draft(
         result, _model = await model_service.call_main(
             request["system_prompt"], request["user_prompt"],
             prior_messages=request["prior_messages"] or None,
+            # [批二·清单/子卡走当轮 2026-11-20] 清单/子卡现状已迁 tail 槽——
+            # draft 调用也要把 tail 材料下发，不然它在两区上直接瞎。
+            turn_tail=request["turn_tail"] or None,
             # [模型设置按项目/卡片覆盖 2026-10-19] 起草按当前 work/card 作用域选模型
             # [模型选择底座 2026-10-21] 一条链（pick_one），不再 resolve-or-default 两段拼
             model_name=_seat,

@@ -4,12 +4,12 @@
  * [阶段4 A4.1 2026-10-17] 本文件**不再 import canvas.js**：reloadCanvas 三处已删、
  * 关系下拉与停止回落改读导航快照 ⇒ 对话页模块图与画布侧彻底解耦，双向依赖清零。
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
-import { API } from "./esm/api.js?v=56";
+import { API } from "./esm/api.js?v=57";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=80";
+import { EventFlow } from "./stream.js?v=81";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
-import { notify, postStop } from "./esm/api.js?v=56";
+import { notify, postStop } from "./esm/api.js?v=57";
 // [wb_exec 2026-10-23] 执行体块（纯函数，单独成模块以便单测）
 import { buildExecBackendHtml as buildExecBackendHtmlPure } from "./esm/exec_backend.js?v=4";
 // [5715 · 抽模块] 卡间信的解析/剥头行与呈现都搬进 esm/flow/card-msg-node.js
@@ -17,7 +17,7 @@ import { buildExecBackendHtml as buildExecBackendHtmlPure } from "./esm/exec_bac
 // [S2/S3] 导航体系整体抽入 esm/nav_system.js（[阶段1 A1.2]）；本文件只留面包屑用的 ancestorCards。
 import { ancestorCards } from "./esm/nav_breadcrumb.js?v=30";
 import { createNavSystem } from "./esm/nav_system.js?v=75";
-import { loadRulePanel, getRuleCardId } from "./esm/rule_panel.js?v=47";
+import { loadRulePanel, getRuleCardId, loadRule } from "./esm/rule_panel.js?v=48";
 /* [对话流照抄 dsh 完全版 v3 2026-10-17] 输入系统整件来自 flow/（dsh 移植件）：
    machine＝输入状态机、submission-policy＝忙时 Enter 策略、
    input-bar＝输入卡、queue-store/queue-dock＝排队消息与排队条。 */
@@ -150,7 +150,11 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
   }
 
   /** 拉会话登记处并画 tab 栏（open 时＋建会话后调用）。 */
-  async function refreshSessions(cardId) {
+  /* [晚回包归属 2026-11-20 · 性能批次一]
+     会话 tab 栏是**共享元素**（只有一个 #sessionTabs）⇒ A 卡的迟到回包会把
+     A 的会话画到当前显示的 B 卡上。⇒ 发起时记下会话序号，回来核对。
+     openSeq：切卡序号（单调递增）；对不上 ⇒ 这次回包已经过期，直接丢。 */
+  async function refreshSessions(cardId, openSeq) {
     if (!sessionTabsEl) return;
     if (!cardId || cardId === "draft") { sessionTabsEl.hidden = true; return; }
     let list = null;
@@ -160,6 +164,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     } catch (e) {
       list = [{ session_id: cardId, persona: "", label: "主会话", main: true }];
     }
+    if (openSeq != null && openSeq !== _openSeq) return;   // 已切到别的卡 ⇒ 丢
     sessionRegistry.set(cardId, list);
     // 选中键失效（会话没了）⇒ 回落主会话
     const sel = sessionSel.get(cardId);
@@ -442,10 +447,44 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     // window.__CARD_ID__（card.html 注入一次）⇒ 切卡/切项目后它还指着**上一张卡**
     // ⇒ 徽标显示上一张卡的模型。这里就地更新（页面内切 ⇒ 不重载 ⇒ 必须自己换）。
     try { window.__CARD_ID__ = cardId; } catch (e) { /* 零阻断 */ }
+    /* ══════════════════════════════════════════════════════════════════
+       [首屏取数链路 2026-11-20 · 性能批次一]
+
+       改前：**串行**，且第一步就拉**整张卡面**——
+         await getCard()            ← 实测 work_073/card_007 520KB，其中 99.5%
+                                     是正文（requirements 285KB ＋ 1800+ 行
+                                     history 201KB），而首屏只要 meta（8KB）
+         await replayTrace()        ← 最近对话（时序尾窗）
+         await renderInspector()    ← 右栏「卡详情」——**默认收起**，正文看不见
+       ⇒ 首屏白等两次大包：一次是几何上用不上的正文，一次是收起来的面板。
+
+       改后：**并发** ＋ **按需**：
+         ① getCardMeta（窄投影，8KB）—— 首屏要的判据（标题/类型/归属/运行态）
+         ② 最近对话（时序尾窗）—— 同一时刻开跑，不再排在卡面后面
+         ③ 整张卡面 —— **右栏展开时**才读（右栏是收起的 ⇒ 那时才是真需求）
+       ★ 语义不变：卡面/会话归属/历史顺序/撤销/权限/运行状态一律照旧；
+         正文仍从同一个 /cards/{cid} 读口拿（契约逐字不变）。
+       ══════════════════════════════════════════════════════════════════ */
+    const sKey = sessionKeyOf(cardId);
+    const cached = (() => {
+      try { return EventFlow.isLoaded(WORK_ID, sKey); } catch (e) { return false; }
+    })();
+    // 两条并行开跑（后面统一按 stale() 收敛）。
+    const metaP = API.getCardMeta(WORK_ID, cardId, { signal: ctrl.signal });
+    const tlP = cached
+      ? Promise.resolve(null)                      // 热切回：零网络、零装配
+      : EventFlow.replayTrace(WORK_ID, sKey, { signal: ctrl.signal });
     try {
-      const card = await API.getCard(WORK_ID, cardId, { signal: ctrl.signal });
+      const card = await metaP;
       if (stale()) return;
-      currentCard = card;
+      /* [窄投影 2026-11-20] 首屏只拿 meta。正文（body）**不在**这里读——
+         右栏展开时才补（ensureCardFull）。body_keys 给出「第三块在不在」
+         的判据 ⇒ 起草按钮的文案语义与改前逐字一致。 */
+      currentCard = {
+        meta: (card && card.meta) || {},
+        body: null,
+        bodyKeys: (card && card.body_keys) || [],
+      };
       /* [切卡跟手 2026-10-21] 模型徽标（顶栏那颗）原来绑的是**页面加载时**的卡号
          （window.__CARD_ID__），切卡不刷新 ⇒ 在卡 A 切了 k3，切到卡 B 还显示 k3，
          而且在卡 B 上再切会写进卡 A。这里把「当前卡变了」广播出去，徽标换行重读。 */
@@ -454,19 +493,22 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       } catch (e) { /* 零阻断 */ }
       // [角色机制 5710] 角色卡的主界面就是右栏台账（关注/判词/警报）；
       // 进角色页自动展开 Inspector，否则用户只看到聊天，看不到它在盯什么。
-      if (card.meta && card.meta.card_type === "role") {
+      if (currentCard.meta && currentCard.meta.card_type === "role") {
         inspector.classList.add("open");
       }
       if (inputBar) inputBar.refresh();   // 会话面到场 ⇒ 输入卡解除 inert
-      applyEmptyState(card);
+      applyEmptyState(currentCard);
       // [席位会话] 会话 tab 栏：登记处拉取＋画 tab（不 await，与浮窗同口径）。
-      refreshSessions(cardId).catch(() => {});
+      // [晚回包归属 2026-11-20] 这三个读口写的是**共享元素**（#sessionTabs /
+      // #rvWin / #alWin）⇒ 迟到回包会把上一张卡的内容画到当前卡上。
+      // ⇒ 全部带上发起时的会话键，回来先核对还是不是这一张。
+      refreshSessions(cardId, mySeq).catch(() => {});
       // [评审浮窗 2026-10-29] 这张卡有进行中的评审批次 ⇒ 右侧浮窗出现；
       // 没有就什么都不多。**不 await**：浮窗晚到几十毫秒没关系，切卡不能等它。
-      rvRefresh(cardId);
+      rvRefresh(cardId, mySeq);
       // [对齐场浮窗 2026-11-11] 这张卡是某场对齐的成员且场还开着 ⇒
       // 对齐浮窗出现（评审窗下方）；同样不 await。
-      alRefresh(cardId);
+      alRefresh(cardId, mySeq);
       // [会话渲染单源化 2026-10-15 · C1] 刷新/换卡恢复走**唯一一条路**：
       // GET /timeline → 装配器 → 节点快照 → 渲染。原「先 renderChat 读 /session
       // 上屏消息、再 replayTrace 补过程行」两通道已合并成这一次调用。
@@ -475,28 +517,22 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       // 原因：renderInspector 对角色卡要额外 await /api/.../role（档案+六节+判断簿+
       // 警报簿+职责书），它压在 replayTrace 之前 ⇒ 用户点卡后先等右栏、才看到对话。
       // 对话区是主区域，右栏是附属；把主区域的 await 提到前面，点卡立刻出内容。
-      // 仍然是串行（不是并行）——两处都写 DOM，并行会在快速切卡时互相写错卡。
-      {
-        /* [切卡零重建 2026-10-21 · 用户令「最近对话都在内存态」]
-           画板已在内存（开头 bindBoard 已把它挂上）⇒ **零网络、零装配**，
-           对话立刻可见。改前每次切卡都重拉 400 条事件 + 重建整张装配表，
-           200 个节点重新渲染——这就是「慢得要死、根本不是即时响应」的来源。 */
-        const sKey = sessionKeyOf(cardId);
-        const cached = (() => {
-          try { return EventFlow.isLoaded(WORK_ID, sKey); } catch (e) { return false; }
-        })();
-        if (cached) {
-          try { EventFlow.activate(WORK_ID, sKey); } catch (e) { /* 零阻断 */ }
-        } else {
-          await EventFlow.replayTrace(WORK_ID, sKey);
-          if (stale()) return;
-        }
-      }
-      await renderInspector();
+      // [首屏链路 2026-11-20] 时序那条已经在上面**并发**开跑了，这里只等它落地。
+      await tlP;
       if (stale()) return;
+      /* [右栏懒加载 2026-11-20] 右栏「卡详情」默认收起 ⇒ 收起时渲染它＝白读
+         520KB 正文 ＋ 白建一大坨看不见的 DOM。现在：**展开时才读**。
+         展开入口全都在 inspector 的 class 上 ⇒ 由 watchInspectorOpen() 统一接管
+         （右缘竖条 / 顶栏按钮 / 左栏聚焦子卡 / 角色卡自动展开，一处不漏）。 */
+      if (inspector.classList.contains("open")) {
+        renderInspector().catch(() => {});
+      }
       /* [5702 · 治「切到在跑的卡不再更新」] replayTrace 内部会 stopES 关流；
          恢复完再按后端真实运行态接流——此前只有页面加载（bootRestore）会接，
-         页内切卡后只能刷新才动。 */
+         页内切卡后只能刷新才动。
+         [重复读 2026-11-20] bootRestore 里还有一次同样的调用 ⇒ 冷开时
+         **两个一模一样的 /progress 请求**在飞。open() 这条已覆盖 ⇒ 那条删掉
+         （见 bootRestore）。 */
       attachRunningState(sessionKeyOf(cardId)).catch(() => {});
       /* [5715 · 修] 选中态写**路径**（页面身份即选中态）。
        * 原写法：先 select.set() 写 hash、再 replaceState 写路径 ⇒ hash 被后写者抹掉
@@ -504,7 +540,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
        * hash 已退役承载选中（2026-10-17 A2.2），旧 hash 链接由 bootRestore 一次性重定向。 */
       // [当前卡单源] 身份已在函数开头写入路径（点下去即成立），此处不再重复写。
       // [S3/R-25/V3-F5] 成功跳转（getCard 已取回）才记最近访问；失败/灰态不进此路径
-      navFind.recordRecent(WORK_ID, cardId, card.meta.title);
+      navFind.recordRecent(WORK_ID, cardId, (currentCard.meta || {}).title);
       // [阶段5 A5.1] 视图切换机制退役：本页恒为对话态，无需 setAppView。
       if (stale()) return;
       // 导航树重渲以应用当前卡高亮与祖先路径展开
@@ -517,8 +553,10 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       // [顶栏整合 2026-10-13] 卡标题改由顶栏聊天态面包屑承载（原 #wsHeadTitle 随 .ws-head 整条删除）。
       // 放在 await renderNav() 之后——面包屑吃 navStore.snapshot，快照到位才有祖先链。
       renderChatCrumb(cardId);
-      // [phase8.4.1] 面板可见后再锁定滚底（visibility 方案下排版恒有效，此处保底）
-      scrollChatBottom();
+      /* [滚动位置 · 视图独占 2026-11-20] 原来这里 `chatArea.scrollTop = chatArea.scrollHeight`
+         ——chatArea 是 overflow:hidden 的**画框**，不是滚动容器 ⇒ 写它没有任何效果，
+         只会白读一次 scrollHeight（强制整棵画板排版）。
+         现在：首屏定位归**对话视图**管（chat-view 内部 toBottom），这里不再碰滚动位置。 */
       // [phase8.6-C] 同理：textarea auto-grow 必须在面板可见后执行
       autoGrowAll();
     } catch (e) {
@@ -998,9 +1036,34 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
   /* [wb_exec 2026-10-23] worker 卡的执行体块 → 抽到 esm/exec_backend.js（可单测）。 */
   function buildExecBackendHtml(info) { return buildExecBackendHtmlPure(info); }
 
+  /* [右栏懒加载 2026-11-20 · 性能批次一]
+     首屏只读**窄投影**（meta，8KB）⇒ currentCard.body 此刻是空的。
+     右栏「卡详情」要正文 ⇒ 在这里**按需**补一次整卡（520KB）。
+     同一张卡只补一次（_cardFullP 复用同一个在途 promise）。
+     ★ 语义不变：正文仍来自同一个 /cards/{cid} 读口，契约逐字未动。 */
+  let _cardFullP = null;
+  async function ensureCardFull() {
+    if (!currentCard) return null;
+    if (currentCard.body) return currentCard;          // 已有整卡
+    if (_cardFullP) return _cardFullP;                   // 正在补 ⇒ 复用
+    const cid = (currentCard.meta || {}).card_id;
+    if (!cid || cid === "draft") return currentCard;
+    _cardFullP = (async () => {
+      try {
+        const full = await API.getCard(WORK_ID, cid);
+        // 迟到的整卡不能盖掉已经切走的卡
+        if (currentCard && (currentCard.meta || {}).card_id === cid) currentCard = full;
+        return currentCard;
+      } finally { _cardFullP = null; }
+    })();
+    return _cardFullP;
+  }
+
   async function renderInspector() {
+    await ensureCardFull();
+    if (!currentCard) return;
     const m = currentCard.meta;
-    const b = currentCard.body;
+    const b = currentCard.body || {};
     const isRoleCard = m.card_type === "role";
     let roleInfo = null;
     if (isRoleCard && m.card_id && m.card_id !== "draft") {
@@ -1412,7 +1475,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     const editConclBtn = document.getElementById("editConclusion");
     if (editConclBtn) editConclBtn.onclick = () => {
       conclEditing = true;
-      conclDraft = currentCard.body.status_block || "";
+      conclDraft = (currentCard.body || {}).status_block || "";
       applyConclusionState();
       document.getElementById("conclusionEdit").focus();
     };
@@ -2083,8 +2146,15 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     el.textContent = text || "";
     if (state === "ok") setTimeout(() => { el.textContent = ""; el.className = "save-status"; }, 2500);
   }
+  /* [滚动位置 · 视图独占 2026-11-20 · 性能批次一]
+     原来：`chatArea.scrollTop = chatArea.scrollHeight`。
+     chatArea（.chat）是 overflow:hidden 的**画框** ⇒ 写 scrollTop 是个 no-op，
+     而读 scrollHeight **会强制一次整棵画板的排版** ⇒ 首屏白付一次同步布局。
+     现在：回到底部归**对话视图**管（chat-view.toBottom），宿主只发号令。 */
   function scrollChatBottom() {
-    chatArea.scrollTop = chatArea.scrollHeight;
+    try {
+      EventFlow.toBottom(WORK_ID, currentCard ? (currentCard.meta || {}).card_id : "");
+    } catch (e) { /* 零阻断 */ }
   }
 
   // ==================== 发送消息 ====================
@@ -2596,8 +2666,11 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     if (!pathCid) return false;          // 无卡号：停在画布态（现行为）
     try {
       await open(pathCid);
-      // [刷新恢复实时状态 2026-10-03] 历史回读完成后查一次后端进度：有调用在跑就挂回等待气泡。
-      await attachRunningState(pathCid);
+      /* [重复读 2026-11-20 · 性能批次一] 原来这里还有一次
+         `await attachRunningState(pathCid)` ⇒ 冷开时**两个一模一样的
+         /progress 请求**在飞（open() 内部已经调过一次，两处 URL 完全相同）。
+         ⇒ open() 那条已覆盖这条 ⇒ 删掉（少一次网络、少一次连接占用）。
+         [刷新恢复实时状态 2026-10-03] 的语义不变：运行态仍由 open() 恢复。 */
       return true;
     } catch (e) {
       // 卡片不存在（旧链接）等：清掉路径里的卡号、回到画布页，避免每次刷新都撞同一个失败。
@@ -2675,7 +2748,12 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     let dm = null;  // { kind, baseHash, draft, feedbackRounds, busy }
 
     function isRdCard() {
-      return currentCard && currentCard.body && ("requirements" in currentCard.body);
+      if (!currentCard) return false;
+      /* [窄投影 2026-11-20] 首屏只有 meta（没有 body）⇒ 用 body_keys 判
+         「第三块在不在」。窄读给的 body_keys 与整卡的 body 键集同源
+         （card_store.CARD_BODY_KEYS）⇒ 按钮文案与改前逐字一致。 */
+      if (currentCard.body) return ("requirements" in currentCard.body);
+      return (currentCard.bodyKeys || []).includes("requirements");
     }
 
     // 按钮文案随块集判据切换（研发卡「需求确定」/ 其他卡「定论确认」）
@@ -2994,6 +3072,21 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   // [5715 · 抽模块] 卡详情开合搬进 esm/inspector.js（原先在装配闭包里 ⇒ 导不出来、
   // 两个入口各绑一次容易漂移；新件里两个入口共用同一个 toggle 动作）。
   initInspectorToggle();
+  /* [右栏懒加载 2026-11-20 · 性能批次一] 右栏展开 ⇒ 补读整卡（正文）。
+     展开入口有好几个（右缘竖条 / 顶栏按钮 / 左栏聚焦子卡 / 角色卡自动展开），
+     逐个接一遍必然漏 ⇒ 改成**盯 class 属性**：只要右栏变成展开态且当前卡
+     还没有正文，就补读一次并渲染。
+     ⇒ 收起状态下开卡，**不再**读那 520KB 正文。 */
+  (function watchInspectorOpen() {
+    if (typeof MutationObserver === "undefined" || !inspector) return;
+    const mo = new MutationObserver(() => {
+      if (!inspector.classList.contains("open")) return;
+      if (!currentCard) return;
+      if (currentCard.body) return;              // 已经有整卡 ⇒ 不用再读
+      renderInspector().catch(() => { });
+    });
+    mo.observe(inspector, { attributes: true, attributeFilter: ["class"] });
+  })();
   // [画布入口 2026-10-16 用户令] 顶栏 → 返回本项目画布（根卡/子卡聊天态常显）
   const canvasEntryBtn = document.getElementById("canvasEntryBtn");
   // [阶段3 A3.2 2026-10-17] 对话页无画布可切 ⇒ 回画布＝整页跳转到画布页 URL。
@@ -3184,7 +3277,12 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     async function checkRulePending() {
       if (dmRule) return;   // 弹窗开着/正处置——处置完自会再查
       try {
-        const data = await API.call("GET", `/api/works/${WORK_ID}/rule`);
+        /* [重复读 2026-11-20 · 性能批次一] 原来这里自己打一次
+           GET /rule（整份规则正文），而规则面板**同一时刻**也在读同一份
+           ⇒ 冷开两个一模一样的 /rule 请求。
+           ⇒ 改走规则面板的**共享读口**（loadRule）：同一时刻的多个调用
+           合成一次请求；面板没在读时它就是独立的一次。 */
+        const data = await loadRule();
         const p = ((data && data.pending) || [])[0];
         if (p && p.draft_id) openRuleEditModal(p);
       } catch (e) { /* 零阻断 */ }
@@ -3519,7 +3617,10 @@ function rvSubscribe() {
 // 断线期间漏的事件就补上了。不用定时器，也不用拍一个间隔。
 
 
-async function rvRefresh(cid) {
+/* [晚回包归属 2026-11-20 · 性能批次一] 评审浮窗是**共享元素**（#rvWin）：
+   A 卡的迟到回包会把 A 的评审窗打开到当前显示的 B 卡上。
+   ⇒ 发起时带上切卡序号，回来核对还是不是这一张。 */
+async function rvRefresh(cid, openSeq) {
   if (!cid) return;
   if (cid !== RV.target) {
     RV.closedBatch = "";
@@ -3532,6 +3633,7 @@ async function rvRefresh(cid) {
   } catch (e) {
     return;                     // 拉不到就维持现状，不误收
   }
+  if (openSeq != null && openSeq !== _openSeq) return;   // 已切走 ⇒ 丢
   if (!st || !st.has_review || !st.active) { rvSetOn(false); return; }
   RV.batch = String(st.batch || "");
   rvSetOn(true);
@@ -3842,7 +3944,9 @@ function alSubscribe() {
   };
 }
 
-async function alRefresh(cid) {
+/* [晚回包归属 2026-11-20 · 性能批次一] 对齐浮窗同评审窗：共享元素 ⇒
+   迟到的回包必须核对切卡序号，否则会把上一张卡的对齐场画到当前卡上。 */
+async function alRefresh(cid, openSeq) {
   if (!cid) return;
   if (cid !== AL.target) {
     AL.closedAid = "";
@@ -3855,6 +3959,7 @@ async function alRefresh(cid) {
   } catch (e) {
     return;                     // 拉不到就维持现状，不误收
   }
+  if (openSeq != null && openSeq !== _openSeq) return;   // 已切走 ⇒ 丢
   if (!st || !st.has_align || !st.active) { alSetOn(false); return; }
   AL.aid = String(st.align_card_id || "");
   alSetOn(true);

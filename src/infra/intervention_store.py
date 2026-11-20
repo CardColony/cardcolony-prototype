@@ -62,6 +62,9 @@ CREATE TABLE IF NOT EXISTS actions (
     policy_id   TEXT NOT NULL,
     scope_key   TEXT NOT NULL DEFAULT '',
     fire_key    TEXT NOT NULL,
+    biz_key     TEXT NOT NULL DEFAULT '',
+    step_json   TEXT NOT NULL DEFAULT '',
+    claim_token TEXT NOT NULL DEFAULT '',
     target      TEXT NOT NULL DEFAULT '',
     mode        TEXT NOT NULL DEFAULT 'message',
     wake        INTEGER NOT NULL DEFAULT 0,
@@ -77,6 +80,13 @@ CREATE TABLE IF NOT EXISTS actions (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_actions_fire ON actions(fire_key, target);
 CREATE INDEX IF NOT EXISTS ix_actions_state  ON actions(state);
 CREATE INDEX IF NOT EXISTS ix_actions_matter ON actions(matter_id);
+-- [动作按业务状态去重 2026-11-20 · 批次A返工] (policy,scope,target,biz_key)
+-- 查口——biz_key 由 then.dedup_fields 声明的触发字段拼成（同一可运行
+-- 步骤换 seq/ts ⇒ 同 biz_key ⇒ 沿用原动作身份）。
+-- [并发登记兜底 2026-11-20 · 批次A第三轮返工] 业务键唯一性落实到
+-- **部分唯一索引**（biz_key 非空才约束——空 biz 是未声明 dedup_fields
+-- 的策略，同 policy/scope/target 的不同 fire_key 动作必须共存）：
+-- 两连接同时查无行再各插 ⇒ 后者撞索引，record_action 读回同一编号。
 
 CREATE TABLE IF NOT EXISTS errors (
     err_id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,13 +147,43 @@ class InterventionStore:
         # 新库由 _SCHEMA 直接带上。
         try:
             cols = {r[1] for r in c.execute("PRAGMA table_info(actions)")}
-            if "spec" not in cols:
-                c.execute(
-                    "ALTER TABLE actions ADD COLUMN spec "
-                    "TEXT NOT NULL DEFAULT ''")
-                c.commit()
-        except sqlite3.Error:
-            pass
+            for col, ddl in (
+                    ("spec", "TEXT NOT NULL DEFAULT ''"),
+                    ("biz_key", "TEXT NOT NULL DEFAULT ''"),
+                    # [步骤身份 2026-11-20 · 批次A第三轮返工] dedup_fields
+                    # 解析值随动作落账——投递/恢复把 {batch,draft,next}
+                    # 传给评审属主执行前复核，过期销账不执行。
+                    ("step_json", "TEXT NOT NULL DEFAULT ''"),
+                    # [领取凭据 2026-11-20 · 批次A第三轮返工] 发送者
+                    # 身份——写回必须持本次领取的 token，防旧属主迟到
+                    # 回执覆盖新属主的在途投递。
+                    ("claim_token", "TEXT NOT NULL DEFAULT ''")):
+                if col not in cols:
+                    c.execute(f"ALTER TABLE actions ADD COLUMN {col} {ddl}")
+            c.commit()
+            # [并发登记兜底] 存量重复 biz 行先收编（留最权威一行：
+            # delivered > 进行中/待投 > stale），再建部分唯一索引——
+            # 否则索引建不起来、约束落空。
+            now = time.time()
+            c.execute(
+                "UPDATE actions SET state='stale', updated_ts=?,"
+                " updated_iso=? WHERE biz_key != '' AND action_id IN ("
+                "  SELECT action_id FROM ("
+                "    SELECT action_id, ROW_NUMBER() OVER ("
+                "      PARTITION BY policy_id, scope_key, target, biz_key"
+                "      ORDER BY CASE state WHEN 'delivered' THEN 0"
+                "        WHEN 'stale' THEN 2 ELSE 1 END,"
+                "        created_ts, action_id) AS rn"
+                "    FROM actions WHERE biz_key != '') WHERE rn > 1)",
+                (now, _iso(now)))
+            c.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_actions_biz"
+                " ON actions(policy_id, scope_key, target, biz_key)"
+                " WHERE biz_key != ''")
+            c.commit()
+        except sqlite3.Error as exc:  # noqa: BLE001 迁移失败不阻断读写
+            logger.warning("[intervention] actions 迁移失败 work=%s: %s",
+                           work_id, exc)
         self._conns[wid] = c
         return c
 
@@ -171,7 +211,7 @@ class InterventionStore:
             return None
         d = dict(r)
         for k in ("objects", "check_on", "basis", "evidence", "receipt",
-                  "detail"):
+                  "detail", "step_json"):
             if k in d:
                 try:
                     d[k] = json.loads(d[k] or "{}") if d[k] else (
@@ -188,7 +228,7 @@ class InterventionStore:
         for r in cur.fetchall():
             d = dict(r)
             for k in ("objects", "check_on", "basis", "evidence", "receipt",
-                      "detail"):
+                      "detail", "step_json"):
                 if k in d:
                     try:
                         d[k] = json.loads(d[k] or "{}") if d[k] else (
@@ -282,45 +322,130 @@ class InterventionStore:
     def record_action(self, work_id: str, *, policy_id: str, scope_key: str,
                       fire_key: str, target: str, mode: str, wake: bool,
                       message: str, matter_id: str = "",
-                      spec: str = "") -> tuple[str, bool]:
+                      spec: str = "", biz_key: str = "",
+                      step: Optional[dict] = None) -> tuple[str, bool]:
         """登记一次投递；(fire_key, target) 已有行 ⇒ 返回既有 id, False（去重）。
 
         ``spec``：deploy 类动作的参数包（JSON）——函数/场型/退出规格，
-        重启恢复时凭它重派，不靠当时 ctx 重算。"""
+        重启恢复时凭它重派，不靠当时 ctx 重算。
+
+        ``biz_key``：业务状态键（策略 ``then.dedup_fields`` 声明的触发
+        字段拼成）——同一业务状态换触发事实（seq/ts 不同）再来时，
+        (policy,scope,target,biz_key) 命中既有行 ⇒ 沿用原动作身份，
+        不造第二行（批次A返工：同一可运行步骤只投递一次）。
+
+        ``step``：dedup_fields 的**结构化解析值**（如
+        ``{"batch":..,"draft":..,"next":..}``）——投递/恢复把它传给
+        评审属主执行前复核，过期销账（批次A第三轮返工）。
+
+        [并发登记兜底] 唯一索引（ux_actions_fire / ux_actions_biz）是
+        最终裁判：两个连接同时查无行再各插 ⇒ 后到者撞 IntegrityError
+        ⇒ 读回先到者的 action_id——并发方拿到**同一个编号**，不会
+        各发行一行。"""
         now = time.time()
         conn = self._conn(work_id)
-        try:
+
+        def _find() -> Optional[str]:
             old = conn.execute(
-                "SELECT action_id, state FROM actions WHERE fire_key=? AND target=?",
+                "SELECT action_id FROM actions WHERE fire_key=? AND target=?",
                 (fire_key, target)).fetchone()
-            if old:
-                return str(old["action_id"]), False
+            if not old and biz_key:
+                old = conn.execute(
+                    "SELECT action_id FROM actions WHERE policy_id=?"
+                    " AND scope_key=? AND target=? AND biz_key=?",
+                    (policy_id, scope_key, target, biz_key)).fetchone()
+            return str(old["action_id"]) if old else None
+
+        try:
+            hit = _find()
+            if hit:
+                return hit, False
             aid = "act-" + uuid.uuid4().hex[:12]
             conn.execute(
                 "INSERT INTO actions(action_id,matter_id,policy_id,scope_key,"
-                "fire_key,target,mode,wake,message,spec,state,created_ts,updated_ts,"
-                "created_iso,updated_iso) VALUES(?,?,?,?,?,?,?,?,?,?,'pending',?,?,?,?)",
-                (aid, matter_id, policy_id, scope_key, fire_key, target, mode,
+                "fire_key,biz_key,step_json,target,mode,wake,message,spec,"
+                "state,created_ts,updated_ts,created_iso,updated_iso)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?,?)",
+                (aid, matter_id, policy_id, scope_key, fire_key,
+                 str(biz_key or ""),
+                 json.dumps(step or {}, ensure_ascii=False)
+                 if step else "",
+                 target, mode,
                  1 if wake else 0, message, str(spec or ""), now, now,
                  _iso(now), _iso(now)))
             conn.commit()
             return aid, True
+        except sqlite3.IntegrityError:
+            # 并发登记：另一连接已插入同身份行 ⇒ 读回同一编号
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            hit = _find()
+            if hit:
+                return hit, False
+            logger.warning("[intervention] 登记撞键且读回落空 work=%s",
+                           work_id)
+            return "", False
         except sqlite3.Error as exc:  # noqa: BLE001
             logger.warning("[intervention] 登记动作失败 work=%s: %s", work_id, exc)
             return "", False
 
+    def claim_action(self, work_id: str, action_id: str, *,
+                     dead_sending_before: float) -> Optional[str]:
+        """[并发领取 2026-11-20 · 批次A返工3/第三轮返工4] 发出前**原子
+        领取**动作：``pending/failed/sent`` ⇒ ``sending``；``sending``
+        但 ``updated_ts < dead_sending_before``（租约过期＝属主确认
+        退出/失联）⇒ 也可重领。
+
+        成功返回**领取凭据** ``claim_token``——写回（mark_action/
+        mark_receipt）必须持本次凭据，旧属主迟到回执被拒；失败返
+        ``None``。实时投递与 resume 共用这道闸、同一租约口径
+        （``now-CLAIM_STALE_S``）——boot 时刻不再是接管判据：新
+        runner 启动**抢不走**仍在宽限内的在途投递。"""
+        if not action_id:
+            return None
+        now = time.time()
+        token = "clm-" + uuid.uuid4().hex[:12]
+        conn = self._conn(work_id)
+        try:
+            cur = conn.execute(
+                "UPDATE actions SET state='sending', claim_token=?,"
+                " updated_ts=?, updated_iso=? WHERE action_id=? AND"
+                " (state IN ('pending','failed','sent') OR"
+                "  (state='sending' AND updated_ts<?))",
+                (token, now, _iso(now), action_id, dead_sending_before))
+            conn.commit()
+            return token if cur.rowcount else None
+        except sqlite3.Error as exc:  # noqa: BLE001
+            logger.warning("[intervention] 领取动作失败 work=%s: %s",
+                           work_id, exc)
+            return None
+
     def mark_action(self, work_id: str, action_id: str, state: str,
-                    receipt: Optional[dict] = None) -> bool:
+                    receipt: Optional[dict] = None, *,
+                    claim_token: str = "") -> bool:
+        """写回执。``claim_token`` 非空 ⇒ **领取凭据核对**：只允许
+        当前 sending 属主写回（``claim_token`` 相符且仍 ``sending``），
+        旧属主迟到回执/系统侧并发改写一律拒写。"""
         if not action_id:
             return False
         now = time.time()
         conn = self._conn(work_id)
         try:
-            cur = conn.execute(
-                "UPDATE actions SET state=?, receipt=?, updated_ts=?, updated_iso=?"
-                " WHERE action_id=?",
-                (state, json.dumps(receipt or {}, ensure_ascii=False),
-                 now, _iso(now), action_id))
+            if claim_token:
+                cur = conn.execute(
+                    "UPDATE actions SET state=?, receipt=?, claim_token='',"
+                    " updated_ts=?, updated_iso=? WHERE action_id=?"
+                    " AND claim_token=? AND state='sending'",
+                    (state, json.dumps(receipt or {}, ensure_ascii=False),
+                     now, _iso(now), action_id, claim_token))
+            else:
+                cur = conn.execute(
+                    "UPDATE actions SET state=?, receipt=?, updated_ts=?,"
+                    " updated_iso=? WHERE action_id=?",
+                    (state, json.dumps(receipt or {}, ensure_ascii=False),
+                     now, _iso(now), action_id))
             conn.commit()
             return bool(cur.rowcount)
         except sqlite3.Error as exc:  # noqa: BLE001
@@ -338,15 +463,39 @@ class InterventionStore:
             return None
 
     def pending_actions(self, work_id: str) -> list[dict[str, Any]]:
-        """待送／上次失败的动作（resume 重投的来源）。"""
+        """待送／上次失败／请求边界已过的动作（resume 重投的来源）。
+
+        ``sent`` 只由 remediation 占位写（请求已发、回包未证）——恢复
+        时必须看得见它对账（核销成 unverified/delivered），不能漏。
+        ``sending`` 是投递在途占位——resume 凭 ``claim_action`` 的
+        boot 时刻闸分辨死活：本进程启动前的 sending 属死进程可收，
+        本进程内的在途投递不抢。"""
         conn = self._conn(work_id)
         try:
             cur = conn.execute(
-                "SELECT * FROM actions WHERE state IN ('pending','failed')"
+                "SELECT * FROM actions WHERE state IN"
+                " ('pending','failed','sent','sending')"
                 " ORDER BY created_ts")
             return self._rows(cur)
         except sqlite3.Error as exc:  # noqa: BLE001
             logger.warning("[intervention] 读动作失败 work=%s: %s", work_id, exc)
+            return []
+
+    def matter_actions(self, work_id: str, matter_id: str) -> list[dict[str, Any]]:
+        """某事项名下的全部动作行——业务状态→原动作身份的复用查口。
+
+        [动作身份去重 2026-11-20 · 任务书批次A] 「新事实仍可能描述同一业务
+        状态」：事项按 (policy,scope,matter_key) 去重，动作也要按事项复用——
+        命中既有 open 事项时投递侧沿用这里查到的 action_id，不再造新行。"""
+        conn = self._conn(work_id)
+        try:
+            cur = conn.execute(
+                "SELECT * FROM actions WHERE matter_id=? ORDER BY created_ts",
+                (str(matter_id),))
+            return self._rows(cur)
+        except sqlite3.Error as exc:  # noqa: BLE001
+            logger.warning("[intervention] 读事项动作失败 work=%s: %s",
+                           work_id, exc)
             return []
 
     def count_open(self, work_id: str) -> int:

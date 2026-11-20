@@ -37,6 +37,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from ..storage import session_facade, session_ops
@@ -47,13 +48,20 @@ logger = logging.getLogger("api.steer")
 #: 让模型一眼认出「这是用户在跑的过程中插进来的话」，不是系统注入、也不是新任务。
 STEER_MARK = "用户插话："
 
-#: 待投递插话：(work_id, card_id) → [文本, ...]（进程内；回合收口清扫）
-_pending: dict[tuple[str, str], list[str]] = {}
+@dataclass(frozen=True)
+class SteerEntry:
+    text: str
+    report_targets: tuple[str, ...] = ()
+
+
+#: 待投递插话：(work_id, card_id) → [插话条目, ...]（进程内；回合收口清扫）
+_pending: dict[tuple[str, str], list[SteerEntry]] = {}
 
 
 async def request_steer(work_id: str, card_id: str, text: str, *,
                         mark: str = STEER_MARK,
-                        emit_event: bool = True) -> dict[str, Any]:
+                        emit_event: bool = True,
+                        report_targets: tuple[str, ...] = ()) -> dict[str, Any]:
     """投递一条插话（HTTP 端点唯一入口）。
 
     无在途回合 ⇒ **不投递**（``not_applied``）：宁可让前端回退成普通发送，
@@ -63,7 +71,7 @@ async def request_steer(work_id: str, card_id: str, text: str, *,
     走默认 〔用户插话〕 标＋user_message 事件；卡间消息/汇报经
     ``deliver_now`` 忙时复用本通道时传自己的标、不发事件——其 msg_* 事件
     在落会话块时已记，再发一条 user_message 会让前端把卡的话当用户的话。
-    队列里存的是 ``mark+body`` 成品，``_apply_steer`` 取走即用不再拼。
+    条目携带 ``mark+body`` 成品及宿主明确绑定的汇报对象。
     """
     body = str(text or "").strip()
     if not body:
@@ -74,7 +82,7 @@ async def request_steer(work_id: str, card_id: str, text: str, *,
                 "idempotent": True, "holder": ""}
     key = (work_id, card_id)
     item = str(mark or "") + body
-    _pending.setdefault(key, []).append(item)
+    _pending.setdefault(key, []).append(SteerEntry(item, report_targets))
     # 界面可见：插话落一条 user_message **事件**（不写会话块 ⇒ 不重复喂给模型、
     # 不污染会话历史；事件流是前端唯一数据源 ⇒ 刷新后也看得见这条插话）。
     # 落点＝用户按下的那一刻（不是被消费时）⇒ 事件时序与用户操作顺序一致。
@@ -93,13 +101,18 @@ async def request_steer(work_id: str, card_id: str, text: str, *,
             "pending": len(_pending[key])}
 
 
-def take_steer(work_id: str, card_id: str) -> list[str]:
-    """消费：取走本卡全部待投插话（取走即清——投递是一次性的，不重放）。"""
+def take_steer_entries(work_id: str, card_id: str) -> list[SteerEntry]:
+    """取走本卡的插话正文及结构化汇报义务，消费后即清。"""
     key = (work_id, card_id)
-    items = _pending.pop(key, None)
+    items = _pending.pop(key, [])
     if items:
         logger.info("[steer] 插话消费 work=%s card=%s 条数=%d", work_id, card_id, len(items))
-    return items or []
+    return items
+
+
+def take_steer(work_id: str, card_id: str) -> list[str]:
+    """消费插话并返回正文。"""
+    return [entry.text for entry in take_steer_entries(work_id, card_id)]
 
 
 def pending_steer(work_id: str, card_id: str) -> int:
@@ -117,8 +130,4 @@ def discard_steer(work_id: str, card_id: str) -> list[str]:
     成品），收口方可以决定摘牌后补投一轮——否则 applied=True 的那句话
     模型从没见过，发话方却以为送达了。
     """
-    key = (work_id, card_id)
-    items = _pending.pop(key, []) or []
-    if items:
-        logger.info("[steer] 插话残留清扫 work=%s card=%s 条数=%d", work_id, card_id, len(items))
-    return items
+    return take_steer(work_id, card_id)

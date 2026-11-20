@@ -46,6 +46,7 @@ __all__ = [
     "ToolCallDelta",
     "BlockEnd",
     "UsageChunk",
+    "ResponseMetaChunk",
     "FinishChunk",
     "StreamChunk",
     "block_to_dict",
@@ -285,6 +286,35 @@ class UsageChunk:
 
 
 @dataclass(frozen=True)
+class SerializeTimingChunk:
+    """〔2026-11-19 返工3〕适配器**实际发送编码**的耗时回传帧（内部观测帧）。
+
+    适配器在 ``payload = json.dumps(body, …)``（真正发出的 JSON 编码）处
+    采样一次，经本帧回传给网关——网关计入 model_call 行的 ``json_dumps_ms``
+    并**不透传**给消费者（对上层不可见）。替代此前网关里"测量专用、结果
+    被丢弃"的 dumps 探针。
+    """
+
+    ms: float
+    payload_bytes: int = 0
+    type: ClassVar[str] = "serialize-timing"
+
+
+@dataclass(frozen=True)
+class ResponseMetaChunk:
+    """〔2026-11-20 · B3 请求对账〕端点回包声明的模型名（内部观测帧）。
+
+    OpenAI 兼容 SSE 每帧带 ``model`` 字段——那是**端点自己声明**本次
+    实际服务的模型，与请求里写的模型名、网关配置的线路名是三件事。
+    适配器翻译时取首个非空值经本帧回传，网关计入 protocol_meta，
+    **不透传给消费者**（对上层消息流不可见）。
+    """
+
+    model: str
+    type: ClassVar[str] = "response-meta"
+
+
+@dataclass(frozen=True)
 class FinishChunk:
     """原版 types.ts:298-303。``replay_state`` ← ``replayState``。"""
 
@@ -300,6 +330,8 @@ StreamChunk = Union[
     ToolCallDelta,
     BlockEnd,
     UsageChunk,
+    SerializeTimingChunk,
+    ResponseMetaChunk,
     FinishChunk,
 ]
 

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -445,12 +446,147 @@ def _load_function_roster(work_id: str, current_id: str) -> list[dict[str, Any]]
         return []
 
 
+def _load_dispatch_targets(work_id: str, card_id: str,
+                           card_type: str) -> list[str]:
+    """差事账里的**验收对象**（只对 qa_card/pm_card 取数——别的卡型零 IO）。
+
+    这是**唯一**能绑定到「验收对象」的结构化字段：差事账的 ``target_card``。
+    指令来源（source.from）只证明指令来自哪里，**不用于选材**（任务书明令）。
+    """
+    if str(card_type or "") not in ("qa_card", "pm_card"):
+        return []
+    try:
+        from ..storage import function_store as _fs
+        out: list[str] = []
+        for dep in _fs.active_for_venue(work_id, card_id, venue_kind="deploy"):
+            tgt = str(dep.get("target_card") or "")
+            if tgt:
+                out.append(tgt)
+        return out
+    except Exception:  # noqa: BLE001 差事账读不到＝判不出对象⇒回退 unknown
+        return []
+
+
+def _load_board_criteria(work_id: str, card_id: str) -> str:
+    """活板**当前步**的判据文本（没有板／没有当前步 ⇒ 空串）。
+
+    活板是「任务判据」的结构化载体（步自带 criteria/deliverable）。
+    取不到不阻断装配（判据缺 ⇒ 锚缺 ⇒ 依赖正稿定位不到 ⇒ 按档位回退）。
+    """
+    try:
+        from ..thinkchain import board as _board
+        snap = _board.snapshot_sync(work_id, card_id)
+    except Exception:  # noqa: BLE001 取板失败＝无判据，不阻断装配
+        return ""
+    if not snap:
+        return ""
+    try:
+        cur = int(snap.get("current") or 0)
+        steps = snap.get("steps") or []
+        if not (0 <= cur < len(steps)):
+            return ""
+        step = steps[cur] or {}
+        return " ".join(str(step.get(k) or "") for k in ("criteria", "prompt"))
+    except Exception:  # noqa: BLE001 板结构怪＝无判据，不阻断装配
+        return ""
+
+
+def _resolve_task_scope(work_id: str, current_id: str, cur_meta: dict[str, Any],
+                        children: list[dict[str, Any]],
+                        scope_hint: dict[str, Any] | None) -> Any:
+    """判定本轮任务范围（批二·按任务缩量）。**scope_hint 为 None ⇒ 不判定**。
+
+    不判定 ⇒ unknown ⇒ 渲染逐字同旧（既有调用方、既有测试零行为变化）。
+    """
+    from . import task_scope as _ts
+    if scope_hint is None:
+        return _ts.TaskScope(_ts.MODE_UNKNOWN, basis="not_requested",
+                              reason="调用方未请求范围判定（默认逐字同旧）")
+    # [批二·按任务缩量 2026-11-20] **回退闸**：CONTEXT_SCOPE=0 ⇒ 一律完整材料
+    # （试点期可整体退回既有装配，不必回滚代码；与 CONTEXT_BOARD=0 同族口径）。
+    if os.environ.get("CONTEXT_SCOPE", "1") == "0":
+        return _ts.TaskScope(_ts.MODE_UNKNOWN, basis="switch_off",
+                              reason="CONTEXT_SCOPE=0 ⇒ 完整材料回退")
+    ctype = str((cur_meta or {}).get("card_type") or "")
+    targets = _load_dispatch_targets(work_id, current_id, ctype)
+    criteria = _load_board_criteria(work_id, current_id)
+    return _ts.resolve_scope(
+        card_id=current_id,
+        card_type=ctype,
+        children=children,
+        source=scope_hint.get("source"),
+        source_kind=str(scope_hint.get("source_kind") or ""),
+        act_as=str(scope_hint.get("act_as") or ""),
+        ctx_card=str(scope_hint.get("ctx_card") or ""),
+        dispatch_targets=targets,
+        board_criteria=criteria,
+        readback_available=bool(scope_hint.get("readback_available", True)),
+    )
+
+
+def _load_cards_index_light(work_id: str) -> list[dict[str, Any]]:
+    """只取清单要的列（id·标题·父卡·卡型·建卡时间）——**不取正稿**。
+
+    [批二·按任务缩量 2026-11-20] 同一回合内刷新当轮事实时用：清单区只用
+    这几列，正稿（requirements）是依赖区的数据源、且依赖区走 system 通道
+    （同回合缓存）⇒ 刷新时不带它，省掉一次十几万字的读。
+    """
+    def _fn(conn: Any) -> list[dict[str, Any]]:
+        return [
+            {"card_id": r["card_id"], "title": r["title"] or "",
+             "parent": r["parent"] or "", "card_type": r["card_type"] or "",
+             "created_at": r["created_at"] or ""}
+            for r in conn.execute(
+                "SELECT card_id, title, parent, card_type, created_at "
+                "FROM cards ORDER BY card_id")
+        ]
+
+    return card_db.read_sync(work_id, _fn, []) or []
+
+
+def refresh_tail_facts(ctx: context_regions.RegionCtx, work_id: str,
+                       card_id: str) -> None:
+    """**同一逻辑回合内**刷新当轮事实（清单 ＋ 直接子卡现状）的数据源。
+
+    [批二·按任务缩量 2026-11-20 · 成本优化任务书 §二.3] 清单与子卡现状走
+    **tail 通道**（每个请求重渲染），但它们的数据取自**回合开始时**装配的
+    那份 ctx ⇒ 回合里子卡跑了一步、建了新卡，下一跳仍看不到旧版本。
+    ⇒ 每次工具续跳前刷新这两份数据：下一跳看到**当前有效**的那一份。
+
+    只刷 tail 绑定的数据：system 通道的区走同回合缓存（稳定前缀不动）。
+    已有卡保留原正稿（依赖区若重渲染仍拿得到全文），新卡只带清单要的列。
+    """
+    try:
+        light = _load_cards_index_light(work_id)
+    except Exception:  # noqa: BLE001 刷新失败＝沿用旧版本，不阻断回合
+        return
+    old = {str(c.get("card_id") or ""): c for c in (ctx.cards or [])}
+    merged: list[dict[str, Any]] = []
+    for c in light:
+        cid = str(c.get("card_id") or "")
+        prev = old.get(cid)
+        if prev is None:
+            merged.append(dict(c))          # 新卡：清单要的列齐了
+            continue
+        for k in ("title", "parent", "card_type", "created_at"):
+            prev[k] = c.get(k, prev.get(k, ""))
+        merged.append(prev)
+    ctx.cards = merged
+    try:
+        ctx.direct_child_status = _load_direct_child_status(work_id, card_id)
+    except Exception:  # noqa: BLE001 刷不到＝沿用旧版本，不阻断回合
+        pass
+
+
 def build_ctx(work_id: str, current_id: str,
               memory_state: dict[str, Any] | None = None,
               history_source: list[dict[str, Any]] | None = None,
               function_meta: dict[str, Any] | None = None,
               history_extra: list[dict[str, Any]] | None = None,
-              current_pair_id: str = "") -> context_regions.RegionCtx:
+              current_pair_id: str = "",
+              scope_hint: dict[str, Any] | None = None,
+              history_id: str = "",
+              memory_snapshot: dict[str, Any] | None = None) -> context_regions.RegionCtx:
     """取数一次（**装配链上唯一的 IO 处**）：卡片索引／当前卡／树类／类型注册表／凝练态。
 
     渲染器（`context_regions`）保持纯函数——它们只读这个 ctx，不自己取数。
@@ -458,6 +594,10 @@ def build_ctx(work_id: str, current_id: str,
     ``function_meta``（[card_041]）：职能回合的「我是谁」档案。职能没有 cards 行，
     由 function_room 回合执行器把 function_store.get_profile 的结果显式传进来，
     145 区（function_self）才会渲染。缺省 None ⇒ 行为与既往逐字不变（区不出）。
+
+    ``scope_hint``（[批二·按任务缩量 2026-11-20]）：本轮任务范围的判定输入
+    （回合来源／身份锚／读卡能力）。**缺省 None ⇒ 不判定 ⇒ 范围 unknown ⇒
+    清单／子卡／依赖三处逐字同旧**（既有调用方零行为变化）。
     """
     cards = _load_cards_index(work_id)
     cur = next((c for c in cards if c["card_id"] == current_id), None)
@@ -465,14 +605,27 @@ def build_ctx(work_id: str, current_id: str,
         pc = card_store._root_project_class(work_id)
     except Exception:  # noqa: BLE001 取不到树类＝无来源，不阻断装配
         pc = ""
+    # [§三.2 · 2026-11-20] 同版本快照：memory 行＋节点索引＋缓存板在一个读
+    # 事务里取回——一次模型请求看到的是同一版本，不再「新水位配旧板」。
+    history_id = history_id or current_id
+    snap = memory_snapshot
+    if snap is None and memory_store.condense_enabled():
+        snap = memory_store.read_snapshot(work_id, history_id)
     state = memory_state
-    if state is None and memory_store.condense_enabled():
-        state = memory_store.load_memory(work_id, current_id)
+    if snap is not None:
+        _snap_state = snap.get("state") or {}
+        state = _snap_state
+    elif state is None and memory_store.condense_enabled():
+        state = memory_store.load_memory(work_id, history_id)
     cur_meta = card_store._meta_of(work_id, current_id) or {}
     # [常驻当前卡 2026-10-19 · permexp] 当前卡正文＋影子一次读全（150 区常驻）。
     cur_body, cur_shadow = _load_current_card_state(work_id, current_id)
     # [依赖关联线 2026-10-16] 双向依赖关联线：在已加载的 cards 索引上算（零额外 IO）。
     dep_out, dep_in = _dep_relations_for(cards, current_id, cur_meta)
+    children = _load_direct_child_status(work_id, current_id)
+    # [批二·按任务缩量 2026-11-20] 本轮任务范围判定（结构化字段；判不出来＝unknown
+    # ⇒ 逐字同旧）。判定所需取数（差事账对象／活板当前步判据）在本处一次取完。
+    scope = _resolve_task_scope(work_id, current_id, cur_meta, children, scope_hint)
     return context_regions.RegionCtx(
         work_id=work_id,
         card_id=current_id,
@@ -484,7 +637,9 @@ def build_ctx(work_id: str, current_id: str,
         cur_shadow=cur_shadow,
         dep_relations_out=dep_out,
         dep_relations_in=dep_in,
-        direct_child_status=_load_direct_child_status(work_id, current_id),
+        direct_child_status=children,
+        # [批二·按任务缩量 2026-11-20] 本轮任务范围（unknown ⇒ 逐字同旧）。
+        task_scope=scope,
         # [上游需求文档 2026-11-10] 执行/差事卡的参照尺（类型闸外零 IO）。
         upstream_requirements=_load_upstream_requirements(
             work_id, current_id, cur_meta, cards),
@@ -506,11 +661,17 @@ def build_ctx(work_id: str, current_id: str,
         # [2026-10-31 · 修 V6 开关契约] 改前 load_nodes 无条件执行 ⇒ 开关关
         # （V6：关＝装配逐字旧路）记忆区照样出——RD-08 契约破。
         # 现在与 memory_state 同闸：开关关且调用方未显式喂记忆态 ⇒ 零取数、区不出。
-        memory_entries=(memory_store.load_nodes(work_id, current_id)
-                        if (memory_store.condense_enabled() or state is not None) else []),
+        memory_entries=((snap or {}).get("nodes")
+                        if snap is not None else
+                         (memory_store.load_nodes(work_id, history_id)
+                         if (memory_store.condense_enabled() or state is not None) else [])),
+        # [§三.2] 板行随快照同版本下发；None＝快照判板不新鲜，渲染侧走懒重建旧路
+        board_rows=((snap or {}).get("board_rows") if snap is not None else None),
+        snapshot_history=(snap or {}).get("raw_history"),
         controls=load_control(),
         rule_sections=_load_rule_sections(work_id),
         history_source=history_source or [],
+        history_id=history_id,
         history_mark=int((state or {}).get("mark", 0) or 0),
         history_extra=list(history_extra or []),
         current_pair_id=str(current_pair_id or ""),
@@ -542,13 +703,30 @@ def build_context_bundle(work_id: str, current_id: str,
                          history_source: list[dict[str, Any]] | None = None,
                          function_meta: dict[str, Any] | None = None,
                          history_extra: list[dict[str, Any]] | None = None,
-                         current_pair_id: str = "") -> dict[str, Any]:
-    """一次建好主模型/三席上下文帧；system、history 均由同一注册表渲染。"""
+                         current_pair_id: str = "",
+                         with_viewpoints: bool = True,
+                         scope_hint: dict[str, Any] | None = None,
+                         history_id: str = "",
+                         memory_snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
+    """一次建好主模型/三席上下文帧；system、history 均由同一注册表渲染。
+
+    [2026-11-19 性能批次三] ``with_viewpoints=False``：跳过 viewpoint 剖面的
+    整单渲染。生产主链路（message_runner.build_context）里那份回合开场的
+    viewpoints 渲染从未作为模型输入——席位进场时 run_seats 会带 seat_identity
+    **重新 compose** 一份真正的三席请求；开场渲染只被写进 prompt 日志当摆设，
+    等于每回合白付一次全量分区渲染（直答回合＝绝大多数回合，零三席）。
+    缺省 True ⇒ 既有调用方（测试/其他链路）行为逐字不变。
+
+    ``scope_hint``（[批二·按任务缩量 2026-11-20]）：传给 build_ctx 做任务范围
+    判定。缺省 None ⇒ 不判定 ⇒ 范围 unknown ⇒ 逐字同旧。
+    """
     ctx = build_ctx(work_id, current_id, memory_state, history_source,
                     function_meta=function_meta, history_extra=history_extra,
-                    current_pair_id=current_pair_id)
+                    current_pair_id=current_pair_id, scope_hint=scope_hint,
+                    history_id=history_id, memory_snapshot=memory_snapshot)
     main = context_regions.compose_model_context(ctx, profile="main")
-    viewpoints = context_regions.compose_model_context(ctx, profile="viewpoint")
+    viewpoints = (context_regions.compose_model_context(ctx, profile="viewpoint")
+                  if with_viewpoints else None)
     return {
         "context": ctx,
         "main": main,

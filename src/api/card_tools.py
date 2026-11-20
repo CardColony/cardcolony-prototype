@@ -118,7 +118,8 @@ AUTO_ONLY_TOOLS: frozenset[str] = frozenset(
     # **移出本集**：它原来只随 auto_mode=1 下发，于是非自动卡（含 worker）压根看不见
     # 发信工具——即使 perms 里给了开关。现在改由 TOOL_SWITCH 常规过滤
     # （有 send_card_message 开关就可见），与其它工具同一条规则。
-    {"update_goal", "get_goal", "create_goal", "resume_child"})
+    {"update_goal", "get_goal", "create_goal", "resume_child",
+     "declare_wait"})
 
 # ============================================================
 # [角色机制 5710] 角色卡专用工具（非卡片内挂）
@@ -386,7 +387,15 @@ TOOL_SWITCH: dict[str, str] = {
 # tools-tc-31：[需求文档两轮评审 2026-11-14] **工具集变更 ⇒ 递增**：新增
 #   append_requirement（定稿后块内补充，正稿唯一免评审写通道）；
 #   open_review 描述/回执带两轮制（对齐批先行）。
-TOOL_TABLE_VERSION = "tools-tc-31"
+# tools-tc-32：[声明式等待 2026-11-20 · 目标推进方案 §一] **工具集+schema
+#   变更 ⇒ 递增**：新增 declare_wait（AUTO_ONLY——自动卡回合里声明
+#   「等哪笔派工的哪个回执」）；report_up/report_done 增可选 task——
+#   回执带原派工 ID（reply_to），等待机械核对认它。
+# tools-tc-33：[记忆找回 2026-11-20 · 凝练修复方案 §二] **schema 变更 ⇒
+#   递增**：read_memory 增 cursor（锚点索引分页，20条/页，游标绑卡/筛选/
+#   索引版本）；memory_expand 增 section/revision，page 改字符偏移语义，
+#   回执带 coverage/fragments/missing/has_more/next_page。
+TOOL_TABLE_VERSION = "tools-tc-33"
 
 
 # ============================================================
@@ -1169,7 +1178,7 @@ async def _h_read_memory(work_id: str, current_id: str,
         return err("denied",
                    f"{target_id} 与你是关系线：只读对外信息（需求文档），记忆不给。")
     state = memory_store.load_memory(work_id, target_id)
-    entries = [e for e in (state.get("entries") or []) if isinstance(e, dict)]
+    raw = [e for e in (state.get("entries") or []) if isinstance(e, dict)]
 
     def _seq_of(e: dict[str, Any]) -> int | None:
         """块号取自 `anchor.seq`（CausalNode 结构）；旧格式的顶层 `seq` 兜底。
@@ -1185,15 +1194,119 @@ async def _h_read_memory(work_id: str, current_id: str,
         v = e.get("seq")
         return v if isinstance(v, int) and not isinstance(v, bool) else None
 
+    # [记忆找回 2026-11-20 · 方案 §二.1] 锚点索引：只列 memory_expand 可展开的
+    # gist 条目（含沉底/已归拢），锚点升序、单页 ≤20、游标翻页。
+    # 游标绑定 目标卡+筛选条件+索引版本+页位：串卡/改筛/索引变 → validation。
+    PAGE = 20
     lo = arguments.get("from_seq")
     hi = arguments.get("to_seq")
-    if isinstance(lo, int) and not isinstance(lo, bool):
-        entries = [e for e in entries
-                   if (s := _seq_of(e)) is not None and s >= lo]
-    if isinstance(hi, int) and not isinstance(hi, bool):
-        entries = [e for e in entries
-                   if (s := _seq_of(e)) is not None and s <= hi]
-    return {"card_id": target_id, "mark": state.get("mark", 0), "entries": entries}
+    if not isinstance(lo, int) or isinstance(lo, bool):
+        lo = None
+    if not isinstance(hi, int) or isinstance(hi, bool):
+        hi = None
+    idx = []
+    for e in raw:
+        if str(e.get("role") or "gist") != "gist":
+            continue
+        s = _seq_of(e)
+        if s is None:
+            continue
+        if lo is not None and s < lo:
+            continue
+        if hi is not None and s > hi:
+            continue
+        idx.append((s, e))
+    idx.sort(key=lambda t: t[0])
+    # 索引版本＝**内容**哈希（等长改写 gist、covers 变化都必须换版——
+    # 旧游标不能配新页）。covers 用原列表不用计数：换内容比换长度更严。
+    index_rev = hashlib.sha256(
+        json.dumps([[s, str(e.get("gist") or ""), int(e.get("level", 1) or 1),
+                     bool(e.get("sunk")), bool(e.get("degraded")),
+                     e.get("timeline") or e.get("occurred_at") or "",
+                     e.get("coveredSeqs") or []]
+                    for s, e in idx],
+                   ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+    flt = [lo, hi]
+
+    def _cursor(pos: int) -> str:
+        import base64 as _b64
+        return _b64.urlsafe_b64encode(
+            json.dumps({"c": target_id, "f": flt, "v": index_rev, "p": pos},
+                       separators=(",", ":")).encode("utf-8")).decode("ascii")
+
+    start = 0
+    cur = arguments.get("cursor")
+    if cur is not None:
+        if not isinstance(cur, str) or not cur:
+            return err("validation",
+                       "cursor 必须是上一页给出的 next_cursor 字符串")
+        try:
+            import base64 as _b64
+            c = json.loads(_b64.urlsafe_b64decode(cur.encode("ascii")))
+        except Exception:
+            return err("validation",
+                       "cursor 无法解析——请不带 cursor 从第一页开始")
+        if not isinstance(c, dict) or c.get("c") != target_id \
+                or c.get("f") != flt:
+            return err("validation",
+                       "cursor 与本调用的卡片/筛选条件不匹配——"
+                       "请不带 cursor 从第一页开始")
+        if c.get("v") != index_rev:
+            return err("validation",
+                       "记忆索引已变化（条目增删），"
+                       "请不带 cursor 从第一页重新翻起")
+        p = c.get("p")
+        if not isinstance(p, int) or isinstance(p, bool) or p < 0 \
+                or p > len(idx):
+            return err("validation",
+                       "cursor 页位非法——请不带 cursor 从第一页开始")
+        start = p
+
+    def _item(s: int, e: dict[str, Any]) -> dict[str, Any]:
+        it: dict[str, Any] = {
+            "anchor": {"seq": s},
+            "role": "gist",
+            "level": int(e.get("level", 1) or 1),
+            "gist": str(e.get("gist") or "")[:200],
+            "sunk": bool(e.get("sunk")),
+            "degraded": bool(e.get("degraded")),
+        }
+        tl = e.get("timeline")
+        if isinstance(tl, dict) and (tl.get("from") or tl.get("to")):
+            it["timeline"] = {"from": str(tl.get("from") or "")[:64],
+                              "to": str(tl.get("to") or "")[:64]}
+        elif e.get("occurred_at"):
+            it["recorded"] = str(e.get("occurred_at"))[:64]
+        covered = e.get("coveredSeqs")
+        if isinstance(covered, list) and covered:
+            it["covers"] = len(covered)
+        return it
+
+    page_entries = [_item(s, e) for s, e in idx[start:start + PAGE]]
+    # [返工 2026-11-20] 索引回执同样按**实际序列化体积**收口（≤32KiB）：
+    # 长元数据场景逐条让位（少发几条、游标照样前进），发不出的条目
+    # 由 next_cursor 在下一页补回——绝不装不下硬塞。
+    cap = 32 * 1024
+    data: dict[str, Any] = {}
+
+    def _fit() -> bool:
+        end_ = start + len(page_entries)
+        data.update({"card_id": target_id, "mark": state.get("mark", 0),
+                     "entries": page_entries, "total": len(idx),
+                     "index_rev": index_rev,
+                     "has_more": end_ < len(idx),
+                     "next_cursor": _cursor(end_) if end_ < len(idx) else ""})
+        return len(render_tool_result(ok_(data)).encode("utf-8")) <= cap
+
+    while not _fit() and len(page_entries) > 1:
+        page_entries.pop()              # 让位条目由续页 cursor 补回
+    if not _fit() and page_entries:
+        it = page_entries[0]
+        it["gist"] = str(it["gist"])[:60] + "…"
+        if not _fit():
+            it["gist"] = "…[超限]"
+            _fit()
+    return data
 
 
 async def _h_memory_expand(work_id: str, current_id: str,
@@ -1217,13 +1330,85 @@ async def _h_memory_expand(work_id: str, current_id: str,
         return err("validation",
                    "seq 必须是整数——取记忆区锚点行 @锚点{card,seq} 里的 seq")
     page = arguments.get("page")
+    if page is None:
+        page = 0
+    if not isinstance(page, int) or isinstance(page, bool) or page < 0:
+        return err("validation", "page 必须是非负整数（从 0 起）")
+    section = str(arguments.get("section") or "verbatim")
+    if section not in ("verbatim", "details"):
+        return err("validation",
+                   "section 只接受 verbatim（逐字原文）或 details（结论＋描述＋子条目）")
+    revision = arguments.get("revision")
+    if revision is not None and not isinstance(revision, str):
+        return err("validation", "revision 必须是字符串（上一页给出的版本号）")
+    missing_page = arguments.get("missing_page")
+    if missing_page is None:
+        missing_page = 0
+    if not isinstance(missing_page, int) or isinstance(missing_page, bool) \
+            or missing_page < 0:
+        return err("validation", "missing_page 必须是非负整数（缺块清单页轴）")
     from ..storage import memory_expand as _mx
-    result = _mx.expand(work_id, target_id, int(seq),
-                        page=int(page) if isinstance(page, int) and not isinstance(page, bool) else 0)
-    return ok_({"card_id": target_id, "seq": int(seq),
-                "found": bool(result.get("found")),
-                "revived": bool(result.get("revived")),
-                "text": _mx.render(result)})
+    result = _mx.expand(work_id, target_id, int(seq), page=int(page),
+                        section=section,
+                        revision=str(revision) if revision else None,
+                        missing_page=int(missing_page))
+    # [记忆找回 2026-11-20 · 方案 §二] 回执字段：逐字分页＋溯源片段＋覆盖
+    # 报告；text 只放本页逐字内容，所带为历史引文。
+    data = {"card_id": target_id, "seq": int(seq),
+            "found": bool(result.get("found")),
+            "revived": bool(result.get("revived")),
+            "coverage": result.get("coverage") or "unknown",
+            "section": section,
+            "page": int(result.get("page") or 0),
+            "has_more": bool(result.get("has_more")),
+            "next_page": result.get("next_page"),
+            "revision": result.get("revision") or "",
+            "text": str(result.get("text") or ""),
+            "fragments": result.get("fragments") or [],
+            "missing": result.get("missing") or [],
+            "missing_total": int(result.get("missing_total") or 0),
+            "missing_page": int(result.get("missing_page") or 0),
+            "missing_has_more": bool(result.get("missing_has_more")),
+            "gist": str(result.get("gist") or ""),
+            "note": str(result.get("note") or ""),
+            "reason": str(result.get("reason") or ""),
+            "revision_mismatch": bool(result.get("revision_mismatch")),
+            "citation_note": str(result.get("citation_note") or "")}
+    cap = 32 * 1024
+    if len(data["gist"]) > 500:
+        data["gist"] = data["gist"][:499] + "…"
+
+    def fits(payload: dict[str, Any]) -> bool:
+        return len(render_tool_result(ok_(payload)).encode("utf-8")) <= cap
+
+    if fits(data):
+        return ok_(data)
+    for key in ("gist", "note", "reason"):
+        if len(data[key]) > 200:
+            data[key] = data[key][:199] + "…"
+    if fits(data):
+        return ok_(data)
+
+    # 正文和对应该页的全部坐标一起缩短。完整页已试过，以下每个候选
+    # 都有下一页，可按实际序列化体积二分最长可返回的连续前缀。
+    text, fragments = data["text"], data["fragments"]
+    best = None
+    lower, upper = 1, len(text) - 1
+    while lower <= upper:
+        length = (lower + upper) // 2
+        clipped = _mx._page_slice(text, fragments, 0, length)
+        candidate = {**data, "text": clipped["text"],
+                     "fragments": clipped["fragments"], "has_more": True,
+                     "next_page": page + length}
+        if fits(candidate):
+            best = candidate
+            lower = length + 1
+        else:
+            upper = length - 1
+
+    if best is None:
+        return err("result_too_large", "该页的正文和溯源信息无法装入 32 KiB 回执。")
+    return ok_(best)
 
 
 async def _h_create_card(work_id: str, current_id: str,
@@ -1764,10 +1949,16 @@ async def _h_report_done(work_id: str, current_id: str,
     _content += (f"\n\n——【可验收】如需验收本卡产物："
                  f"create_deploy_card(function=\"qa\", "
                  f"target=\"{current_id}\", task=\"验收本卡产物\")")
+    from ..goal.authority import current_turn_source
+    source = current_turn_source() or {}
+    task_id = str(arguments.get("task") or "").strip()
+    if not task_id and source.get("kind") == "worker_dispatch" and source.get("from") == owner:
+        task_id = str(source.get("task_id") or "")
     sent = await send_card_message(
         work_id, current_id, target_id=owner,
         msg_type="worker_done",
         content=_content,
+        dispatch_task_id=task_id,
     )
     if isinstance(sent, dict) and sent.get("error"):
         # 落信失败：卡已完工、影子已留痕——错误如实回给模型（不回滚终态）
@@ -1867,6 +2058,7 @@ async def _h_create_worker_card(work_id: str, current_id: str,
     cards[new_id] = {**result["meta"], "card_id": new_id}
     # ③ 建卡即首跑（唯一路径，见 docstring）
     started = False
+    task_id = ""
     try:
         from . import message_runner as _message_runner
         from . import routes as _routes
@@ -1884,8 +2076,16 @@ async def _h_create_worker_card(work_id: str, current_id: str,
         if _preq:
             prompt += (f"\n\n【参照·你父卡的需求文档正稿】\n{_preq}\n"
                        "干活与交工都以它为尺；它不写的部分按任务内容做。")
+        from ..goal import wait_store
+        first_source = None
+        if wait_store.enabled(work_id):
+            dispatch = await session_facade.append_card_message(
+                work_id, new_id, from_card=current_id, text=task, msg_type="msg_directive")
+            task_id = str(dispatch.get("msg_id") or "")
+            first_source = {"kind": "worker_dispatch", "from": current_id, "task_id": task_id}
         first_run = _message_runner._spawn_tracked(
-            _routes._run_message(work_id, new_id, prompt, None, append_user=False),
+            _routes._run_message(work_id, new_id, prompt, None, append_user=False,
+                                 **({"source": first_source} if first_source else {})),
             work_id=work_id, card_id=new_id)
         
         first_run._card_msg_target = new_id  # type: ignore[attr-defined]
@@ -1900,6 +2100,7 @@ async def _h_create_worker_card(work_id: str, current_id: str,
         "parent": current_id,
         "card_type": "worker",
         "started": started,
+        **({"task_id": task_id} if task_id else {}),
         "shadow": "已派生影子卡（过程记录，你不用管）",
     }
 
@@ -2184,7 +2385,8 @@ async def _h_report_deploy(work_id: str, current_id: str,
             work_id, to,
             text=f"你收到一条来自 {current_id} 的差事回执，正文已在上文。",
             steer_text=text,
-            source={"kind": "card_msg", "from": current_id}),
+            source={"kind": "card_msg", "from": current_id},
+            msg_type="msg_report"),
             work_id=work_id, card_id=to)
     except Exception as exc:  # noqa: BLE001 投递失败要如实回给模型
         logger.warning("[report] 投递失败 to=%s: %s", to, exc)
@@ -2247,7 +2449,8 @@ async def deploy_unreported_fallback(work_id: str, card_id: str,
         work_id, delegator,
         text=f"你收到一条来自 {fn} 的差事回执，正文已在上文。",
         steer_text=text,
-        source={"kind": "card_msg", "from": fn}),
+        source={"kind": "card_msg", "from": fn},
+        msg_type="msg_report"),
         work_id=work_id, card_id=delegator)
     session_ops.ops_log("deploy_fallback_receipt", work_id, card_id,
                         {"dep": int(dep.get("id") or 0), "to": delegator,
@@ -2318,7 +2521,8 @@ async def worker_unreported_fallback(work_id: str, card_id: str,
         work_id, owner,
         text=f"你收到一条来自 {card_id} 的完工回执，正文已在上文。",
         steer_text=text,
-        source={"kind": "card_msg", "from": card_id})
+        source={"kind": "card_msg", "from": card_id},
+        msg_type="worker_done")
     _CODER_DONE_SENT_AT[card_id] = datetime.now().timestamp()
     session_ops.ops_log("worker_fallback_receipt", work_id, card_id,
                         {"to": owner})
@@ -4451,13 +4655,20 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
     "read_memory": ToolDef(
         schema={
             "name": "read_memory",
-            "description": "下探指定卡的凝练记忆（condense_fold：已凝练历史经归拢的条目，带锚点行可下探）。可用块序号区间按锚点取回。记忆条目不是卡片内容——三个块请用 read_card。",
+            "description": (
+                "凝练记忆的锚点索引：列出指定卡已凝练条目（锚点 seq 升序、"
+                "每页最多 20 条，含 200 字 gist 预览/层级/时间范围）。"
+                "用法：read_memory 翻索引 → 用条目的 anchor.seq 调 memory_expand "
+                "取逐字原文核对。has_more=true 时用 next_cursor 续翻（须带相同的 "
+                "card_id/from_seq/to_seq）；索引中途变化会提示从第一页重翻。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "card_id": {"type": "string", "description": "目标卡 id，如 card_002；缺省＝当前卡"},
                     "from_seq": {"type": "integer", "description": "起始块序号（含），锚点下界；缺省不设下界"},
                     "to_seq": {"type": "integer", "description": "结束块序号（含），锚点上界；缺省不设上界"},
+                    "cursor": {"type": "string", "description": "续翻游标（上一页 next_cursor）；缺省从第一页开始"},
                 },
                 "required": [],
             },
@@ -4472,16 +4683,22 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         schema={
             "name": "memory_expand",
             "description": (
-                "展开一条凝练记忆：给记忆区锚点行里的 seq（@锚点{card,seq}），"
-                "返回该条的结论、描述层与逐字原文。该条此前若已沉没（时效回收），"
-                "本次展开会自动复活。"
+                "沿锚点找回凝练条目的逐字原文（先用 read_memory 找锚点 seq）。"
+                "text 只放本页内容（每页 ≤6000 字的历史引文），fragments 逐段"
+                "附块号/角色/时间与原文区间；has_more=true 时用 next_page 续读，"
+                "续读请带上页给出的 revision（版本变了请回第 0 页）。"
+                "section=details 分页看完整结论＋描述＋子条目。沉底条目展开即复活。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "card_id": {"type": "string", "description": "目标卡 id；缺省＝当前卡"},
-                    "seq": {"type": "integer", "description": "锚点块号（记忆区 @锚点{card,seq} 里的 seq）"},
-                    "page": {"type": "integer", "description": "分页页码（原文过长时翻页，从 0 起）；缺省 0"},
+                    "seq": {"type": "integer", "description": "锚点块号（read_memory 返回的 anchor.seq）"},
+                    "page": {"type": "integer", "description": "起始偏移（缺省 0＝第一页；续页传上一页的 next_page）"},
+                    "section": {"type": "string", "enum": ["verbatim", "details"],
+                                "description": "verbatim＝逐字原文（缺省）；details＝结论＋描述＋子条目"},
+                    "revision": {"type": "string", "description": "内容版本（续页带上页 revision；不匹配提示回第 0 页）"},
+                    "missing_page": {"type": "integer", "description": "缺块清单页码（missing 超过 50 条时翻页，从 0 起）；缺省 0"},
                 },
                 "required": ["seq"],
             },
@@ -4808,6 +5025,12 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
                         "type": "string",
                         "description": "完工小结：做了什么、产物在哪（事实陈述，不自评好坏）",
                     },
+                    "task": {
+                        "type": "string",
+                        "description": ("可选：这笔完工关联的派工消息 ID（cm_…）——"
+                                        "主卡声明等待时靠它核对回执归属。同一张卡"
+                                        "先后接两笔活时，不带它回执无法对账。"),
+                    },
                 },
                 "required": ["summary"],
             },
@@ -5109,6 +5332,13 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
     "resume_child": ToolDef(
         schema=goal_tools.RESUME_CHILD_SCHEMA,
         handler=goal_tools.h_resume_child,
+        readonly=False,
+    ),
+    # [声明式等待 2026-11-20 · 目标推进方案 §一] 模型回合里声明「等哪笔
+    # 派工的哪个回执」，Harness 机械核对归属与版本，goal 驱动统一起轮。
+    "declare_wait": ToolDef(
+        schema=goal_tools.DECLARE_WAIT_SCHEMA,
+        handler=goal_tools.h_declare_wait,
         readonly=False,
     ),
     "bash": ToolDef(
@@ -6262,6 +6492,9 @@ async def _h_reject(work_id: str, current_id: str,
     r = await _rv.reject(work_id, rid, current_id)
     if not r.get("ok"):
         return err("validation", str(r.get("error") or "reject 失败"))
+    if r.get("changed"):
+        from . import review_runner
+        await review_runner.resume_after_vote(work_id, rid, r["batch"])
     await _render_review_status(work_id, rid)
     return ok_({"review_card_id": rid, "role": current_id,
                 "verdict": "reject", "batch": r.get("batch"),
@@ -6287,6 +6520,9 @@ async def _h_approve(work_id: str, current_id: str,
     r = await _rv.approve(work_id, rid, current_id)
     if not r.get("ok"):
         return err("validation", str(r.get("error") or "approve 失败"))
+    if r.get("changed"):
+        from . import review_runner
+        await review_runner.resume_after_vote(work_id, rid, r["batch"])
     st = await _rv.status(work_id, rid)
     fin: dict[str, Any] = {}
     # [两轮评审 2026-11-14] 对齐批的 all_passed＝晋级信号不是定稿信号——
@@ -6961,7 +7197,8 @@ async def _h_send_card_message(work_id: str, current_id: str,
                                arguments: dict[str, Any],
                                cards: dict[str, dict[str, Any]],
                                *, require_link: bool = True,
-                               require_switch: bool = True) -> dict[str, Any]:
+                               require_switch: bool = True,
+                               dispatch_task_id: str = "") -> dict[str, Any]:
     """发信执行体。``require_link``＝是否要求两卡之间已有通信线。
 
     模型侧（工具面 send_card_message）一律 True——**通信走专门的通信线**；
@@ -7049,7 +7286,8 @@ async def _h_send_card_message(work_id: str, current_id: str,
     # 六道门槛、权限关口、通知帧一条不减。
     rec = await session_facade.append_card_message(
         work_id, target_id, from_card=current_id, text=content,
-        msg_type=mt, reply_to=reply_to)
+        msg_type=mt, reply_to=reply_to,
+        extra={"dispatch_task_id": dispatch_task_id} if dispatch_task_id else None)
     msg_id = str((rec or {}).get("msg_id") or "")
     session_ops.ops_log("card_msg_send", work_id, target_id,
                         {"msg_id": msg_id, "type": mt, "from": current_id})
@@ -7075,7 +7313,10 @@ async def _h_send_card_message(work_id: str, current_id: str,
             text=f"你收到一条来自 {current_id} 的消息，正文已在上文（卡间消息）。",
             steer_text=f"卡 {current_id} 给你发来一条消息：\n{content}",
             source_kind=("directive" if mt == "msg_directive" else "internal"),
-            source={"kind": "card_msg", "from": current_id})
+            source={"kind": "card_msg", "from": current_id,
+                    "dispatch_task_id": dispatch_task_id or reply_to},
+            # [等待核对在唤醒前] 回执类先过等待闸再决定起不起轮
+            msg_type=mt)
     except Exception as exc:  # noqa: BLE001 投递失败不算发信失败（信已落库）
         logger.warning("[通信] 立即投递失败，交给收口兜底 target=%s: %s",
                        target_id, exc)
@@ -7127,6 +7368,7 @@ async def send_card_message(
     msg_type: str,
     content: str,
     reply_to: str = "",
+    dispatch_task_id: str = "",
 ) -> dict[str, Any]:
     """卡间发信 · 流程专用基础设施接口（模型不可见）。
 
@@ -7146,6 +7388,7 @@ async def send_card_message(
     }
     return await _h_send_card_message(work_id, from_id, arguments, cards,
                                       require_link=False,
+                                      dispatch_task_id=dispatch_task_id,
                                       # 系统通道不查发起方开关：worker 卡刻意没有
                                       # send_card_message（v4），查它会自断完工回执。
                                       require_switch=False)
@@ -7322,6 +7565,7 @@ async def _h_report_up(work_id: str, current_id: str,
     效果：正文落各收件人会话块（进上下文、可凝练）＋ 各唤醒一轮。
     """
     content = str(arguments.get("content") or "").strip()
+    task_id = str(arguments.get("task") or "").strip()
     if not content:
         return err("validation", "content 不能为空")
     # [2026-11-16 · 用户令] report_up 直落 append_card_message 不经 _h_send_card_message，
@@ -7350,7 +7594,9 @@ async def _h_report_up(work_id: str, current_id: str,
         try:
             _rec = await session_facade.append_card_message(
                 work_id, parent, from_card=current_id, text=text,
-                msg_type="msg_report")
+                msg_type="msg_report",
+                # [回执对账 2026-11-20] 带原派工 ID——declare_wait 核对认它。
+                reply_to=task_id)
             _mid = str((_rec or {}).get("msg_id") or "")
             # [2026-11-08] await 拿真回执（改前 _spawn_tracked 起完就走，「delivered」
             # 是假的——deliver_now 返回 False 时照样报 delivered）。steer_text 带
@@ -7361,7 +7607,8 @@ async def _h_report_up(work_id: str, current_id: str,
                 work_id, parent,
                 text=f"你收到一条来自 {current_id} 的汇报，正文已在上文。",
                 steer_text=text,
-                source={"kind": "card_msg", "from": current_id})
+                source={"kind": "card_msg", "from": current_id, "dispatch_task_id": task_id},
+                msg_type="msg_report")
         except Exception as exc:  # noqa: BLE001 投递失败要如实回给模型
             logger.warning("[report_up] 投递失败 to=%s: %s", parent, exc)
             return err("internal", f"汇报投递失败: {exc}")
@@ -7380,13 +7627,15 @@ async def _h_report_up(work_id: str, current_id: str,
             _crec = await session_facade.append_card_message(
                 work_id, _creator, from_card=current_id,
                 text=f"【汇报·{title}({current_id})·抄送创建者】\n{content}",
-                msg_type="msg_report")
+                msg_type="msg_report",
+                reply_to=task_id)
             _cmid = str((_crec or {}).get("msg_id") or "")
             _cok = await _mr.deliver_now(
                 work_id, _creator,
                 text=f"你创建的卡 {current_id} 向你汇报，正文已在上文。",
                 steer_text=f"【汇报·{title}({current_id})】\n{content}",
-                source={"kind": "card_msg", "from": current_id})
+                source={"kind": "card_msg", "from": current_id, "dispatch_task_id": task_id},
+                msg_type="msg_report")
         except Exception as exc:  # noqa: BLE001 抄送失败不吞主路结果
             logger.warning("[report_up] 创建者抄送失败 to=%s: %s", _creator, exc)
             _cmid, _cok = "", False
@@ -7651,7 +7900,11 @@ async def _h_scene_sync(work_id: str, current_id: str,
             rec = await session_facade.append_card_message(
                 work_id, t, from_card=current_id, text=content,
                 msg_type="msg_sync")
+            # [2026-11-20 二次返修] 带出**真实编号**（msg_id，cmsg-… 形态）：
+            # 改前只带 seq ⇒ 确认写入的同步在系统结果里缺原记录锚，被显示为
+            # 「结果待核实」（用户复验实录）。seq 作兜底保留。
             delivered.append({"to": t,
+                              "msg_id": str((rec or {}).get("msg_id") or ""),
                               "seq": int((rec or {}).get("seq") or 0)})
         except Exception as exc:  # noqa: BLE001
             logger.warning("[sync] 投递失败 to=%s: %s", t, exc)
@@ -7738,7 +7991,14 @@ async def _h_scene_direct(work_id: str, current_id: str,
         rec = await session_facade.append_card_message(
             work_id, target, from_card=current_id, text=_body,
             msg_type="msg_directive")
-        msg_id = str((rec or {}).get("seq") or "")
+        # [2026-11-20 修·真实编号] 取 append_card_message 返回的 **msg_id**
+        # （cmsg-… 形态）——改前取 seq 且 `str(seq or "")` 把块 0 的合法
+        # 序号吞成空串 ⇒ 虚报 msg_id 的对账锚从源头就缺（用户复验实录：
+        # 「保留真实编号」）。msg_id 缺席时退回 seq（仍可能为 0——真值判断）。
+        msg_id = str((rec or {}).get("msg_id") or "")
+        if not msg_id:
+            _seq = (rec or {}).get("seq")
+            msg_id = str(_seq) if _seq is not None else ""
     except Exception as exc:  # noqa: BLE001
         return err("internal", f"指令落信失败:{exc}")
     # [2026-10-26] 消息已落会话块 ⇒ 唤醒走 text 模式（不取件，只起轮）
@@ -7748,15 +8008,34 @@ async def _h_scene_direct(work_id: str, current_id: str,
     #     （card_259 实证：halt 拒起发生在任务内部，火忘把 error 整个吞掉）。
     #   · source_kind="directive"——指令是上级新命令非残留幽灵，到达即解除
     #     强制停止再跑（report/sync 等环境流量无此豁免，照旧静默排队）。
-    _ok = await _mr.deliver_now(
-        work_id, target,
-        text=(f"你收到一条来自 {current_id} 的指令，正文已在上文（卡间指令）。"
-              f"请按其执行，完成后用 report_up 汇报。"),
-        steer_text=f"卡 {current_id} 给你发来一条指令：\n{_body}\n请按其执行，完成后用 report_up 汇报。",
-        source_kind="directive",
-        source={"kind": "card_msg", "from": current_id})
+    # [2026-11-20 返修 · B2] 落信与唤醒分账：append_card_message 已落账
+    # （msg_id 在手）后唤醒抛错，**消息已在对方会话里**——如实回
+    # delivered=False＋保留 msg_id，绝不让「落信成功、唤醒失败」被上游
+    # 记成没派发（否则回执核对判欠派发 ⇒ 定向补救重发 ⇒ 对方收两条）。
+    try:
+        _ok = await _mr.deliver_now(
+            work_id, target,
+            text=(f"你收到一条来自 {current_id} 的指令，正文已在上文（卡间指令）。"
+                  f"请按其执行，完成后用 report_up 汇报。"),
+            steer_text=f"卡 {current_id} 给你发来一条指令：\n{_body}\n请按其执行，完成后用 report_up 汇报。",
+            source_kind="directive",
+            # [2026-11-20 二次返修] 显式携带汇报义务与核对目标：direct 指令的
+            # 机制级收口=「完成后用 report_up 汇报」（唤醒文原文）——收令回合的
+            # 汇报义务核对只认这个显式标志，普通/其他来源的 directive 不默认绑定。
+            source={"kind": "card_msg", "from": current_id,
+                    "require_report": True})
+    except Exception as exc:  # noqa: BLE001 唤醒失败≠落信失败
+        logger.warning("[direct] 落信成功但唤醒异常 target=%s: %s",
+                       target, exc)
+        _ok = False
+        _wake_exc = str(exc)
+    else:
+        _wake_exc = ""
     if _ok:
         _note = "指令已送达(对方被唤醒,按验收判据执行)"
+    elif _wake_exc:
+        _note = ("指令已落对方会话但唤醒异常(对方下轮会看到)——"
+                 f"唤醒错误:{_wake_exc[:120]}")
     else:
         _note = ("指令已落对方会话但未唤醒(对方处于沉默态)——"
                  "解冻后下一轮会看到;如需强制唤醒请先联络用户")
@@ -7874,6 +8153,13 @@ async def _h_silence_card(work_id: str, current_id: str,
     session_ops.ops_log("card_governance", work_id, target,
                         {"state": rec["state"], "by": current_id,
                          "reason": rec["reason"]})
+    if action == "activate" and rec["previous_state"] == _gov.STATE_SILENCED:
+        try:
+            from . import review_runner
+            await review_runner.resume_activated_target(work_id, target)
+        except Exception:
+            logger.warning("[review] 激活后接收评审请求失败 card=%s", target,
+                           exc_info=True)
     return {"ok": True, "card_id": target, "state": rec["state"],
             "note": ("已沉默:不再接收内部消息,直到被激活"
                      if action == "silence" else "已激活:恢复接收")}
@@ -8107,6 +8393,10 @@ TOOL_REGISTRY["report_up"] = ToolDef(
                 "content": {"type": "string", "description":
                             "汇报正文(非空,写事实与证据)。禁止填「…[参数已折叠]」"
                             "等折叠占位——那是装配存根不是原文，要引用先取完整原文"},
+                "task": {"type": "string", "description":
+                         "可选：这笔汇报关联的派工消息 ID（cm_…）——"
+                         "父卡声明等待时靠它核对回执归属。先后接两笔活时"
+                         "不带它，父卡无法对账。"},
             },
             "required": ["content"],
         },
@@ -10342,7 +10632,8 @@ def build_tool_schemas(
     # auto_mode 决定。非 auto 卡 ⇒ 本段不进 ⇒ 输出与基线逐字一致。
     _card = (cards or {}).get(card_id) or {}
     if card_id and cards is not None and _card and bool(_card.get("auto_mode")):
-        tools = _apply_auto_toolface(tools)
+        from ..goal import wait_store
+        tools = _apply_auto_toolface(tools, waits_enabled=wait_store.enabled(work_id))
         # [两套权限 2026-10-24] 自动模式治理面:子卡收权(引导块唯总裁执笔)
         # ＋ 首轮需求闸(未策展 ⇒ 只留读/汇报)。手动卡不进。
         tools = _auto_governance_face(tools, card_id, work_id, cards)
@@ -10512,7 +10803,8 @@ def _apply_split_face(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 
-def _apply_auto_toolface(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _apply_auto_toolface(tools: list[dict[str, Any]], *,
+                         waits_enabled: bool = False) -> list[dict[str, Any]]:
     """自动模式工具面（**本任务对工具面唯一的 auto 开口**，TC5 裁剪版）：
 
     1. 追加自动模式专用工具（AUTO_ONLY_TOOLS 全量——update_goal ＋
@@ -10543,6 +10835,8 @@ def _apply_auto_toolface(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for auto_name in ("update_goal", "get_goal", "create_goal", "resume_child"):
         if auto_name in AUTO_ONLY_TOOLS:
             out.append(_schema_of(TOOL_REGISTRY[auto_name]))
+    if waits_enabled:
+        out.append(_schema_of(TOOL_REGISTRY["declare_wait"]))
     return out
 
 

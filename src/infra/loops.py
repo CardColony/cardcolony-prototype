@@ -63,23 +63,42 @@ def serving_loop() -> asyncio.AbstractEventLoop | None:
 # 「循环被饿死」的直接证据＝回调实际触发时刻 − 计划时刻。
 # 改造前实测满载时这个值是秒级（请求 9.34s）；改造后 A 上仍可能有毫秒~百毫秒
 # 级抖动（GIL 抢占），但 B 的请求面不再受它影响。/api/health 报告它 ⇒ 验收有数。
+# 〔2026-11-19 返工〕**服务循环 B 也有迟滞仪表**——SSE 池占满复验实测一次
+# fanin 与 40 条泵连接同刻恢复的 ~20s 尖峰（四片耗时 ±4ms 一致 ⇒ 卡点在
+# web 服务循环而非 runner），需要 B 侧仪表定责。两循环各自独立记录。
 _LAG_MS: float = 0.0
+_SERVING_LAG_MS: float = 0.0
 
 
 def loop_lag_ms() -> float:
     return _LAG_MS
 
 
-def start_lag_monitor(loop: asyncio.AbstractEventLoop, interval: float = 2.0) -> None:
-    """周期性测「sleep(interval) 实际睡了多久」，超出的就是循环迟滞。"""
+def serving_loop_lag_ms() -> float:
+    return _SERVING_LAG_MS
+
+
+def start_lag_monitor(loop: asyncio.AbstractEventLoop, interval: float = 2.0,
+                      serving: bool = False) -> None:
+    """周期性测「sleep(interval) 实际睡了多久」，超出的就是循环迟滞。
+
+    ``serving=True`` 记到服务循环仪表（B），否则记主循环仪表（A）。
+    """
+    def _setter(v: float) -> None:
+        global _LAG_MS, _SERVING_LAG_MS
+        if serving:
+            _SERVING_LAG_MS = v
+        else:
+            _LAG_MS = v
+
     async def _beat() -> None:
-        global _LAG_MS
         t = loop.time()
         while True:
             await asyncio.sleep(interval)
             now = loop.time()
-            _LAG_MS = max(0.0, (now - t - interval) * 1000.0)
+            _setter(max(0.0, (now - t - interval) * 1000.0))
             t = now
+
     try:
         loop.call_soon_threadsafe(lambda: asyncio.ensure_future(_beat()))
     except RuntimeError:  # noqa: BLE001 loop 已关

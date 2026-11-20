@@ -184,6 +184,137 @@ export async function request(method, url, body, opts) {
 
 export async function call(method, url, body, opts) {
   const o = opts || {};
+  // [在途合并 2026-11-20] GET 走**共享通道**：同一 URL 的并发请求合成一次。
+  // 非 GET（写）永远不共享 —— 写的语义是「立刻生效」，不容合并。
+  if (method === "GET" && !o.noShare) return _sharedGet(url, o);
+  // 写 ⇒ 纪元推进：写前发起的 GET 与写后发起的 GET 不再合并
+  // （「提交后重读」必须拿到写后的新值，不能拿写在途的旧响应）。
+  _epoch++;
+  return _callDirect(method, url, body, o);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   在途 GET 合并（2026-11-20 · 性能批次一）
+
+   病根：同一次冷开里**同一个 GET 被打两次**——面板与审批探针各读一次
+   /rule（两次都是整份规则正文）；开卡与刷新恢复各读一次 /progress。
+   两次都实打实走网络、占连接、占服务端 IO。
+
+   这里做的是「**同义在途**合并」：URL 完全相同 ⇒ 合成一次。
+   ★ 边界三条：
+     ① **消费者可各自退订**：一个消费者 abort（切卡）只摘掉它自己；
+        别的消费者还要这条请求 ⇒ **底层请求继续跑**（不打断别人的）。
+     ② **没人要了才真取消**：消费者退订到 0 ⇒ abort 底层 fetch，释放连接。
+     ③ **晚回包只归属发起者**：每个消费者拿到的 promise 各自绑定
+        自己的 signal ⇒ 退订者的 promise 立刻 reject（AbortError），
+        它**绝不会**把过期数据写进当前卡。
+   ★ 写操作会推进「纪元」：写前发起的 GET 与写后发起的 GET **不合并**
+     （否则「提交后重读」会拿到提交前的旧值）。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** 写纪元：任何非 GET 请求都会 +1（跨纪元的在途 GET 不合并）。 */
+let _epoch = 0;
+
+/** URL → 在途条目。条目：{epoch, ctrl, consumers:Set<{silent}>, promise} */
+const _getInflight = new Map();
+
+function _abortError() {
+  const e = new Error("请求已取消");
+  e.name = "AbortError";
+  return e;
+}
+
+/** 取（或建）一条在途 GET，返回「本消费者自己的」promise。 */
+function _sharedGet(url, o) {
+  let entry = _getInflight.get(url);
+  // 纪元不同（期间有写操作）⇒ 不复用旧条目，另起一条新的。
+  if (entry && entry.epoch !== _epoch) entry = null;
+  if (!entry) {
+    entry = {
+      url, epoch: _epoch,
+      ctrl: new AbortController(),
+      consumers: new Set(),
+      promise: null,
+    };
+    entry.promise = _runSharedGet(entry, o).finally(() => {
+      // 只有「我还是那条」才清表（期间可能已有新的同 URL 条目顶上）。
+      if (_getInflight.get(url) === entry) _getInflight.delete(url);
+    });
+    // 无人接的 rejection 不该变成 unhandledrejection（消费者都退订的情况）。
+    entry.promise.catch(() => { });
+    _getInflight.set(url, entry);
+  }
+  return _attachConsumer(entry, o);
+}
+
+/** 把一个消费者挂到共享条目上：退订只影响自己。 */
+function _attachConsumer(entry, o) {
+  const consumer = { silent: !!(o && o.silent) };
+  entry.consumers.add(consumer);
+  let settled = false;
+  let detach = null;
+  const cleanup = () => { if (detach) { detach(); detach = null; } };
+  const p = new Promise((resolve, reject) => {
+    entry.promise.then(
+      (v) => { if (!settled) { settled = true; cleanup(); resolve(v); } },
+      (e) => { if (!settled) { settled = true; cleanup(); reject(e); } },
+    );
+    const sig = o && o.signal;
+    if (sig) {
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        entry.consumers.delete(consumer);
+        cleanup();
+        reject(_abortError());
+        // 没人要了 ⇒ 真取消底层请求（释放浏览器那 6 条连接之一）。
+        if (entry.consumers.size === 0) {
+          try { entry.ctrl.abort(); } catch (e) { /* 零阻断 */ }
+        }
+      };
+      detach = () => sig.removeEventListener("abort", onAbort);
+      if (sig.aborted) { onAbort(); return; }
+      sig.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+  // 消费者正常结束（拿到结果）⇒ 从集合里摘掉（条目自己会结束）。
+  p.then(() => { entry.consumers.delete(consumer); },
+         () => { entry.consumers.delete(consumer); });
+  return p;
+}
+
+/** 共享通道的真正执行体：一次 fetch、一次解析、一次报错。 */
+async function _runSharedGet(entry, o) {
+  let resp;
+  try {
+    resp = await request("GET", entry.url, undefined, {
+      signal: entry.ctrl.signal,
+      timeoutMs: o.timeoutMs,
+      retry: o.retry,
+    });
+  } catch (e) {
+    // 消费者全退订导致的 abort ⇒ 静默（不是「连不上」）。
+    if (entry.ctrl.signal.aborted) throw e;
+    _noteUnreachable(e);
+    _reportClientError("call", entry.url, e);
+    throw e;
+  }
+  let data = null;
+  try { data = await resp.json(); } catch (e) { /* 非 JSON */ }
+  if (!resp.ok) {
+    const msg = (data && data.error) ? data.error : ("HTTP " + resp.status);
+    // 有一条消费者要出声（silent=false）才弹 —— 免得周期探活刷屏。
+    let anyLoud = false;
+    for (const c of entry.consumers) { if (!c.silent) { anyLoud = true; break; } }
+    if (anyLoud) toast(msg, "error");
+    throw new Error(msg);
+  }
+  return data;
+}
+
+/** 非 GET 的直连通道（语义与改前逐字一致）。 */
+async function _callDirect(method, url, body, opts) {
+  const o = opts || {};
   let resp;
   try {
     resp = await request(method, url, body, o);
@@ -206,7 +337,7 @@ export async function call(method, url, body, opts) {
   try { data = await resp.json(); } catch (e) { /* 非 JSON */ }
   if (!resp.ok) {
     const msg = (data && data.error) ? data.error : ("HTTP " + resp.status);
-    toast(msg, "error");
+    if (!o.silent) toast(msg, "error");
     throw new Error(msg);
   }
   // [2026-10-25] 通了 ⇒ 恢复（已在 request() 成功那一层处理：那里才是「后端可达」的真相）
@@ -318,6 +449,11 @@ export const API = {
   patchPositions: (wid, positions) => call("PATCH", `/api/works/${wid}/canvas/positions`, { positions }),
   createCard: (wid, body) => call("POST", `/api/works/${wid}/cards`, body),
   getCard: (wid, cid, opts) => call("GET", `/api/works/${wid}/cards/${cid}`, undefined, opts),
+  // [窄投影 2026-11-20 · 性能批次一] 只取首屏要的 meta（**不带 body**）。
+  // 实测 work_073/card_007：整张卡面 530KB 里 99.5% 是 body，meta 只有 2.7KB。
+  // 正文是右栏「卡详情」的区域载荷 ⇒ 那个区域展开时再读全文（getCard）。
+  getCardMeta: (wid, cid, opts) =>
+    call("GET", `/api/works/${wid}/cards/${cid}?projection=meta`, undefined, opts),
   // [评审浮窗 2026-10-29] 这张卡的评审过程状态（有批次 ⇒ 右侧浮窗弹出）。
   getReviewStatus: (wid, cid, opts) =>
     call("GET", `/api/works/${wid}/cards/${cid}/review-status`, undefined, opts),
@@ -382,7 +518,10 @@ export const API = {
     if (opts && opts.before > 0) q.push("before=" + opts.before);
     // [席位会话] session=card@N ⇒ 取该会话的时序
     if (opts && opts.session) q.push("session=" + encodeURIComponent(opts.session));
-    return call("GET", `/api/works/${wid}/cards/${cid}/timeline${q.length ? "?" + q.join("&") : ""}`);
+    // [取消 2026-11-20] opts 整个透传给 call()（此前只取了三个查询参数，
+    // signal 被丢掉 ⇒ 切卡无法取消在途时序拉取）。
+    return call("GET", `/api/works/${wid}/cards/${cid}/timeline${q.length ? "?" + q.join("&") : ""}`,
+      undefined, opts);
   },
   // [更新现状按钮改造 2026-10-16] op 缺省不带到请求体 ⇒ 普通发送与改前逐字等价；
   // 传 op（如 "update_status"）⇒ 本轮走专用通道（后端认它注入专用任务 + 追加专用工具）。
@@ -398,7 +537,15 @@ export const API = {
     return call("GET", `/api/works/${wid}/cards/${cid}/progress${q}`, undefined, opts);
   },
   // [席位会话 2026-11-18 · 一卡多会话] 会话登记处：主会话＋各职能会话。
-  getSessions: (wid, cid) => call("GET", `/api/works/${wid}/cards/${cid}/sessions`),
+  getSessions: (wid, cid, opts) =>
+    call("GET", `/api/works/${wid}/cards/${cid}/sessions`, undefined, opts),
+  // [窄投影 2026-11-20 · 性能批次一] 当前卡**生效的模型**（一张卡一个模型键）。
+  // 徽标原来读的是 /model-overrides/{wid}——那个口回**整个项目每一行**
+  // （work_073 975 行 ≈ 260KB），而徽标只要一张卡 ⇒ 改走本口。
+  getEffectiveModel: (wid, cid, opts) => {
+    const q = cid ? `?card_id=${encodeURIComponent(cid)}` : "";
+    return call("GET", `/api/settings/model-overrides/${encodeURIComponent(wid)}${q}`, undefined, opts);
+  },
   createSession: (wid, cid, persona, label) =>
     call("POST", `/api/works/${wid}/cards/${cid}/sessions`, label ? { persona, label } : { persona }),
   // 职能选择器数据源：本 work 的职能清单（function_id/function_name）。

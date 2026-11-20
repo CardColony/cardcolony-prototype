@@ -47,6 +47,7 @@ from ..thinkchain import seats_enabled as thinkchain_seats_enabled  # [规划驱
 from ..thinkchain.model_pick import pick_model as _pick_model  # 步类型路由消费点（_pick_step_model 调用）
 from ..thinkchain import model_pick
 from ..toolcard import driver as toolcard_driver
+from ..infra import intervention_store
 from . import (
     card_msg,
     card_proposal,
@@ -149,6 +150,12 @@ class RunState:
     # _RESCUE_EVENT_CAP 后不再代执行，转回注「非法形式不执行」让惩罚
     # 真实落地（否则伪调用拿真结果＝正奖励，格式漂移永远治不了）。
     rescue_events: int = 0
+    # [异常正文隔离 2026-11-20] 本回合检测到"调用写进正文且未派发"的
+    # 原因标记（pseudo_refused_strict/pseudo_over_cap/pseudo_unparsed）——
+    # 收口落回复块时打 quarantine＋ctx_content：原文留档案面，供模型
+    # 使用的内容换成剥掉坏片段的残部＋宿主状态行。先置先记（同一回合
+    # 可能先 refused 后 unparsed——首个原因是定性锚）。
+    anomaly_quarantine: str = ""
     error: Optional[str] = None
     # [phase9-E] 观点元信息（含内部text）
     viewpoints_meta: list[dict[str, Any]] = field(default_factory=list)
@@ -249,6 +256,8 @@ class RunState:
     # [调用来源与真实回执 2026-11-19] 本回合来源标记（routes 透传）：
     # directive＝卡间指令唤醒的回合（绑定动作判定用它）；human/internal 等原样。
     source_kind: str = ""
+    # 忙卡收到的新指令按发令卡记录首次可用的回执位置。
+    report_after: dict[str, int] = field(default_factory=dict)
     # 本回合端点协议快照（首轮模型返回的 protocol_meta.endpoint_protocol；
     # 供收口核对与短提示分类用）。
     endpoint_protocol: str = ""
@@ -257,11 +266,146 @@ class RunState:
     # [按回执交付 2026-11-19] 收口核对结果（compose_delivery 写；finish 落
     # 会话块 receipt 字段——刷新后的历史与最终回复用同一 verdict）。
     receipt: dict = field(default_factory=dict)
+    # [定向补救续跳 2026-11-19] 绑定动作回合零派发时的定向续跳已用掉一次
+    # 的标记（一次封顶——续跳后仍零调用即收口，防循环）。
+    remediation_done: bool = False
+    # [2026-11-20 返修] 补救已裁定但未真发的标记（占位失败/去重命中）——
+    # 延后的 pseudo_call_unparsed 凭它带 handled=runner，压 Harness 二次唤醒。
+    remediation_adjudicated: bool = False
+    # [异常事实延后emit 2026-11-20] 本跳检测到的伪调用事实载荷
+    # （step 内不落事件——收口点知道本跳被续跳/裁定后才发，带 handled 标记；
+    # 调用循环（routes step 循环）是唯一定点）。
+    hop_unparsed: Optional[dict] = None
+    # [B3 请求对账 2026-11-20] 本跳正文解析出的候选调用数（原生调用在场时
+    # 被丢弃不入执行链的也要记——候选数与实际派发数分开记账）。
+    hop_text_candidates: int = 0
+    # [B3 请求对账 2026-11-20] 本跳请求级对账载荷（step 内建好，
+    # 调用循环补真实派发数后落事件＋台账）。
+    hop_accounting: Optional[dict] = None
+    # [B3 请求对账 2026-11-20] 本跳**进入执行器前**的派发尝试数
+    # （execute_tool 调用前 +1）——派发后异常/取消时
+    # attempts > executed 的差值就是「发出去了但没跑完」的实证。
+    hop_dispatch_attempts: int = 0
+    # [B2返修·请求边界 2026-11-20] 在途补救占位的 action_id 与绑定——
+    # 占位 pending 到「补救模型请求真正发出」才写回 sent、回包到才
+    # delivered；决定点不预支 delivered（中断在请求前 ⇒ 恢复对账
+    # 凭请求记录核销，不会假 delivered）。
+    remediation_action_id: str = ""
+    remediation_bound: dict = field(default_factory=dict)
+    # [系统结果 2026-11-19 · 超长会话漏调专项] 汇报唤醒回合的执行事实呈现
+    # （compose_delivery 写：status/items/text；finish 落会话块 receipt.result）。
+    system_result: dict = field(default_factory=dict)
 
 
 def _sid(state: "RunState") -> str:
     """会话锚：席位会话→自己的 session key；否则＝本卡（主会话）。"""
-    return str(state.session_id or "") or str(state.card_id or "")
+    return str(getattr(state, "session_id", "") or "") \
+        or str(getattr(state, "card_id", "") or "")
+
+
+def _remediation_request_boundary(state: "RunState") -> None:
+    """[B2返修·请求边界 2026-11-20] 补救模型请求**真正发出前**写回占位。
+
+    pending→sent＋请求记录（action_id/pair/round/相位）——「已发」由
+    实际请求边界写回，不是补救决定点预支；进程死在请求前 ⇒ 台账查无
+    ``remediation_request`` ⇒ 恢复对账走 stale/待核实，绝不假 delivered。
+    """
+    aid = str(getattr(state, "remediation_action_id", "") or "")
+    if not aid:
+        return
+    phase = "tools" if int(getattr(state, "rounds", 0) or 0) > 1 else "first"
+    tool_receipt.ledger({
+        "kind": "remediation_request",
+        "work_id": state.work_id, "card_id": state.card_id,
+        "pair_id": state.pair_id, "round": state.rounds,
+        "action_id": aid, "phase": phase})
+    intervention_store.store().mark_action(
+        state.work_id, aid, "sent",
+        receipt={"via": "in_turn_continue", "pair_id": state.pair_id,
+                 "round": state.rounds, "phase": phase})
+
+
+def _hop_accounting_error(state: "RunState", seat: str,
+                          exc: BaseException) -> dict[str, Any]:
+    """[B3返修·失败链路] 模型调用抛错时的请求级对账载荷——端点报错/
+    断流/重试耗尽的请求同样要留「请求座/实际座/端点事实/错误类」的
+    可复查记录，候选与派发数如实记零（请求未产出可结算回包）。
+    routes 异常路径会把它发成 hop_accounting 事件＋台账。"""
+    _ep = tool_receipt.endpoint_facts(str(seat or ""))
+    return {
+        "pair_id": state.pair_id, "round": state.rounds,
+        "requested_model": str(getattr(state, "model_requested", "") or ""),
+        "model_used_entry": str(getattr(state, "model_used", "") or ""),
+        "vendor": _ep.get("vendor") or "",
+        "api_base": _ep.get("api_base") or "",
+        "endpoint_model": _ep.get("endpoint_model") or "",
+        "request_model": _ep.get("request_model") or "",
+        "response_model": "",
+        "model_used": str(getattr(state, "model_used", "") or ""),
+        "endpoint_protocol": _ep.get("endpoint_protocol") or "",
+        "declared_text": _ep.get("endpoint_protocol") == "declared_text",
+        "finish_reason": "",
+        "native_calls": 0, "native_dropped": 0, "native_truncated": 0,
+        "native_finish_tool_calls": False,
+        "native_candidates": 0, "text_candidates": 0, "candidates": 0,
+        "admitted": 0, "refused": 0,
+        "executor_attempts": 0, "completed": 0, "succeeded": 0,
+        "executed_tools": [],
+        "latency_ms": None, "tokens_used": None,
+        "anomaly": "model_call_failed",
+        "failed": True,
+        "error": f"{type(exc).__name__}: {exc}"[:300],
+    }
+
+
+def _remediation_response_boundary(state: "RunState",
+                                   result: Optional[dict] = None) -> None:
+    """[B2返修·请求边界 2026-11-20] 补救请求**真实终帧到达**才核销 delivered。
+
+    请求记录（boundary）＋回包事实（本函数）双边证据齐了才算
+    delivered——``remediation_jump`` 事件与台账也在此落账（决定点只
+    记「决定」，不记「跳了」）。
+
+    [2026-11-20 三轮返修] 「回包」必须是**真实终帧**：人停/断流由
+    model_service 合成的收口结果（``stopped`` 标记，无终帧无
+    tool_calls）不算回包——占位核销 ``unverified`` 待核实（请求已发、
+    终帧无凭），**不写 remediation_jump**；恢复对账同口径。
+    回包异常/取消 ⇒ 占位留 sent，恢复对账凭请求记录判「已发、结果
+    待核实」。
+    """
+    aid = str(getattr(state, "remediation_action_id", "") or "")
+    if not aid:
+        return
+    if isinstance(result, dict) and result.get("stopped"):
+        # 人停/断流合成结果：请求已发出（sent 证据在），但没有真实
+        # 终帧 ⇒ 既不算 delivered 也不重发——核销 unverified 待核实。
+        state.remediation_action_id = ""
+        intervention_store.store().mark_action(
+            state.work_id, aid, "unverified",
+            receipt={"via": "in_turn_continue", "pair_id": state.pair_id,
+                     "round": state.rounds,
+                     "note": "stopped_no_terminal_frame"})
+        tool_receipt.ledger({
+            "kind": "remediation_incomplete",
+            "work_id": state.work_id, "card_id": state.card_id,
+            "pair_id": state.pair_id, "rounds": state.rounds,
+            "action_id": aid, "reason": "stopped_no_terminal_frame"})
+        return
+    state.remediation_action_id = ""
+    intervention_store.store().mark_action(
+        state.work_id, aid, "delivered",
+        receipt={"via": "in_turn_continue", "pair_id": state.pair_id,
+                 "round": state.rounds})
+    event_stream.emit(state.work_id, _sid(state), "remediation_jump", {
+        "bound": dict(getattr(state, "remediation_bound", {}) or {}),
+        "rounds": state.rounds, "action_id": aid,
+        "origin_counts": dict(state.origin_counts)})
+    tool_receipt.ledger({
+        "kind": "remediation_jump",
+        "work_id": state.work_id, "card_id": state.card_id,
+        "pair_id": state.pair_id, "rounds": state.rounds,
+        "bound": getattr(state, "remediation_bound", {}) or {},
+        "action_id": aid})
 
 
 @dataclass(frozen=True)
@@ -314,6 +458,9 @@ def check_control(state: RunState) -> Optional[str]:
 # 编排逻辑产出原始数据，再交 context base 按注册通道编入请求。
 def build_context(state: RunState) -> None:
     """统一 context base 构建 system、对话历史投影、工具列与轮槽。"""
+    import time as _t_perf
+    _perf = _t_perf.perf_counter
+    _t0 = _perf()          # 函数起点（memory 段起点）
     # [场/席位回合 2026-10-31 · venue] 三向锚点：执行锚仍是 state.card_id（它决定
     # 会话/锁/事件流），身份锚 act_as（145区/工具面），上下文锚 ctx_card
     # （bundle/历史/记忆——评审席拿的是被评子卡的语境）。普通回合三者同为 card_id。
@@ -321,11 +468,10 @@ def build_context(state: RunState) -> None:
     _ctx_id = str(state.ctx_card or "") or state.card_id
     # [席位会话] 凝练记忆按**会话锚**取——附加会话不继承卡的记忆
     # （用户令「不继承子卡自己的记忆、上下文」），它自己的记忆从空开始。
-    state.condense_state = (
-        memory_store.load_memory(state.work_id, _sid(state) if state.session_id
-                                 else _ctx_id)
-        if memory_store.condense_enabled() else None
-    )
+    history_id = str(getattr(state, "session_id", "") or "") or _ctx_id
+    memory_snapshot = (memory_store.read_snapshot(state.work_id, history_id)
+                       if memory_store.condense_enabled() else None)
+    _t_mem1 = _perf()
     # [预设职能 2026-10-24] 145 区(你的职能)取数:独立职能卡(fn_NNN)或职能化的
     # 根卡(总裁)——此前 build_context_bundle 的 function_meta 参数在生产链路
     # 无人传 ⇒ 145 区从不渲染(职能不知道自己是谁)。fail-open:查不到传 None。
@@ -342,27 +488,9 @@ def build_context(state: RunState) -> None:
                                                              _identity_id)
         except Exception:  # noqa: BLE001 身份取不到 ⇒ 不出 145 区,不挡回合
             _function_meta = None
-    bundle = context_assembler.build_context_bundle(
-        state.work_id, _ctx_id,
-        memory_state=state.condense_state,
-        history_source=state.prior,
-        history_extra=state.prior_extra,
-        function_meta=_function_meta,
-        # [本轮消息双重计数 2026-11-14] 本轮 user 块落盘即进板；按本回合
-        # pair_id 从板行滤掉——它走 user 通道，不该再当历史投影一遍。
-        current_pair_id=state.pair_id,
-    )
-    state.context_ctx = bundle["context"]
-    state.ctx_regions = bundle["regions"]
-    state.neutral_context = bundle["main"]["neutral_context"]
-    state.system_prompt = bundle["main"]["system_prompt"]
-    state.vp_system_prompt = bundle["viewpoints"]["system_prompt"]
-    state.prior_for_gateway = bundle["main"]["prior_messages"]
-    event_stream.emit(state.work_id, _sid(state), "context", {
-        "regions": [str(r.get("region", "")) for r in state.ctx_regions],
-        "bytes": len(state.neutral_context.encode("utf-8")),
-    })
-    state.slot = tool_fold.ToolTurnSlot(state.prior_for_gateway)
+    # [批二·按任务缩量 2026-11-20] 工具面**先建**：本轮有没有 read_card 决定
+    # 依赖正稿能不能只给坐标（读得到才给坐标，读不到必须给全文）。工具面不依赖
+    # 装配产物（只用身份锚/卡面/场授名单），故前置不改变任何既有语义。
     _cards_for_tools = card_tools._collect_card_meta(state.work_id)
     if _actor_id != state.card_id and _actor_id not in _cards_for_tools:
         # [venue] 席位不在 cards 表（职能档案在 function_store）⇒ 合成卡面再
@@ -393,8 +521,74 @@ def build_context(state: RunState) -> None:
             _def = card_tools.TOOL_REGISTRY.get(_vn)
             if _def is not None and _vn not in _have:
                 state.tools.append(card_tools._schema_of(_def))
+    bundle = context_assembler.build_context_bundle(
+        state.work_id, _ctx_id,
+        history_id=history_id,
+        memory_snapshot=memory_snapshot,
+        history_source=state.prior,
+        history_extra=state.prior_extra,
+        function_meta=_function_meta,
+        # [本轮消息双重计数 2026-11-14] 本轮 user 块落盘即进板；按本回合
+        # pair_id 从板行滤掉——它走 user 通道，不该再当历史投影一遍。
+        current_pair_id=state.pair_id,
+        # [2026-11-19 性能批次三] 回合开场不再渲染 viewpoints 剖面——席位进场
+        # 时 run_seats 带 seat_identity 重新 compose 真正的三席请求（改前开场
+        # 渲染从未作为模型输入，等于每回合白付一次全量分区渲染）。
+        with_viewpoints=False,
+        # [批二·按任务缩量 2026-11-20] 本轮任务范围判定输入：回合来源／身份锚／
+        # 读卡能力。判定只用结构化字段；判不出来 ⇒ unknown ⇒ 逐字同旧。
+        scope_hint=_scope_hint_for(state),
+    )
+    _t_ctx1 = _perf()
+    state.context_ctx = bundle["context"]
+    state.condense_state = state.context_ctx.memory_state
+    state.ctx_regions = bundle["regions"]
+    state.neutral_context = bundle["main"]["neutral_context"]
+    state.system_prompt = bundle["main"]["system_prompt"]
+    state.vp_system_prompt = (bundle["viewpoints"] or {}).get("system_prompt", "") \
+        if bundle["viewpoints"] is not None else ""
+    state.prior_for_gateway = bundle["main"]["prior_messages"]
+    event_stream.emit(state.work_id, _sid(state), "context", {
+        "regions": [str(r.get("region", "")) for r in state.ctx_regions],
+        "bytes": len(state.neutral_context.encode("utf-8")),
+    })
+    try:
+        from ..infra import observe as _obs
+        # 〔2026-11-19 返工3·独立分段〕每段用自己的起点/终点（改前的共享
+        # _t0 差值减法在跨线程委托场景会出负数——受控复验实测
+        # build_ctx_render=-6546.2ms）。段定义：
+        #   memory_load      = 凝练记忆和历史的同版本快照；
+        #   build_ctx_render = build_context_bundle 整段（取数+分区渲染）。
+        _obs.log_assembly(
+            work_id=state.work_id, card_id=_ctx_id, profile="main",
+            phase="build_context",
+            ms={"memory_load": round(max(0.0, (_t_mem1 - _t0)) * 1000.0, 2),
+                "build_ctx_render": round(max(0.0, (_t_ctx1 - _t_mem1)) * 1000.0, 2)},
+            pair_id=str(state.pair_id or ""),
+        )
+    except Exception:  # noqa: BLE001 观测永不阻断装配
+        pass
+    state.slot = tool_fold.ToolTurnSlot(state.prior_for_gateway)
     # history_len 是注册表统一投影出来的历史条数快照；轮槽之后会就地追加。
     state.history_len = len(state.prior_for_gateway)
+
+
+def _scope_hint_for(state: RunState) -> dict[str, Any]:
+    """本轮**任务范围判定**的输入（批二·按任务缩量）。
+
+    只给**结构化字段**：回合来源标记、身份锚、上下文锚、读卡能力。
+    正文里的卡号一概不给（任务书：「正文里的卡号只供查漏」）。
+    """
+    names = {str((t.get("function") or {}).get("name") or t.get("name") or "")
+             for t in (state.tools or [])}
+    return {
+        "source": dict(state.source or {}) if state.source else None,
+        "source_kind": str(state.source_kind or ""),
+        "act_as": str(state.act_as or ""),
+        "ctx_card": str(state.ctx_card or ""),
+        # 没有 read_card ⇒ 依赖正稿不能只给坐标（读不到就是白给）⇒ 回退全文。
+        "readback_available": "read_card" in names,
+    }
 
 
 def _synth_seat_meta(work_id: str, seat_id: str,
@@ -437,17 +631,18 @@ def compose_model_request(
     prior_key: str = "history",
     user_content: Optional[str] = None,
     turn_once: Optional[list[dict[str, Any]]] = None,
+    turn_hint: Optional[list[dict[str, Any]]] = None,
     turn_tail: Optional[list[dict[str, Any]]] = None,
     seat_identity: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
-    """所有主对话/三席请求都经 context registry 组合，不在调用点手拼通道。"""
+    """所有主对话/三席请求都经 context registry 组合，不在调用点手拼区。"""
     if state.context_ctx is None:
         # 兼容白盒直调（生产链路 build_context 一定先设 context_ctx）。
         return {
             "system_prompt": state.system_prompt if profile == "main" else state.vp_system_prompt,
             "user_prompt": user_content if user_content is not None else state.user_prompt,
             "prior_messages": prior_messages or [],
-            "turn_once": turn_once or [],
+            "turn_once": list((turn_once or []) + (turn_hint or [])),
             "turn_tail": turn_tail or [],
         }
     request = context_regions.compose_model_context(
@@ -457,10 +652,38 @@ def compose_model_request(
         prior_key=prior_key,
         user_content=user_content if user_content is not None else state.user_prompt,
         turn_once=turn_once,
+        turn_hint=turn_hint,
         turn_tail=turn_tail,
         seat_identity=seat_identity,
     )
     return request
+
+
+# [2026-11-19 性能批次三] 装配/出站分段打点：每跳一行 assembly 观测。
+# 序列化段＝轮槽折叠 + compose_model_request（本地读取不在段内——那次取数
+# 在 build_context 已单独计）；出站段＝gateway 全程（含其内部序列化与重试）。
+# 首跳 phase="first"、续跳 phase="tools"；凝练请求经 model_call 行的 caller
+# （condense:*）区分，不在此重复。
+from time import perf_counter as _perf_counter  # noqa: E402
+
+
+def _log_model_hop(state: "RunState", t_ser0: float, t_out0: float,
+                   seat: str, phase: str) -> None:
+    """一跳的分段耗时落 observe（打点失败绝不影响回合）。"""
+    try:
+        from ..infra import observe as _obs
+        _now = _perf_counter()
+        _obs.log_assembly(
+            work_id=state.work_id, card_id=state.card_id,
+            profile=str(state.profile or "main"), phase=f"model_hop:{phase}",
+            ms={"serialize": round((t_out0 - t_ser0) * 1000.0, 2),
+                "outbound": round((_now - t_out0) * 1000.0, 2)},
+            round=int(state.rounds or 0), seat=str(seat or ""),
+            pair_id=str(state.pair_id or ""),
+            model_used=str(getattr(state, "model_used", "") or ""),
+        )
+    except Exception:  # noqa: BLE001 观测永不阻断装配
+        pass
 
 
 # ============================================================
@@ -751,9 +974,15 @@ def _apply_steer(state: RunState, into_slot: bool = False) -> list[str]:
     返回被消费的原始条目（mark+body 成品）——调用方据此如实提示来源
     （〔用户插话〕／〔卡间消息〕／〔系统消息〕），不冒充人声。
     """
-    msgs = steer.take_steer(state.work_id, state.card_id)
-    if not msgs:
+    entries = steer.take_steer_entries(state.work_id, state.card_id)
+    if not entries:
         return []
+    # 插话进入模型前的工具结果属于原任务，不能证明新指令已汇报。
+    state.report_after.update(
+        (target, len(state.tool_events))
+        for entry in entries for target in entry.report_targets
+    )
+    msgs = [entry.text for entry in entries]
     # 队列里存的是 mark+body 成品（request_steer 置位时拼好——用户插话带
     # 〔用户插话〕、卡间消息带 〔卡间消息〕），这里取走即用不再拼标。
     prepared = [{"role": "user", "content": t} for t in msgs]
@@ -857,8 +1086,15 @@ async def _call_model_resumable(state: "RunState | None" = None, **kwargs: Any):
     _cid = getattr(state, "card_id", "") or ""
     _rnd = getattr(state, "rounds", 0) or 0
     last: Optional[BaseException] = None
+    if state is not None:
+        from ..goal import driver, shadow_eval
+        source = getattr(state, "source", None) or {}
+        driver.accept_model_request(_wid, _cid, source)
     for attempt in range(1, _RESUME_MAX_ATTEMPTS + 1):
         try:
+            if state is not None:
+                shadow_eval.model_request(_wid, _cid, source,
+                                          pair_id=getattr(state, "pair_id", ""), attempt=attempt)
             return await model_service.call_main(**kwargs)
         except ModelError as exc:
             last = exc
@@ -1005,43 +1241,61 @@ async def step(state: RunState) -> StepOutcome:
         _seat = _pick_step_model(state)
         state.model_requested = _seat
         state.endpoint_protocol = tool_receipt.endpoint_protocol_of(_seat)
-        # 当前轮短提示：紧贴最新请求。走 **turn_once 通道**（仅随本次请求
-        # 下发，不进轮槽、不固化、不进会话）——它是「当前轮」性质的消息：
-        # 续跳轮的模型已在工具循环里，无需重复；turn_tail 会被 _engage_slot
-        # 固化进后续轮 ⇒ 消息序列漂移（实测轮槽多出一条 assistant）。
+        # 当前轮短提示：紧贴最新请求。走 **turn_hint 独立区**（仅随本次请求
+        # 下发，不进轮槽、不固化、不进会话；与判断协议分离——once 区在纯单
+        # 模式下被 thinkchain 开关整体吞掉，实测提示到不了模型面前）。
         # 内容只讲「怎样真调、以什么为准」，不授予权限、不证明已执行；
-        # 无工具（纯对话轮）不出。TOOL_TURN_HINT=0 可关（四组对照 A/C 组）。
+        # 无工具（纯对话轮）不出协议提示。TOOL_TURN_HINT=0 可关（四组对照 A/C）。
         _hint = tool_receipt.build_turn_hint(state.endpoint_protocol, state.tools)
-        _turn_once = list(state.judgment_tail)
+        _hint_msgs: list[dict[str, Any]] = []
         if _hint is not None:
-            _turn_once.append(_hint)
+            _hint_msgs.append(_hint)
+        # [汇报唤醒两条路径 2026-11-19] 收到卡间汇报/来信的回合：管理卡可以
+        # 只回复判断，也可以采取行动——需要行动时先真调看到结果再汇报。
+        # 「零调用却说已发」复发（card_007 22:31/22:35 实录）的当前轮修复面。
+        if (tool_receipt.turn_hint_enabled()
+                and tool_receipt.is_report_wake(state)):
+            _hint_msgs.append(
+                {"role": "system",
+                 "content": tool_receipt.report_wake_hint(state.endpoint_protocol)})
         # [迭代三 S5] 首轮接线：按当前步 type 查表取模型（无活板回落 default）
+        _t_ser0 = _perf_counter()
         request = compose_model_request(
             state, profile=state.profile or "main",
             prior_messages=state.prior_for_gateway,
             prior_key="history", user_content=state.user_prompt,
-            turn_tail=state.turn_tail, turn_once=_turn_once,
+            turn_tail=state.turn_tail, turn_once=state.judgment_tail,
+            turn_hint=_hint_msgs,
         )
         # [venue] 层内兜底按**身份锚**查模型层——座位与兜底同源（席位自己的层）。
         _actor = str(state.act_as or "") or state.card_id
         # [模型中断续跑 2026-10-23] 经续跑包装：断连在同一位置重发，不判死整轮
-        result, state.model_used = await _call_model_resumable(
-            state,
-            system_prompt=request["system_prompt"],
-            user_prompt=request["user_prompt"],
-            prior_messages=request["prior_messages"],
-            tools=state.tools,
-            model_name=_seat,
-            # [层内兜底 2026-10-21] 座位挂了就换同一层的下一个（不跨层）
-            fallbacks=model_config.layer_fallbacks(
-                _seat, work_id=state.work_id, card_id=_actor),
-            turn_tail=request["turn_tail"],
-            turn_once=request["turn_once"],
-            # [F22 · 2026-10-31 审计补口] 观测因果链：model_call JSONL 的
-            # caller/卡位来自这里（改前主链路不传 ⇒ 生产打点恒空）。
-            work_id=state.work_id, card_id=state.card_id,
-            caller=f"turn:{state.pair_id}:r{state.rounds}",
-        )
+        _t_out0 = _perf_counter()
+        _remediation_request_boundary(state)
+        try:
+            result, state.model_used = await _call_model_resumable(
+                state,
+                system_prompt=request["system_prompt"],
+                user_prompt=request["user_prompt"],
+                prior_messages=request["prior_messages"],
+                tools=state.tools,
+                model_name=_seat,
+                # [层内兜底 2026-10-21] 座位挂了就换同一层的下一个（不跨层）
+                fallbacks=model_config.layer_fallbacks(
+                    _seat, work_id=state.work_id, card_id=_actor),
+                turn_tail=request["turn_tail"],
+                turn_once=request["turn_once"],
+                # [F22 · 2026-10-31 审计补口] 观测因果链：model_call JSONL 的
+                # caller/卡位来自这里（改前主链路不传 ⇒ 生产打点恒空）。
+                work_id=state.work_id, card_id=state.card_id,
+                caller=f"turn:{state.pair_id}:r{state.rounds}",
+            )
+        except BaseException as _exc:
+            # [B3返修] 失败请求同样留对账——异常上抛前把已知事实落账。
+            state.hop_accounting = _hop_accounting_error(state, _seat, _exc)
+            raise
+        _remediation_response_boundary(state, result)
+        _log_model_hop(state, _t_ser0, _t_out0, _seat, "first")
         # [DeepSeek 思考回传 2026-10-15] 暂存本轮思考，供存 assistant 条时回传
         state.turn_reasoning = result.get("reasoning_content") or ""
     else:
@@ -1050,6 +1304,16 @@ async def step(state: RunState) -> StepOutcome:
                            f"第 {state.rounds - 1} 轮工具续跳")
         # [T11] 装配时折叠：折叠关原样返回本列表（逐字同旧）；
         # 折叠开对窗口外旧轮次压成【结论】＋【依据】（不改条数与配对）
+        _t_ser0 = _perf_counter()
+        # [批二·按任务缩量 2026-11-20 · 任务书 §二.3] **刷新当轮事实**：本回合里
+        # 子卡跑了一步／建了新卡 ⇒ 清单与子卡现状（tail 通道，每跳重渲染）必须
+        # 看到当前版本，不能停在回合开始那一份快照。system 通道不动（稳定前缀）。
+        if state.context_ctx is not None:
+            try:
+                context_assembler.refresh_tail_facts(
+                    state.context_ctx, state.work_id, state.card_id)
+            except Exception:  # noqa: BLE001 刷新失败＝沿用旧版本，不阻断回合
+                pass
         wire_messages = await state.slot.wire_messages()
         event_stream.emit(state.work_id, _sid(state), "round_start",
                           {"round": state.rounds, "phase": "tools"})
@@ -1068,29 +1332,52 @@ async def step(state: RunState) -> StepOutcome:
         # [venue] 续跳轮同首轮：兜底按身份锚（与首轮同一 _actor 口径）。
         _actor = str(state.act_as or "") or state.card_id
         # [模型中断续跑 2026-10-23] 续跳轮同样经续跑包装
-        result, state.model_used = await _call_model_resumable(
-            state,
-            system_prompt=request["system_prompt"],
-            user_prompt=request["user_prompt"],
-            prior_messages=request["prior_messages"],
-            tools=state.tools,
-            model_name=_seat,
-            # [层内兜底 2026-10-21] 座位挂了就换同一层的下一个（不跨层）
-            fallbacks=model_config.layer_fallbacks(
-                _seat, work_id=state.work_id, card_id=_actor),
-            turn_tail=request["turn_tail"],
-            turn_once=request["turn_once"],
-            # [F22 · 2026-10-31 审计补口] 同上：工具轮观测因果链
-            work_id=state.work_id, card_id=state.card_id,
-            caller=f"turn:{state.pair_id}:r{state.rounds}:tools",
-        )
+        _t_out0 = _perf_counter()
+        _remediation_request_boundary(state)
+        try:
+            result, state.model_used = await _call_model_resumable(
+                state,
+                system_prompt=request["system_prompt"],
+                user_prompt=request["user_prompt"],
+                prior_messages=request["prior_messages"],
+                tools=state.tools,
+                model_name=_seat,
+                # [层内兜底 2026-10-21] 座位挂了就换同一层的下一个（不跨层）
+                fallbacks=model_config.layer_fallbacks(
+                    _seat, work_id=state.work_id, card_id=_actor),
+                turn_tail=request["turn_tail"],
+                turn_once=request["turn_once"],
+                # [F22 · 2026-10-31 审计补口] 同上：工具轮观测因果链
+                work_id=state.work_id, card_id=state.card_id,
+                caller=f"turn:{state.pair_id}:r{state.rounds}:tools",
+            )
+        except BaseException as _exc:
+            # [B3返修] 失败请求同样留对账——异常上抛前把已知事实落账。
+            state.hop_accounting = _hop_accounting_error(state, _seat, _exc)
+            raise
+        _remediation_response_boundary(state, result)
+        _log_model_hop(state, _t_ser0, _t_out0, _seat, "tools")
     # [DeepSeek 思考回传 2026-10-15] 暂存本轮思考，供存 assistant 条时回传
     state.turn_reasoning = result.get("reasoning_content") or ""
     tool_calls = _norm_tool_calls(result.get("tool_calls") or [])
     for _tc in tool_calls:
         _tc.setdefault("_src_origin", "native")
     assistant_content = result.get("content") or ""
+    raw_assistant_content = assistant_content
+    hop_anomaly = ""
     text_rescue_note = ""
+    # [B3 请求对账 2026-11-20] 本跳候选/拒绝计数——候选（原生＋正文解析）
+    # 与实际进入执行器、真实派发的数量分开记账。
+    # [B3返修] 候选按**真实来源**分账：``tool_calls`` 列表里混着
+    # model_service 流终帧从正文解析的调用（_src_origin=pseudo_compat /
+    # declared_text）——它们是**正文来源**候选，不是原生 tool_calls
+    # 分片；原生候选只数 _src_origin=native（缺省）的条目。
+    _native_candidates = sum(
+        1 for _tc in tool_calls
+        if str(_tc.get("_src_origin") or "native") == "native")
+    _hop_refused = 0
+    state.hop_text_candidates = len(tool_calls) - _native_candidates
+    state.hop_dispatch_attempts = 0
 
     # [验收模式 2026-11-19] 原生端点正文伪调用（model_service 流终帧解析链
     # 产出、带 _src_origin=pseudo_compat）不代执行：与 rescue strict 分支同
@@ -1102,12 +1389,14 @@ async def step(state: RunState) -> StepOutcome:
             if str(_tc.get("_src_origin") or "") != "pseudo_compat":
                 _kept.append(_tc)
                 continue
+            hop_anomaly = "pseudo_refused_strict"
             event_stream.emit(state.work_id, _sid(state), "pseudo_call_refused",
                               {"count": 1,
                                "names": [str(_tc.get("name") or "")],
                                "round": state.rounds,
                                "endpoint_protocol": state.endpoint_protocol,
                                "via": "stream_parse"})
+            _hop_refused += 1
             tool_receipt.ledger_tool(
                 state.work_id, state.card_id, state.pair_id, state.rounds,
                 tool=str(_tc.get("name") or ""), target="",
@@ -1138,7 +1427,41 @@ async def step(state: RunState) -> StepOutcome:
                       else "pseudo_compat")
     if not tool_calls and assistant_content:
         rescue_calls, unresolved, stripped = \
-            text_tool_rescue.extract_text_tool_calls(assistant_content)
+            text_tool_rescue.extract_text_tool_calls(
+                assistant_content,
+                # [实际路由为准 2026-11-20 · 复现修复] 只查网关回报的
+                # 实际座位键（result["model_used"]；兜底回落＝请求座）。
+                # 请求启用而实际回退到未启用路由时 ⇒ 只记识别事实。
+                protocols=model_config.text_protocols(
+                    str(result.get("model_used") or "")
+                    or (state.model_requested or "")))
+        # [新协议按路由启用 2026-11-20 · §四] 声明的正文形态试点只放行
+        # 只读工具；写卡/发信/建卡等有副作用工具记「已识别、路由未启用」
+        # 事实，不派发——副作用面验收前不开（识别事实与未派发事实分账）。
+        state.hop_text_candidates += len(rescue_calls)
+        if rescue_calls:
+            _denied = [c for c in rescue_calls
+                       if c.get("_origin") in text_tool_rescue.READONLY_PROTOCOL_ORIGINS
+                       and str(c.get("name") or "")
+                       not in card_tools.READONLY_TOOLS]
+            _hop_refused += len(_denied)
+            if _denied:
+                rescue_calls = [c for c in rescue_calls if c not in _denied]
+                for _tc in _denied:
+                    event_stream.emit(
+                        state.work_id, _sid(state), "text_proto_refused",
+                        {"name": str(_tc.get("name") or ""),
+                         "proto": str(_tc.get("_origin") or ""),
+                         "round": state.rounds,
+                         "endpoint_protocol": state.endpoint_protocol})
+                    tool_receipt.ledger_tool(
+                        state.work_id, state.card_id, state.pair_id,
+                        state.rounds,
+                        tool=str(_tc.get("name") or ""), target="",
+                        origin=_rescue_origin, dispatched=False,
+                        error_code="proto_side_effect_denied",
+                        note="新协议试点只放行只读工具；副作用工具按路由显式启用")
+                hop_anomaly = hop_anomaly or "proto_side_effect_denied"
         if (rescue_calls and _rescue_origin == "pseudo_compat"
                 and tool_receipt.strict_mode()):
             # [验收模式 2026-11-19] 原生端点正文伪调用不代执行：旧入口被
@@ -1148,6 +1471,10 @@ async def step(state: RunState) -> StepOutcome:
                 "pseudo_calls_refused_strict count=%s names=%s",
                 len(rescue_calls), [c["name"] for c in rescue_calls],
             )
+            # [异常正文隔离 2026-11-20] 被拒伪调用的原文仍随回复块落会话——
+            # 打标让投影/板/凝练只投残部＋状态行，原文留档案面。
+            hop_anomaly = hop_anomaly or "pseudo_refused_strict"
+            _hop_refused += len(rescue_calls)
             event_stream.emit(state.work_id, _sid(state), "pseudo_call_refused",
                               {"count": len(rescue_calls),
                                "names": [str(c.get("name") or "") for c in rescue_calls],
@@ -1176,6 +1503,8 @@ async def step(state: RunState) -> StepOutcome:
                 "text_tool_calls_over_cap count=%s names=%s（不再代执行）",
                 len(rescue_calls), [c["name"] for c in rescue_calls],
             )
+            hop_anomaly = hop_anomaly or "pseudo_over_cap"
+            _hop_refused += len(rescue_calls)
             event_stream.emit(state.work_id, _sid(state), "rescue_refused",
                               {"count": len(rescue_calls),
                                "names": [str(c.get("name") or "") for c in rescue_calls]})
@@ -1195,7 +1524,8 @@ async def step(state: RunState) -> StepOutcome:
             tool_calls = rescue_calls
             for _tc in tool_calls:
                 _tc["_src_origin"] = _rescue_origin
-            assistant_content = stripped or assistant_content
+            # 全文都是调用块时，空串也是有效的净化结果。
+            assistant_content = stripped
             # stdlib logging 只吃位置参数（%s 占位）——本模块 logger 是
             # logging.getLogger 而非 infra.logging.get_logger（structlog），
             # kwargs 写法会 TypeError（2026-10-03 首次点火定案）。
@@ -1227,14 +1557,45 @@ async def step(state: RunState) -> StepOutcome:
             # 再调起、纠偏措辞、节流全在 harness_policies：策略收事实后
             # 把卡叫醒让它走真通道重发。新方言层出不穷，"中途解析文本"
             # 这条方向本身撤了——已知方言照执行，未知方言走重调起。
-            event_stream.emit(state.work_id, _sid(state),
-                              "pseudo_call_unparsed",
-                              {"round": state.rounds,
-                               "chars": len(assistant_content),
-                               "origin": _rescue_origin,
-                               "recent": _pseudo_recent(
-                                   state.work_id, state.card_id),
-                               "head": (assistant_content or "")[:160]})
+            # [异常正文隔离 2026-11-20] 未解析正文随回复块落会话——打标，
+            # 模型历史只见残部＋状态行（card_057 两万字符末跳被次轮原样
+            # 抄进历史，此标即断那条链）。
+            # [2026-11-20 返修 · runner/Harness 共用一次补救决定] 事实延到
+            # 收口点发（hop_unparsed）：本跳被续跳/补救裁定 ⇒ handled=runner
+            # 进事件，策略 pseudo_call_reinvoke 见此标记不再二次唤醒。
+            hop_anomaly = hop_anomaly or "pseudo_unparsed"
+            state.hop_unparsed = {
+                "round": state.rounds,
+                "chars": len(assistant_content),
+                "origin": _rescue_origin,
+                "proto_hint": text_tool_rescue
+                .detect_protocol_hint(assistant_content),
+                "recent": _pseudo_recent(
+                    state.work_id, state.card_id),
+                "head": (assistant_content or "")[:160]}
+    elif tool_calls and assistant_content:
+        # [同跳混体 2026-11-20 · B1返修] 原生调用在场也要跑一遍正文清洗：
+        # 伪调用块（中日文壳/错配壳/仿回执）从此退出模型上下文，且原生
+        # 调用只执行一次——正文候选一律丢弃不入执行链，只记候选数对账。
+        _m_calls, _m_unresolved, _m_stripped = \
+            text_tool_rescue.extract_text_tool_calls(
+                assistant_content,
+                protocols=model_config.text_protocols(
+                    str(result.get("model_used") or "")
+                    or (state.model_requested or "")))
+        state.hop_text_candidates += len(_m_calls)
+        if _m_calls or _m_unresolved or _m_stripped != assistant_content:
+            hop_anomaly = hop_anomaly or "pseudo_mixed"
+            state.hop_unparsed = {
+                "round": state.rounds,
+                "chars": len(assistant_content),
+                "origin": _rescue_origin,
+                "candidates": len(_m_calls),
+                "proto_hint": text_tool_rescue
+                .detect_protocol_hint(assistant_content),
+                "recent": _pseudo_recent(
+                    state.work_id, state.card_id),
+                "head": (assistant_content or "")[:160]}
 
     # [调用来源与真实回执 2026-11-19 · 原生协议失败] 到这里仍然零可执行
     # 调用、且网关侧有「端点声称调了工具 / 分片损坏」的证据 ⇒ 「模型调了、
@@ -1273,6 +1634,64 @@ async def step(state: RunState) -> StepOutcome:
                 f"{_pm.get('native_dropped')} 个、参数截断 "
                 f"{_pm.get('native_truncated')} 个）。"
                 "请按当前通道的标准调用格式重新发送同样的调用。")
+
+    # [B3 请求对账 2026-11-20] 本跳请求级事实载荷——请求座/实际座/
+    # 端点协议/finish/候选（原生＋正文）vs 入执行器数 vs 拒绝数；真实
+    # 派发数由调用循环在 outcome 点按本 rounds 的 tool_events 补齐后发。
+    _pm = result.get("protocol_meta") or {}
+    _entry_key = str(result.get("model_used") or "")
+    _ep_facts = tool_receipt.endpoint_facts(
+        _entry_key or str(state.model_requested or ""))
+    state.hop_accounting = {
+        "pair_id": state.pair_id, "round": state.rounds,
+        "requested_model": str(state.model_requested or ""),
+        "model_used_entry": _entry_key,
+        "vendor": _ep_facts.get("vendor") or "",
+        "api_base": _ep_facts.get("api_base") or "",
+        "endpoint_model": _ep_facts.get("endpoint_model") or "",
+        "request_model": _ep_facts.get("request_model") or "",
+        # [B3 返修] 端点回包声明的模型名——与请求模型名/配置线路名分账。
+        "response_model": str(_pm.get("response_model") or ""),
+        "model_used": str(state.model_used or ""),
+        "endpoint_protocol": str(_pm.get("endpoint_protocol") or ""),
+        "declared_text": bool(_pm.get("declared_text")),
+        "finish_reason": str(_pm.get("finish_reason")
+                             or result.get("finish_reason") or ""),
+        "native_calls": int(_pm.get("native_calls") or 0),
+        "native_dropped": int(_pm.get("native_dropped") or 0),
+        "native_truncated": int(_pm.get("native_truncated") or 0),
+        "native_finish_tool_calls": bool(_pm.get("native_finish_tool_calls")),
+        # [B3返修] 候选按来源分账：native＝原生 tool_calls 分片；
+        # text＝正文解析（流终帧 pseudo_compat/declared_text＋rescue）。
+        "native_candidates": _native_candidates,
+        "text_candidates": state.hop_text_candidates,
+        "candidates": _native_candidates + state.hop_text_candidates,
+        "admitted": len(tool_calls),
+        "refused": _hop_refused,
+        "latency_ms": result.get("latency_ms"),
+        "tokens_used": result.get("tokens_used"),
+        "anomaly": hop_anomaly or "",
+    }
+
+    # [假结果治理 2026-11-20 · 复现修复] 仿回执只在**逐跳模型原始正文**
+    # （assistant_content）上判——finish 的 clean_text 收口时已拼入宿主
+    # 生成的真实系统结果行（〔系统结果〕本轮未执行/执行 N 项），在拼接
+    # 文本上判会把真回执误标 pseudo_receipt、还给已派发回合加上
+    # 「未派发执行」假状态。本跳有无 tool_calls 都查：同跳带了真调用
+    # 也不能给模型自写回执背书。
+    _pr = text_tool_rescue.detect_pseudo_receipt(raw_assistant_content)
+    if _pr:
+        hop_anomaly = hop_anomaly or "pseudo_receipt"
+        event_stream.emit(state.work_id, _sid(state), "pseudo_receipt",
+                          {"pair_id": state.pair_id,
+                           "round": state.rounds,
+                           "count": _pr})
+    assistant_context = assistant_content
+    if hop_anomaly:
+        state.anomaly_quarantine = state.anomaly_quarantine or hop_anomaly
+        assistant_content = raw_assistant_content
+        assistant_context = text_tool_rescue.quarantine_view(
+            raw_assistant_content, has_dispatch=bool(tool_calls))
 
     # [模型过程数据 2026-10-12] 判断事件（新增）：**首轮机械推断**——tool_calls
     # 含 create_plan → plan，否则 direct。只读 tool_calls 事实（含抢救并入的
@@ -1340,10 +1759,105 @@ async def step(state: RunState) -> StepOutcome:
             _engage_slot(state)   # 注入消息随轮槽带入后续轮（先于本轮 assistant 回注）
             # [T11] 经轮槽 append_plain 入槽（非轮消息，永不折叠）
             state.slot.append_plain({
-                "role": "assistant", "content": state.final_reply,
+                "role": "assistant", "content": assistant_context,
             })
             state.user_prompt = text_rescue_note
             return StepOutcome("continue", "text_rescue")
+        # [定向补救续跳 2026-11-19 · 2026-11-20 二次返修 · B2 统一决定点]
+        # 补救看**绑定的动作有没有派发**（不看本轮是否零调用、不看正文措辞）：
+        #   · op 专用回合——绑定动作（专用工具）从未派发 ⇒ 定向补一次，
+        #     即使本轮派发过别的调用（点更新现状却只 read_card 的复核实录：
+        #     零调用判据会漏掉这种）；已派发或结果待确认 ⇒ 先核查不重发；
+        #   · directive 指令回合——require_report 绑定的汇报从未送出
+        #     （send_state=="not_sent"）⇒ 同样补一次（007 型零调用 stop
+        #     复核实录）；failed/unverified 不擅自重做副作用，交付面由
+        #     回执闸如实标注待核实；
+        #   · 汇报/研判类卡间消息回合——不绑定，零调用研判合法。
+        # 去重两道：内存标志（同回合）＋ intervention_store (fire_key,
+        # target) 唯一占位（跨重启/重复事件同一事实只补一次）——占位登记
+        # 在发额外请求之前；登记失败沿台账记待核实不阻断。
+        _bound = tool_receipt.bound_action(state)
+        if (_bound is not None
+                and not getattr(state, "remediation_done", False)
+                and not steer.pending_steer(state.work_id, state.card_id)
+                and not control.pending_stop(state.work_id, state.card_id)):
+            _kind = str(_bound.get("kind") or "")
+            _verdict = tool_receipt.receipt_verdict(state)
+            _req = {str(n) for n in (_bound.get("required_tools") or [])}
+            _missing = (
+                (_kind == "op"
+                 and not any(str(e.get("tool") or "") in _req
+                             for e in state.tool_events))
+                or (_kind == "task"
+                    and _verdict.get("task_missing"))
+                # 汇报义务独立核对：任何绑定形态下，有汇报对象而欠送出
+                # 都同链补一次（无汇报对象时 send_state 亦回 not_sent，
+                # 必须用 reports 非空限住，否则裸任务绑定误补）。
+                or (_verdict.get("send_state") == "not_sent"
+                    and bool(_verdict.get("reports"))))
+            if _missing:
+                _sig = (str(_bound.get("op") or "") if _kind == "op"
+                        else (",".join(_bound.get("targets") or [])
+                              if _kind == "directive"
+                              # 任务版本进签名：同任务换 rev 是新事实，
+                              # 不许被旧占位的 fire_key 去重吞掉。
+                              else f"{_bound.get('task_id')}@"
+                                   f"{_bound.get('rev')}|"
+                                   f"{_bound.get('action')}@"
+                                   f"{_bound.get('target')}"))
+                _fire_key = (f"remediation|{state.card_id}|{state.pair_id}"
+                             f"|{_kind}:{_sig}")
+                _aid, _fresh = intervention_store.store().record_action(
+                    state.work_id,
+                    policy_id="turn_remediation",
+                    scope_key=str(state.card_id),
+                    fire_key=_fire_key,
+                    target=str(state.card_id),
+                    mode="remediation",
+                    wake=False,
+                    message=json.dumps({"kind": _kind, "bound": _bound,
+                                        "rounds": state.rounds},
+                                       ensure_ascii=False)[:800])
+                if not _aid:
+                    # [2026-11-20 返修 · 用户复验] 占位落不下 ⇒ 补救决定记
+                    # 「待核实」就地收口，**不发第二次模型请求**——占位是
+                    # 唯一决定权的凭据，缺席时补跳等于无凭据重发（同一事实
+                    # 可能已被别处裁定）。交付面由回执闸如实标注欠项。
+                    state.remediation_done = True
+                    state.remediation_adjudicated = True
+                    event_stream.emit(state.work_id, _sid(state),
+                                      "remediation_unverified",
+                                      {"bound": _bound,
+                                       "rounds": state.rounds})
+                    tool_receipt.ledger({
+                        "kind": "remediation_unverified",
+                        "work_id": state.work_id, "card_id": state.card_id,
+                        "pair_id": state.pair_id, "rounds": state.rounds,
+                        "bound": _bound})
+                elif not _fresh:
+                    # 同一事实已补救过（重启/重复事件回放）——只记事实不重发
+                    state.remediation_done = True
+                    state.remediation_adjudicated = True
+                    event_stream.emit(state.work_id, _sid(state),
+                                      "remediation_deduped",
+                                      {"bound": _bound, "rounds": state.rounds,
+                                       "action_id": _aid})
+                else:
+                    state.remediation_done = True
+                    # [2026-11-20 返修·请求边界] 占位**保持 pending**——
+                    # 「已发」由下一跳模型请求的实际边界写回（sent），
+                    # 回包到达才 delivered（见 _remediation_*_boundary）。
+                    # 决定点预支 delivered 是旧病：中断在第二次请求前，
+                    # 动作账已 delivered 而模型只收到首轮请求。
+                    state.remediation_action_id = _aid
+                    state.remediation_bound = dict(_bound or {})
+                    _engage_slot(state)
+                    state.slot.append_plain({
+                        "role": "assistant", "content": assistant_context,
+                    })
+                    state.user_prompt = tool_receipt.remediation_prompt(
+                        state, _bound, _verdict)
+                    return StepOutcome("continue", "remediation")
         # [思维链真实落地 2026-10-11] 提交轮三席统合（C6）：board 全部步骤
         # done（收口）后、交付前，固定触发三席质询＋统合交付。空手轮旁路
         # （旧「无工具即三席」）退役——直答回合零三席。
@@ -1395,7 +1909,7 @@ async def step(state: RunState) -> StepOutcome:
     # 消息构造与既有逐字一致（折叠关时槽即本列表，零变化）
     _asst_msg: dict[str, Any] = {
         "role": "assistant",
-        "content": assistant_content,
+        "content": assistant_context,
         "tool_calls": [
             {
                 "id": f"call_{_run_tag}_{state.rounds}_{i}",
@@ -1419,10 +1933,11 @@ async def step(state: RunState) -> StepOutcome:
     #   等于谎报「该轮无思考」（它恒在推理，官方文档口径）；DeepSeek 系空串
     #   （官方生产口径），beam 系必须非空（空串照样 400）。
     _att, _rv = model_config.reasoning_echo_value(
-        state.model_used or "", state.model_requested or "",
-        state.turn_reasoning)
-    if _att:
+        state.model_used or "", _entry_key,
+        "" if hop_anomaly else state.turn_reasoning)
+    if _att and state.turn_reasoning and not hop_anomaly:
         _asst_msg["reasoning_content"] = _rv
+        _asst_msg["_reasoning_model"] = str(state.model_used or "")
     state.slot.begin_round(_asst_msg)
     # [T14-1-2] 只读采集：带工具轮的 assistant_content（含 L459 抢救处理后
     # 的正文）同步留一份进交付采集列表。不改 begin_round 入参、不额外入槽
@@ -1498,6 +2013,10 @@ async def step(state: RunState) -> StepOutcome:
                 state.work_id, state.card_id, state.pair_id, state.rounds,
                 tool=name, target=str(target_id or ""), origin=origin,
                 dispatched=True, call_id=_call_id)
+            # [B3 请求对账返修] 进入执行器前的派发尝试计数——execute_tool
+            # 抛异常/回合被取消时 attempts > executed 的差值是
+            # 「派发出去但没跑完」的实证，不再被 completed 数掩盖。
+            state.hop_dispatch_attempts += 1
             # [提交轮材料（C6）] step_complete 执行**前**抓板快照——末步执行会
             # 同步触发收口（finalize 清理板），执行后取板已不可得。每次 step_complete
             # 前刷新快照，末步前抓到的即全量成果（含全部已推进步的 result）。
@@ -1534,6 +2053,10 @@ async def step(state: RunState) -> StepOutcome:
             _err_code = str(((tool_result.get("error") or {}).get("code")
                              if isinstance(tool_result.get("error"), dict)
                              else "") or "")
+            if not ok:
+                # [系统结果 2026-11-19] 失败原因随执行记录走——交付面系统
+                # 结果的「显示失败原因及目标」呈现事实来源。
+                _ev["error_code"] = _err_code or "失败"
             # [建卡工具化 2026-10-08] create_card 成功时把真身卡号/卡名/父带进
             # tool_events——交付段据此收拢工具通道建卡结果
             # [T-0010 §1] 成功载荷整体在 data 内，取值改走 data
@@ -1541,6 +2064,40 @@ async def step(state: RunState) -> StepOutcome:
                 _ev["card_id"] = _data.get("card_id", "")
                 _ev["title"] = _data.get("title", "")
                 _ev["parent"] = _data.get("parent", "")
+            if ok and name in ("direct", "sync", "report_up"):
+                # [系统结果 2026-11-19 · 2026-11-20 二次返修] 发信回执摘要按
+                # **实际收件人逐条**记录（核对与呈现的唯一事实面）：
+                #   · direct 布尔形态：delivered=true/false + 顶层 msg_id；
+                #   · sync/report_up 列表形态：delivered/pending 各为
+                #     {to, msg_id} 列表（report_up 收件人=父卡/创建者，
+                #     由 handler 决定——参数里没有）。
+                # state：delivered=运行态已受理；pending=落账未受理。
+                # 落信与受理分开、每个收件人带自己的记录锚（msg_id）——
+                # 回执核对与系统结果呈现都按它逐条判。
+                _recips: list[dict[str, Any]] = []
+                _dl = _data.get("delivered")
+                _pd = _data.get("pending") or []
+                if isinstance(_dl, list):
+                    # [二次返修] sync 落账不唤醒（工具返回 delivered 列表=
+                    # 落信成功，无投递概念）⇒ state=synced；direct/report_up
+                    # 的 delivered=运行态已受理。
+                    _st = "synced" if name == "sync" else "delivered"
+                    for _r in _dl:
+                        if isinstance(_r, dict):
+                            _recips.append({"to": str(_r.get("to") or ""),
+                                            "msg_id": str(_r.get("msg_id") or ""),
+                                            "state": _st})
+                else:
+                    _recips.append({"to": str(_data.get("card_id") or ""),
+                                    "msg_id": str(_data.get("msg_id") or ""),
+                                    "state": "delivered" if _dl else "pending"})
+                if isinstance(_pd, list):
+                    for _r in _pd:
+                        if isinstance(_r, dict):
+                            _recips.append({"to": str(_r.get("to") or ""),
+                                            "msg_id": str(_r.get("msg_id") or ""),
+                                            "state": "pending"})
+                _ev["send"] = {"recipients": _recips}
             state.tool_events.append(_ev)
             # [思维链真实落地 2026-10-11] 板子事件 emit（对话流可见拆解上板/步进/收口）：
             # create_plan 成功→plan_created；step_complete 成功→step_advanced
@@ -1727,6 +2284,9 @@ async def run_seats(state: RunState) -> StepOutcome:
         prior_key="history", user_content=review_input,
         seat_identity=[seat_identity],
     )
+    # [2026-11-19 性能批次三] 留痕改为**真实**席位请求（带身份注入的那份）——
+    # 改前 state.vp_system_prompt 存的是回合开场的无身份渲染，不是席位实际收到的。
+    state.vp_system_prompt = seat_request["system_prompt"]
     ok_metas, state.viewpoints_meta = await simple_service.run_viewpoints(
         seat_request["system_prompt"],
         seat_request["user_prompt"],
@@ -1784,6 +2344,7 @@ async def run_seats(state: RunState) -> StepOutcome:
         work_id=state.work_id, card_id=state.card_id,
         caller=f"turn:{state.pair_id}:synthesize",
     )
+    state.turn_reasoning = result.get("reasoning_content") or ""
     tool_calls = _norm_tool_calls(result.get("tool_calls") or [])
     assistant_content = result.get("content") or ""
     if not tool_calls:
@@ -1918,32 +2479,54 @@ def compose_delivery(state: RunState) -> str:
     else:
         state.branch = "empty"
         delivered = ""
-    # [按回执交付 2026-11-19] 绑定动作的回合收口核对：用本回合**执行记录**
-    # （tool_events，模型正文不读）核对完成条件——要求工具中有成功回执才算
-    # 满足。无匹配 ⇒ 交付文本追加系统回执行（流式界面/最终回复/刷新后历史
-    # 用同一 verdict 数据源；会话块另带 receipt 结构化字段），模型自由正文
-    # 的完成声明与执行事实从此可区分。TOOL_RECEIPT_GATE=0 可关（四组对照
-    # A/B 组共用基线）。
+    # [按回执交付 2026-11-19 · 2026-11-20 返修] 绑定动作的回合收口核对：
+    # 用本回合**执行记录**（tool_events，模型正文不读）按**动作+目标**匹配
+    # 成功回执——要求发信时，改无关卡的成功回执满足不了任务核对（目标不符
+    # 同理）；正文措辞（引用「已完成」/否定表述）不再参与任何判定（词表已
+    # 退役）。无匹配 ⇒ 交付文本追加系统回执行（流式界面/最终回复/刷新后
+    # 历史用同一 verdict 数据源；会话块另带 receipt 结构化字段）。
+    # 已派发但结果待确认（send 摘要 delivered=false）时由系统结果的
+    # 「已写入，投递未确认（msg_id …）」呈现原记录，不判未完成、不重发。
+    # TOOL_RECEIPT_GATE=0 可关（四组对照 A/B 组共用基线）。
     state.receipt = tool_receipt.receipt_verdict(state)
     if (tool_receipt.receipt_gate_enabled()
             and state.receipt.get("bound") is not None
             and not state.receipt.get("satisfied")):
-        event_stream.emit(state.work_id, _sid(state), "action_not_executed", {
+        receipt_text = tool_receipt.receipt_line(state.receipt)
+        reports = state.receipt.get("reports", {})
+        receipt_data = {
             "bound": state.receipt.get("bound"),
             "detail": state.receipt.get("detail"),
             "dispatched": state.receipt.get("dispatched"),
             "ok": state.receipt.get("ok"),
+            "reports": reports,
+            "text": receipt_text.strip(),
+            "severity": "warn" if "unverified" in reports.values() else "fail",
             "rounds": state.rounds,
-        })
+        }
+        event_stream.emit(state.work_id, _sid(state), "action_not_executed", receipt_data)
         tool_receipt.ledger({
+            **receipt_data,
             "kind": "action_not_executed",
             "work_id": state.work_id, "card_id": state.card_id,
-            "pair_id": state.pair_id, "rounds": state.rounds,
-            "bound": state.receipt.get("bound"),
-            "detail": state.receipt.get("detail"),
+            "pair_id": state.pair_id,
         })
-        delivered = (delivered or "") + tool_receipt.receipt_line(state.receipt)
+        delivered = (delivered or "") + receipt_text
         state.branch = state.branch + "+receipt_gate"
+    # [系统结果 2026-11-19 · 2026-11-20 二次返修] 交付面追加由**执行事实**
+    # 生成的系统结果行：汇报唤醒回合与**指令回合**（含发信逐收件人状态——
+    # 落账未受理/缺锚待核实）都显示；普通 human 聊天回合不显示。模型正文
+    # 作为研判或草稿展示，正文写「三条已发」改变不了界面状态；零调用研判
+    # 正常交付（系统结果＝「本轮未执行工具」）。流式/最终回复/刷新后历史
+    # 同一来源：结构化 state.system_result 落会话块 receipt 字段（finish）。
+    if (tool_receipt.is_report_wake(state)
+            or str(getattr(state, "source_kind", "") or "") == "directive"
+            or state.receipt.get("reports")
+            or str(getattr(state, "op", "") or "")):
+        state.system_result = tool_receipt.system_result_of(state)
+        delivered = (delivered or "") + tool_receipt.result_line(
+            state.system_result)
+        state.branch = state.branch + "+system_result"
     logger.info(
         "[T14] 分析交付拼接 branch=%s 分析段数=%s 拼接后字节=%s 末轮字节=%s",
         state.branch, len(state.analysis_parts),
@@ -1953,7 +2536,10 @@ def compose_delivery(state: RunState) -> str:
     # [信息流 Task3] 交付拼接埋点（deliver 与 POST 一致性锚，V4）
     event_stream.emit(state.work_id, _sid(state), "deliver",
                       {"branch": state.branch,
-                       "bytes": len(delivered.encode("utf-8"))})
+                       "bytes": len(delivered.encode("utf-8")),
+                       # [系统结果 2026-11-19] 交付事件带执行事实摘要——
+                       # 流式面与最终回复同源核对。
+                       "system_result": (state.system_result or {}).get("text") or ""})
     return delivered
 
 
@@ -2052,6 +2638,14 @@ async def finish(state: RunState) -> dict[str, Any]:
         "model": state.model_used, "pair_id": state.pair_id,
         "end": state.end_reason or "model_done",
     }
+    # [异常正文隔离 2026-11-20 · 方案 §3] 本回合检出"调用写进正文未派发"
+    # ⇒ 回复块带结构化标记：原文原样落会话（界面/原始记录照查），供模型
+    # 使用的内容换成 quarantine_view（剥掉坏片段的残部＋宿主一行状态）。
+    # 历史投影/缓存板/凝练同口径消费 ctx_content——异常不进后续模型请求。
+    if state.anomaly_quarantine:
+        _reply_blk["quarantine"] = state.anomaly_quarantine
+        _reply_blk["ctx_content"] = text_tool_rescue.quarantine_view(
+            state.clean_text, has_dispatch=bool(state.tool_events))
     # [保留式思考跨轮回传 2026-11-10] kimi-k3.1-pro 文档口径：多轮对话必须把
     # API 返回的完整 assistant message（含 reasoning_content）原样回传。
     # 会话块是次回合历史的唯一载体——不落这里，投影层（context_regions:857）
@@ -2059,7 +2653,7 @@ async def finish(state: RunState) -> dict[str, Any]:
     # 不进档案）；登记过回传需求的端点才带（kind="" 的不引字段）。
     if state.turn_reasoning:
         _att, _rv = model_config.reasoning_echo_value(
-            state.model_used or "", state.model_requested or "",
+            state.model_used or "", "",
             state.turn_reasoning)
         if _att:
             _reply_blk["reasoning_content"] = _rv
@@ -2076,8 +2670,34 @@ async def finish(state: RunState) -> dict[str, Any]:
             "dispatched": int(state.receipt.get("dispatched") or 0),
             "ok": int(state.receipt.get("ok") or 0),
         }
+        if state.receipt.get("reports"):
+            _reply_blk["receipt"]["reports"] = state.receipt["reports"]
+    # [系统结果 2026-11-19 · 超长会话漏调专项] 汇报唤醒回合的执行事实随块
+    # 落盘（status＋逐项明细）——刷新后的历史、流式交付、最终回复同一来源；
+    # 模型正文里的「已发」字样只是正文，展示态以这个结构化字段为准。
+    if state.system_result:
+        _reply_blk["receipt"] = {
+            **(_reply_blk.get("receipt") or {}),
+            "result_status": str(state.system_result.get("status") or ""),
+            "result_text": str(state.system_result.get("text") or ""),
+            "result_items": list(state.system_result.get("items") or []),
+        }
     await session_facade.append(state.work_id, _sid(state), _reply_blk,
                                 emit_event=False)
+    # [系统结果独立事件 2026-11-20 · 用户复验] 汇报唤醒回合的执行事实单独
+    # 成事件——实时（SSE）与刷新（timeline from=0 重建）同一条渲染路都出
+    # **独立的系统结果行**，不再藏在 deliver 的"交付拼接"行里（用户实测：
+    # POST 回复与会话块有「本轮未执行工具」，卡片 timeline 正文却只有模型
+    # 自述）。事件带结构化明细；模型正文里的同名标记只是正文，展示态以
+    # 本事件＋会话块 receipt 为准。
+    if state.system_result:
+        event_stream.emit(state.work_id, _sid(state), "system_result", {
+            "status": str(state.system_result.get("status") or ""),
+            "text": str(state.system_result.get("text") or ""),
+            "items": list(state.system_result.get("items") or []),
+            "pair_id": str(state.pair_id or ""),
+            "rounds": state.rounds,
+        })
     logger.info("[T10] 回复落盘 pair_id=%s card=%s end=%s",
                 state.pair_id, state.card_id, state.end_reason or "model_done")
     # [手动停止板清理 2026-10-14] 中止态（human_stop/policy_stop）清理残留板：
@@ -2434,7 +3054,8 @@ async def deliver_now(work_id: str, card_id: str, *,
                       text: str = "",
                       steer_text: str = "",
                       source_kind: str = "internal",
-                      source: dict[str, Any] | None = None) -> bool:
+                      source: dict[str, Any] | None = None,
+                      msg_type: str = "") -> bool:
     """**立即**把该卡未处理的消息投递成一轮。返回是否真的送达（起轮或插话）。
 
     [发消息即唤醒 2026-10-22 · D20/D24/D25] 这是「通信」与「投递」的分界线：
@@ -2465,7 +3086,7 @@ async def deliver_now(work_id: str, card_id: str, *,
         _r = await _procs.forward_ctl(work_id, card_id, "/ctl/deliver", {
             "work_id": work_id, "card_id": card_id, "text": text,
             "steer_text": steer_text, "source_kind": source_kind,
-            "source": source})
+            "source": source, "msg_type": msg_type})
         return bool(_r.get("delivered"))
     # [增量投递 2026-10-23 · 用户令「读过的信息就从 box 里清掉」]
     # 用 **take_pending**（读 + 推水位同一事务）而不是 list_pending：投递即消费。
@@ -2493,6 +3114,31 @@ async def deliver_now(work_id: str, card_id: str, *,
             return False
     except Exception:  # noqa: BLE001 停止表读不出 ⇒ 不挡投递(旧行为)
         pass
+    # 回执在插话或起轮前先核对等待账。有效回执由目标驱动统一续跑，
+    # 被拦下的回执仍保存在会话历史。
+    if msg_type:
+        try:
+            from ..goal import wait_store as _ws
+            if msg_type in _ws.RECEIPT_TYPES:
+                _dec = await _ws.receipt_gate(work_id, card_id, receipt={
+                    "type": msg_type, "from": (source or {}).get("from"),
+                    "dispatch_task_id": (source or {}).get("dispatch_task_id")})
+                if _dec == "driver":
+                    from ..goal import driver as _gd
+                    _gd.request_drive(work_id, card_id)
+                    session_ops.ops_log(
+                        "receipt_wait_release", work_id, card_id,
+                        {"type": msg_type,
+                         "from": str((source or {}).get("from") or "")})
+                    return True
+                if _dec == "hold":
+                    session_ops.ops_log(
+                        "receipt_wait_hold", work_id, card_id,
+                        {"type": msg_type,
+                         "from": str((source or {}).get("from") or "")})
+                    return False
+        except Exception:  # noqa: BLE001 等待账读不出 ⇒ 照常投递，不挡主链
+            pass
     # [忙判定前置 2026-10-25] 收件卡在跑 ⇒ **先不取件**——改前 take_pending
     # (消费)在忙判定之前,B 忙时信被取走但投递 409 ⇒ 信既不在收件箱也不在
     # 任何人上下文。取走=承诺投递,投不出去就不该取;B 本轮收口的自查续轮
@@ -2513,7 +3159,8 @@ async def deliver_now(work_id: str, card_id: str, *,
                           if (source or {}).get("kind") == "card_msg"
                           else "" if (source or {}).get("kind") == "steer_remains"
                           else "系统消息："),
-                    emit_event=False)
+                    emit_event=False,
+                    report_targets=tool_receipt.report_targets_from_source(source_kind, source))
             except Exception as exc:  # noqa: BLE001 插话通道故障不升级（信在库）
                 logger.warning("[通信] 忙时插话失败 card=%s: %s", card_id, exc)
                 return False

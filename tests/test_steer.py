@@ -113,7 +113,7 @@ def test_apply_steer_inserts_into_slot():
     state.slot = _FakeSlot()
     # 队列存 mark+body 成品（request_steer 置位时拼好）；这里直种成品件。
     steer._pending[("work_steer4", "card_001")] = [
-        steer.STEER_MARK + "插话：改成先说结论"]
+        steer.SteerEntry(steer.STEER_MARK + "插话：改成先说结论")]
 
     n = message_runner._apply_steer(state)
     assert n == [steer.STEER_MARK + "插话：改成先说结论"]  # 返回被消费条目（mark+body 成品）
@@ -128,7 +128,7 @@ def test_apply_steer_round1_goes_to_steer_tail():
     state = message_runner.RunState(work_id="work_steer5", card_id="card_001", content="原始问题")
     state.rounds = 1
     state.slot = _FakeSlot()
-    steer._pending[("work_steer5", "card_001")] = ["首轮插话"]
+    steer._pending[("work_steer5", "card_001")] = [steer.SteerEntry("首轮插话")]
 
     assert message_runner._apply_steer(state) == ["首轮插话"]  # 返回被消费条目
     assert state.slot.messages == []          # 还没进槽
@@ -179,7 +179,7 @@ async def test_deliver_now_busy_steers_instead_of_dropping(monkeypatch):
 def test_discard_steer_returns_remains_for_rescue():
     """收口清扫把残留件**还给**调用方（摘牌后补投用），不是静默吞掉。"""
     work_id, card_id = "work_steer7", "card_001"
-    steer._pending[(work_id, card_id)] = ["〔用户插话〕来不及了"]
+    steer._pending[(work_id, card_id)] = [steer.SteerEntry("〔用户插话〕来不及了")]
     got = steer.discard_steer(work_id, card_id)
     assert got == ["〔用户插话〕来不及了"]
     assert steer.pending_steer(work_id, card_id) == 0
