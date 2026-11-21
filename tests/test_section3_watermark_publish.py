@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -200,6 +202,172 @@ async def test_partial_batches_keep_commit_and_debt(sandbox, monkeypatch):
     # 第二段仍在待凝位（seq>=1 可见）
     pending = memory_store._read_origin(wid, cid, _mark(wid, cid))
     assert any(int(b.get("seq") or 0) == 1 for b in pending)
+
+
+@pytest.mark.parametrize("board_enabled", [True, False])
+async def test_attached_session_request_uses_its_own_snapshot(sandbox, monkeypatch, board_enabled):
+    from src.api import routes
+
+    wid, main = await _mk()
+    attached = main + "__audit"
+    for session, marker in ((main, "MAIN"), (attached, "OTHER")):
+        await _append(wid, session, [marker + "__OLD__", marker + "__TAIL__"])
+        await memory_store.save_memory(wid, session, {
+            "mark": 1, "entries": [_node(0, marker + "__MEMORY__", [0])]})
+
+    monkeypatch.setenv("MOCK_LLM", "1")
+    monkeypatch.setattr(memory_store, "condense_enabled", lambda: True)
+    monkeypatch.setattr(context_board, "enabled", lambda: board_enabled)
+    requests = []
+
+    async def fake_model(*args, **kwargs):
+        requests.append(kwargs)
+        return {"content": "收到。", "tool_calls": []}, "audit"
+
+    monkeypatch.setattr(routes.model_service, "call_main", fake_model)
+    for session, present, absent in (("", "MAIN", "OTHER"), (attached, "OTHER", "MAIN")):
+        await routes._run_message_inner(wid, main, "CURRENT-USER", session_id=session)
+        request = requests[-1]
+        assert present + "__MEMORY__" in request["system_prompt"]
+        assert absent + "__MEMORY__" not in request["system_prompt"]
+        prior = str(request["prior_messages"])
+        assert present + "__TAIL__" in prior
+        assert absent + "__TAIL__" not in prior
+        assert present + "__OLD__" not in prior and "CURRENT-USER" not in prior
+        assert request["user_prompt"] == "CURRENT-USER"
+
+
+@pytest.mark.parametrize("changed", ["quarantine", "append"])
+async def test_publish_checks_only_the_consumed_origin_range(sandbox, monkeypatch, changed):
+    from tests._condense_stub import three_stage_stub
+
+    wid, cid = await _mk()
+    await _append(wid, cid, ["ORIGINAL-VIEW"])
+    reply = three_stage_stub(gist="结论来自发送的原文")
+    mutated = False
+
+    async def model(user, system, **kwargs):
+        nonlocal mutated
+        if not mutated:
+            mutated = True
+            if changed == "append":
+                await _append(wid, cid, ["NEW-TAIL"])
+            else:
+                card_db._write_sync(wid, lambda conn: conn.execute(
+                    "UPDATE session_blocks SET data=json_set(data, '$.quarantine', "
+                    "'pseudo_unparsed', '$.ctx_content', 'CLEAN-VIEW') WHERE card_id=? AND seq=0",
+                    (cid,)))
+        return await reply(user, system, **kwargs)
+
+    monkeypatch.setattr(memory_store, "_condense_call", model)
+    result = await memory_store._condense_one_batch(
+        wid, cid, memory_store._read_origin(wid, cid, 0), 0)
+    if changed == "append":
+        assert result["ok"] and _mark(wid, cid) == 1
+        assert memory_store._read_origin(wid, cid, 1)[0]["content"] == "NEW-TAIL"
+    else:
+        assert result["stage"] == "source_changed" and _mark(wid, cid) == 0
+        assert _entries_of(wid, cid) == []
+        assert memory_store._read_origin(wid, cid, 0)[0]["ctx_content"] == "CLEAN-VIEW"
+
+
+async def test_partial_giant_slice_is_retried_and_grouped_in_window_order(sandbox, monkeypatch):
+    from src.storage import condense_two_layer as tl
+    from tests._condense_stub import three_stage_stub
+
+    wid, cid = await _mk()
+    monkeypatch.setattr(memory_store, "window_budget_tokens", lambda: 4000)
+    await _append(wid, cid, ["巨" * 5002, "AFTER-GIANT"])
+    groups = []
+    l1_inputs = []
+    reply = three_stage_stub(gist="连续原文")
+
+    async def model(user, system, **kwargs):
+        if system == tl.S2A_PROMPT:
+            chunks = [part.split("\n", 1)[1].strip() for part in user.split("[idx ")[1:]]
+            groups.append(chunks)
+            end = 0 if len(groups) == 1 else len(chunks) - 1
+            return json.dumps({"groups": [{"end": end}]})
+        if system == tl.L1_PROMPT:
+            l1_inputs.append(user)
+        return await reply(user, system, **kwargs)
+
+    monkeypatch.setattr(memory_store, "_condense_call", model)
+    result = await memory_store._condense_one_batch(
+        wid, cid, memory_store._read_origin(wid, cid, 0), 0)
+    assert result["ok"] and _mark(wid, cid) == 2
+    assert len(groups[0]) == 2 and groups[1] == groups[0][1:]
+    assert any("巨" in prompt and "AFTER-GIANT" in prompt for prompt in l1_inputs)
+    assert {s for e in _entries_of(wid, cid) for s in e["coveredSeqs"]} == {0, 1}
+
+
+async def test_commit_failure_debt_survives_and_sweeper_retries_below_trigger(sandbox, monkeypatch):
+    from src.storage import condense_two_layer as tl
+    from tests._condense_stub import three_stage_stub
+
+    wid, cid = await _mk()
+    await _append(wid, cid, ["CONDENSE-ME"])
+    await memory_store.ensure_watermark(wid, cid)
+    monkeypatch.setattr(memory_store, "_condense_home", lambda: True)
+    monkeypatch.setattr(memory_store, "condense_enabled", lambda: True)
+    monkeypatch.setattr(memory_store, "trigger_k_tokens", lambda: 0)
+    clock = [time.time()]
+    monkeypatch.setattr(memory_store, "time", SimpleNamespace(time=lambda: clock[0]))
+    retry_inputs = []
+    reply = three_stage_stub(gist="重试结论")
+
+    async def model(user, system, **kwargs):
+        if system == tl.S2A_PROMPT:
+            retry_inputs.append(user)
+        return await reply(user, system, **kwargs)
+
+    monkeypatch.setattr(memory_store, "_condense_call", model)
+    sync = memory_store._sync_nodes_tx
+
+    def fail_index(*_args):
+        raise RuntimeError("注入：索引持续失败")
+
+    monkeypatch.setattr(memory_store, "_sync_nodes_tx", fail_index)
+    await memory_store.condense_turn_end(wid, cid)
+    state = memory_store.load_memory(wid, cid)
+    debt = state["condense_debt"]
+    assert state["mark"] == debt["committed_mark"] == 0
+    assert debt["stage"] == "commit" and state["entries"] == []
+
+    monkeypatch.setattr(memory_store, "trigger_k_tokens", lambda: 100000)
+    monkeypatch.setattr(memory_store, "_sync_nodes_tx", sync)
+    clock[0] = debt["next_retry_ts"] - 1
+    await memory_store.condense_sweep_once()
+    assert len(retry_inputs) == 1 and _mark(wid, cid) == 0
+    clock[0] += 2
+    await memory_store.condense_sweep_once()
+    settled = memory_store.load_memory(wid, cid)
+    assert len(retry_inputs) == 2 and "CONDENSE-ME" in retry_inputs[1]
+    assert settled["mark"] == 1 and "condense_debt" not in settled
+
+
+async def test_fold_old_snapshot_cannot_undo_explicit_revival(sandbox, monkeypatch):
+    wid, cid = await _mk()
+    await memory_store.save_memory(wid, cid, {
+        "mark": 0,
+        "entries": [_node(0, "沉底", [0], sunk=True),
+                    _node(1, "活跃甲", [1]), _node(2, "活跃乙", [2])],
+        "batch_count": memory_store.FOLD_EVERY_BATCHES, "archive_migrated": True,
+    })
+    called = []
+
+    async def model(*args, **kwargs):
+        assert md.revive_sunk(wid, cid, 0, now_ms=1700000000000)
+        called.append(True)
+        return {"content": "结论：无合并"}
+
+    monkeypatch.setattr(memory_store, "_fold_call", model)
+    await memory_store._maybe_fold(wid, cid)
+    current = memory_store.load_memory(wid, cid)
+    assert called
+    assert not current["entries"][0]["sunk"]
+    assert current["entries"][0]["lastUsedAt"] == 1700000000000
+    assert not current.get("last_fold_check")
 
 
 # ============================================================

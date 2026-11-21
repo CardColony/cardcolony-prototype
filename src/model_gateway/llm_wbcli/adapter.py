@@ -30,6 +30,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 from ..llm.errors import LlmError
 from ..llm.retry import ResolvedRetryPolicy
 from ..llm.runtime import LlmAdapter
+from ..llm.transport import record_dispatch
 from ..llm.types import (
     AbortedReason,
     ErrorReason,
@@ -182,6 +183,7 @@ class WbCliAdapter(LlmAdapter):
             try:
                 proc.stdin.write(prompt.encode("utf-8"))
                 await proc.stdin.drain()
+                record_dispatch(options, options.model, transport="cli")
             finally:
                 try:
                     proc.stdin.close()

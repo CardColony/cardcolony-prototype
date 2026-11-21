@@ -138,13 +138,31 @@ export function createAssembler() {
     return Number.isFinite(t) ? t : Infinity;
   }
 
+  /* ── 前插批次态（prepend 专属；null＝普通追加路径）─────────────────
+     普通路径语义「到达序＝真实时序」在前插下不成立：旧页记录**真实时序更早**
+     但到达更晚。批次里记：
+       created —— 本批新建的节点键（revoke 只罩这些，不碰已装窗口）；
+       texts   —— 前补文本缓冲（思考/席位思考按段序插到既有内容**之前**）；
+       segs    —— 前补贡献段缓冲（同上）。 */
+  let _pre = null;
+
   /** 把 node.key 按 tsKey 插进 order 的时隙（从尾向前找第一个 ≤ 它的位置）。
       无 ts 的节点锚定**当前尾部**（纯追加语义，保持服务端落盘序）——
-      乐观气泡因此锚在「现在」，而迟到的旧帧会插到它**前面**。 */
+      乐观气泡因此锚在「现在」，而迟到的旧帧会插到它**前面**。
+      前插批次改用「同 ts 插到既有之前」：旧页记录真实时序更早，
+      等时戳并列应落在已装节点前（与全量重建序一致）。 */
   function place(node) {
     let pk = tsKey(node);
     if (pk === Infinity) {
       pk = order.length ? tsKey(byKey.get(order[order.length - 1])) : 0;
+    }
+    if (_pre) {
+      /* [热路径·任务二收尾] 前插**延迟归并**：不再逐条 slice+concat
+         （那是 O(新增×已装) 的全量复制）。每条只记 {node,pk,tail,seq}=O(1)，
+         位置到 `_preFlush` 一次归并时才算——归并语义与旧逐条插入完全一致：
+         pk 小在前；同 pk 本批先于既有；批内同 pk 按到达序（seq 稳定）。 */
+      _pre.pending.push({ node, pk, seq: ++_pre.pseq });
+      return;
     }
     let i = order.length;
     while (i > 0 && tsKey(byKey.get(order[i - 1])) > pk) i--;
@@ -152,19 +170,83 @@ export function createAssembler() {
     structRev++;
   }
 
+  /** 把本批 pending 一次性归并进 order（单次 O(已装+新增) 通道）。
+      任何对 order 的**结构性读取**（按位置扫描/截取/过滤）都要先 flush——
+      读侧在函数入口调它，批内新节点对配对/撤销/兜底逻辑保持可见。 */
+  function _preFlush() {
+    if (!_pre || !_pre.pending.length) return;
+    const pend = _pre.pending;
+    pend.sort((a, b) => (a.pk - b.pk) || (a.seq - b.seq));
+    _pre.copied = (_pre.copied || 0) + order.length + pend.length;
+    /* 快路径：整批都早于已装首节点 ⇒ 直接前拼，免逐元素比对。 */
+    if (!order.length || pend[pend.length - 1].pk < tsKey(byKey.get(order[0]))) {
+      order = pend.map((p) => p.node.key).concat(order);
+      _pre.pending = [];
+      structRev++;
+      return;
+    }
+    const merged = new Array(order.length + pend.length);
+    let pi = 0, oi = 0, mi = 0;
+    while (pi < pend.length || oi < order.length) {
+      if (oi >= order.length) { merged[mi++] = pend[pi++].node.key; continue; }
+      if (pi >= pend.length) { merged[mi++] = order[oi++]; continue; }
+      const p = pend[pi];
+      _pre.scanned++;
+      const ct = tsKey(byKey.get(order[oi]));
+      /* 同 pk：批内新节点插到「非本批」既有之前、本批已归并者之后——
+         与原逐条插入的 created 判据等价（中途 flush 过后次序仍不倒插）。 */
+      if (p.pk < ct || (p.pk === ct && !_pre.created.has(order[oi]))) {
+        merged[mi++] = p.node.key; pi++;
+      } else merged[mi++] = order[oi++];
+    }
+    /* 批内已被撤下的 pending（purgeFrom 先 flush 后删，正常到不了这；
+       byKey 复核兜底防 re-key/删除残留把死键归并回去）。 */
+    order = merged.filter((k) => byKey.has(k));
+    _pre.pending = [];
+    structRev++;
+  }
+
+  /** 归并通道搬移量（验收对账）：copied = 引用搬移的元素数，每次 flush 一次累加。 */
+
   function push(node) {
     node.ord = ++ord;
     node.rev = 1;
     byKey.set(node.key, node);
+    if (_pre) _pre.created.add(node.key);
     place(node);
     return node;
+  }
+
+  /** 文本累加：追加路径照旧 ``obj[field] += text``；前插批次入缓冲，
+      批次尾统一「批文本 + 既有」前补（段序保持，不会倒插）。 */
+  function _accText(obj, field, text) {
+    if (!text) return;
+    if (_pre) {
+      let rec = _pre.texts.get(obj);
+      if (!rec) { rec = {}; _pre.texts.set(obj, rec); }
+      (rec[field] = rec[field] || []).push(text);
+    } else {
+      obj[field] = (obj[field] || "") + text;
+    }
+  }
+
+  /** 贡献段累加：同 _accText 的前补语义。 */
+  function _accSegs(node, seg) {
+    if (!seg) return;
+    if (_pre) {
+      let arr = _pre.segs.get(node);
+      if (!arr) { arr = []; _pre.segs.set(node, arr); }
+      arr.push(seg);
+    } else {
+      (node._reasoningSegs = node._reasoningSegs || []).push(seg);
+    }
   }
 
   /** 取/建**本 run+round 的流式 assistant 节点**（键 `stream:{run}:{round}`）。
       [5702 · C-1] 正文与思考都走这里：dsh 的 assistant-step 以 step 为节点，
       「只有思考、没有正文」的 step 也算可见内容（assistant.ts hasVisibleContent）。
       若只在 content_chunk 建节点，思考-only 的轮会把思考并到下一轮（实测踩到）。 */
-  function streamNode(runId, roundNo, seq, ns, model) {
+  function streamNode(runId, roundNo, seq, ns, model, ts) {
     const skey = "stream:" + (runId || "?") + ":" + toInt(roundNo, 0);
     let node = byKey.get(skey);
     if (node) {
@@ -178,15 +260,20 @@ export function createAssembler() {
       data: { content: "", text: "" },
       model: model || "",
       key: skey, rev: 1, ord: ++ord, streaming: true,
+      /* [前插] 节点带上记录 ts——无 ts 会按「锚定尾部」落到已装窗口之后，
+         旧页思考/正文就插错位置了。 */
+      ts: String(ts || ""),
     };
     /* [5715] 落盘历史里先到的思考随节点归位（不丢）：只取**同 (run, round)** 那一桶。 */
     const bkey = bucketKey(runId, roundNo);
     const bkt = pendingBuckets.get(bkey);
     if (bkt) {
       node.reasoning = bkt.text;
+      _absorbReasoningSegs(node, bkt.segs);
       pendingBuckets.delete(bkey);
     }
     byKey.set(skey, node);
+    if (_pre) _pre.created.add(node.key);
     place(node);
     return node;
   }
@@ -204,32 +291,31 @@ export function createAssembler() {
    *
    *  口径缺失（老数据没有 run_id 或 round）时退回「同 run 最近一条」，保持既有行为。 */
   function lastAssistant(runId, round) {
+    /* [热路径] 不 flush：order 里的节点都比 pending 新——倒扫 order 优先；
+       未命中再倒扫 pending（同页先于本记录的轮首节点要能命中）。 */
     const hasRound = round !== undefined && round !== null && round !== "";
-    for (let i = order.length - 1; i >= 0; i--) {
-      const n = byKey.get(order[i]);
-      if (!n || n.kind !== "assistant") continue;
-      if (runId && n.run_id && n.run_id !== runId) continue;   // 跨 run 不认
+    const match = (n) => {
+      if (!n || n.kind !== "assistant") return false;
+      if (runId && n.run_id && n.run_id !== runId) return false;
       if (hasRound && n.round !== undefined && n.round !== null && n.round !== ""
-          && Number(n.round) === Number(round)) {
-        return n;                                            // 同 run 同 round：精确命中
-      }
-      if (runId && n.run_id === runId && !hasRound) return n; // 老数据：无 round ⇒ 退回
-    }
+          && Number(n.round) === Number(round)) return true;
+      return !!(runId && n.run_id === runId && !hasRound);
+    };
+    for (let i = order.length - 1; i >= 0; i--) if (match(byKey.get(order[i]))) return byKey.get(order[i]);
+    if (_pre) for (let i = _pre.pending.length - 1; i >= 0; i--) if (match(_pre.pending[i].node)) return _pre.pending[i].node;
     return null;
   }
 
   /** 同 run 的 seats 节点（三席席卡；懒建）。 */
   function seatsOf(runId, rec) {
-    if (runId) {
-      for (let i = order.length - 1; i >= 0; i--) {
-        const n = byKey.get(order[i]);
-        if (n && n.kind === "seats" && String(n.run_id || "") === runId) return n;
-      }
-    } else {
-      for (let i = order.length - 1; i >= 0; i--) {
-        const n = byKey.get(order[i]);
-        if (n && n.kind === "seats") return n;
-      }
+    const match = (n) => n && n.kind === "seats" &&
+      (!runId || String(n.run_id || "") === runId);
+    for (let i = order.length - 1; i >= 0; i--) {
+      const n = byKey.get(order[i]);
+      if (match(n)) return n;
+    }
+    if (_pre) for (let i = _pre.pending.length - 1; i >= 0; i--) {
+      if (match(_pre.pending[i].node)) return _pre.pending[i].node;
     }
     const seq = toInt(rec.seq, 0);
     const ns = rec.ns || "disk";
@@ -238,6 +324,7 @@ export function createAssembler() {
       data: rec.data || {}, model: modelOf(rec, rec.data),
       members: {}, entered: false,
       key: keyOf(ns, seq, "seats"),
+      ts: String(rec.ts || ""),             // [前插] 同 streamNode：带 ts 落位
     });
   }
 
@@ -248,20 +335,28 @@ export function createAssembler() {
     return seats.members[key];
   }
 
-  function appendReasoning(text, runId, round) {
+  /* [窄投影·修 2026-11-21] ``_reasoningSegs`` 记**全部**贡献段
+     ``{seq, text, brief}``（按到达序）：brief 段展开时按 seq 回取全文后
+     **按段序重拼**——不能用字符串替换（两段预览相同会拼错位置）；
+     撤销段由详情回包的 ``revoked`` 标出、换占位标记，不再留旧预览冒充全文。 */
+  function appendReasoning(text, runId, round, seg) {
     if (!text) return;
     const target = lastAssistant(runId, round);
     if (target) {
-      target.reasoning = (target.reasoning || "") + text;
+      _accText(target, "reasoning", text);
+      _accSegs(target, seg);
       target.rev++;
     } else {
       /* [5715] 按 (run, round) 分桶暂存：归位时只允许**同 run 同轮** 的 assistant
          吸收（原来是一个字符串 ⇒ 轮 1 的思考被轮 2 的回复吸收，跨轮串）。 */
       const key = bucketKey(runId, round);
       const cur = pendingBuckets.get(key);
+      const segs = (cur && cur.segs) || [];
+      if (seg) segs.push(seg);
       pendingBuckets.set(key, {
         text: (cur ? cur.text : "") + text,
         ord: cur ? cur.ord : (ord + 1),
+        segs,
       });
     }
   }
@@ -272,12 +367,20 @@ export function createAssembler() {
     return String(runId || "") + "|" + r;
   }
 
+  /** [窄投影] 桶里暂存的贡献段归位到节点（保持到达序）。 */
+  function _absorbReasoningSegs(node, segs) {
+    if (!segs || !segs.length) return;
+    const list = (node._reasoningSegs = node._reasoningSegs || []);
+    for (const s of segs) list.push(s);
+  }
+
   /** 该轮收口：思考若始终无人认领，落一条兜底节点（不丢文本）。**每个残余桶一条**。
       [2026-11-09 · 用户令「全部按时间」] 兜底节点挂**当前尾部节点的 ts**——
       它的真实时间就是「收口时被发现」这一刻，按 tsKey 自然落在收口处，
       不再用旧的 ord 插队语义（resort 随此退役）。 */
   function flushPendingReasoning(runId, round) {
     if (!pendingBuckets.size) return;
+    /* 不 flush：pending 只会前插，尾部仍是 order 尾——兜底锚点不受影响。 */
     const tailKey = order[order.length - 1];
     const tail = tailKey ? byKey.get(tailKey) : null;
     const seq = tail ? tail.seq : 0;
@@ -291,7 +394,12 @@ export function createAssembler() {
         ord: b.ord,
         ts: (tail && tail.ts) || "",
       };
-      if (!byKey.has(node.key)) { byKey.set(node.key, node); place(node); }
+      _absorbReasoningSegs(node, b.segs);
+      if (!byKey.has(node.key)) {
+        byKey.set(node.key, node);
+        if (_pre) _pre.created.add(node.key);
+        place(node);
+      }
     }
     pendingBuckets = new Map();
   }
@@ -300,12 +408,22 @@ export function createAssembler() {
    *  [5715] 限定**同一个 run**（原来不限 ⇒ 后一个 run 的 result 配到前一个 run 的
    *  call 上 ⇒ 工具与内容张冠李戴，刷新后读不出「谁调了什么、结果是什么」）。 */
   function toolTargetOf(d, runId) {
+    /* [热路径] 不 flush：pending 批内节点（本页已装、位次未定）同样可配对——
+       按「时序更早」语义它们只可能是候选中的次选，order 扫描优先，
+       未命中再倒扫 pending（数组小、O(页内) 不 O(历史)）。 */
     const id = d && (d.tool_call_id || d.call_id);
+    const pend = _pre && _pre.pending;
     if (id) {
       for (let i = order.length - 1; i >= 0; i--) {
         const n = byKey.get(order[i]);
         if (!n || n.kind !== "tool" || !n.call) continue;
         if (runId && n.run_id && n.run_id !== runId) continue;   // 跨 run 不认
+        if ((n.call.tool_call_id || n.call.call_id) === id) return n;
+      }
+      if (pend) for (let i = pend.length - 1; i >= 0; i--) {
+        const n = pend[i].node;
+        if (!n || n.kind !== "tool" || !n.call) continue;
+        if (runId && n.run_id && n.run_id !== runId) continue;
         if ((n.call.tool_call_id || n.call.call_id) === id) return n;
       }
     }
@@ -315,17 +433,74 @@ export function createAssembler() {
       if (runId && n.run_id && n.run_id !== runId) continue;   // 跨 run 不认
       return n;
     }
+    if (pend) for (let i = pend.length - 1; i >= 0; i--) {
+      const n = pend[i].node;
+      if (!n || n.kind !== "tool" || n.closed) continue;
+      if (runId && n.run_id && n.run_id !== runId) continue;
+      return n;
+    }
     return null;
   }
 
-  /** 软删：revoke{from_seq:F} 撤下此刻已装配的 seq>=F 节点。 */
+  /** 前插反向配对：结果在已装窗口（``call===null`` 的孤儿行）而调用在旧页
+      ⇒ 按 tool_call_id 精确找该行；缺 call_id 的旧记录按全量重建的对偶语义
+      兜底——重建是「结果配最近未闭合的前置调用」，前插即「调用配 seq 紧随其后的
+      首个未认领孤儿结果」（孤儿被认领后 call 非空，自然不再二次命中）。 */
+  function _preResultTarget(d, runId, seq) {
+    /* [热路径] 不 flush：孤儿结果在 pending 里同样要被调用认领——
+       pending 位次全部先于 order，先扫 pending 再扫 order 保「首个 seq>call」序。 */
+    const id = d && (d.tool_call_id || d.call_id);
+    if (_pre) {
+      let best = null;
+      for (const p of _pre.pending) {
+        const n = p.node;
+        if (!n || n.kind !== "tool" || n.call || !n.result) continue;
+        if (runId && n.run_id && n.run_id !== runId) continue;
+        if (id) {
+          if ((n.result.tool_call_id || n.result.call_id) === id) return n;
+        } else if (toInt(n.seq, 0) > seq &&
+                   (!best || p.pk < best.pk || (p.pk === best.pk && p.seq < best.seq))) {
+          best = p;                                  // 位次最前的候选孤儿
+        }
+      }
+      if (best) return best.node;
+    }
+    for (let i = 0; i < order.length; i++) {
+      const n = byKey.get(order[i]);
+      if (!n || n.kind !== "tool" || n.call || !n.result) continue;
+      if (runId && n.run_id && n.run_id !== runId) continue;
+      if (id) {
+        if ((n.result.tool_call_id || n.result.call_id) === id) return n;
+      } else if (toInt(n.seq, 0) > seq) return n;
+    }
+    return null;
+  }
+
+  /** 软删：revoke{from_seq:F} 撤下此刻已装配的 seq>=F 节点。
+      前插批次域收窄到**本批新建**：revoke 落在旧页时，它发生时点上
+      已装窗口的记录尚未写入（seq 全在它之后）——绝不可一并罩掉。 */
   function purgeFrom(fromSeq) {
-    const keepKeys = order.filter((k) => toInt(byKey.get(k).seq, 0) < fromSeq);
+    /* [热路径] 不 flush：pending 里本批新建且 seq>=F 的节点同样罩掉——
+       从 pending 账和 byKey 双删，归并时不再出现。 */
+    if (_pre && _pre.pending.length) {
+      _pre.pending = _pre.pending.filter((p) => {
+        if (toInt(p.node.seq, 0) < fromSeq || !_pre.created.has(p.node.key)) return true;
+        byKey.delete(p.node.key);
+        _pre.created.delete(p.node.key);
+        return false;
+      });
+    }
+    const keepKeys = order.filter((k) => {
+      const n = byKey.get(k);
+      if (toInt(n.seq, 0) < fromSeq) return true;
+      return _pre ? !_pre.created.has(k) : false;
+    });
     if (keepKeys.length === order.length) return;
     const keep = new Set(keepKeys);
     for (const k of Array.from(byKey.keys())) if (!keep.has(k)) byKey.delete(k);
     order = keepKeys;
     pendingBuckets = new Map();
+    if (_pre) { _pre.frontier = null; _pre.lastPk = -Infinity; }  // order 变了，游标作废
     structRev++;
   }
 
@@ -370,7 +545,7 @@ export function createAssembler() {
     if (type === "content_chunk") {
       const text = String(data.text || "");
       if (!text) return null;
-      const node = streamNode(runId, toInt(rec.round, 0), seq, ns, modelOf(rec, data));
+      const node = streamNode(runId, toInt(rec.round, 0), seq, ns, modelOf(rec, data), rec.ts);
       node.data.text = String(node.data.text || "") + text;
       return node;
     }
@@ -379,6 +554,9 @@ export function createAssembler() {
     const base = {
       seq, ns, type, kind, round: toInt(rec.round, 0), run_id: runId,
       data, model: modelOf(rec, data), key: keyOf(ns, seq, kind),
+      /* [窄投影 2026-11-21 · 性能批次二] brief 记录 → 节点带契约位：
+         渲染层据此在「点开详情」时按 seq 回取原文（timeline/event）。 */
+      _brief: !!rec._brief,
       /* [对话界面商业化 2026-10-17] 事件时间随节点走：落盘记录带 ts（ISO），
          实时帧带 ts（秒 float，已由 frameToRecord 归一）。旧记录无 ts ⇒ 空串，
          渲染层按「有则显示」处理，不做任何猜测性补值。 */
@@ -437,27 +615,38 @@ export function createAssembler() {
         const node = push(Object.assign({}, base));
         const bkey = bucketKey(node.run_id || runId, node.round);
         const bkt = pendingBuckets.get(bkey);
-        if (bkt) { node.reasoning = bkt.text; node.rev++; pendingBuckets.delete(bkey); }
+        if (bkt) {
+          node.reasoning = bkt.text;
+          _absorbReasoningSegs(node, bkt.segs);
+          node.rev++;
+          pendingBuckets.delete(bkey);
+        }
         return node;
       }
       if (kind === "user") {
         // 轮界：上一轮的兜底思考先落位
         flushPendingReasoning();
         // 乐观上屏的 pending 节点：真实 user_message 到达 ⇒ 原地升级（不出双气泡）
-        for (let i = order.length - 1; i >= 0; i--) {
-          const n = byKey.get(order[i]);
-          if (!n || n.kind !== "user" || !n.pending) continue;
-          if (!sameText(n.data && n.data.content, data && data.content)) break;
-          n.pending = false;
-          n.seq = seq;
-          n.ns = ns;
-          n.data = data;
-          n.type = type;
-          n.run_id = runId || n.run_id;
-          if (rec.ts) n.ts = String(rec.ts);
-          n.rev++;
-          return n;
-        }
+        const _pendScan = (arr, get) => {
+          for (let i = arr.length - 1; i >= 0; i--) {
+            const n = get(arr[i]);
+            if (!n || n.kind !== "user" || !n.pending) continue;
+            if (!sameText(n.data && n.data.content, data && data.content)) break;
+            n.pending = false;
+            n.seq = seq;
+            n.ns = ns;
+            n.data = data;
+            n.type = type;
+            n.run_id = runId || n.run_id;
+            if (rec.ts) n.ts = String(rec.ts);
+            n.rev++;
+            return n;
+          }
+          return null;
+        };
+        const up = _pendScan(order, (k) => byKey.get(k))
+          || (_pre && _pendScan(_pre.pending, (p) => p.node));
+        if (up) return up;
       }
       /* [5702 · C-1] 落盘 assistant_text 的**就地定稿**已并入上面那段
          （[5715] disk 与 live 同键、同定稿语义）；此处保留 push 路径，
@@ -478,6 +667,7 @@ export function createAssembler() {
         const bkt = pendingBuckets.get(bkey);
         if (bkt) {
           node.reasoning = bkt.text;
+          _absorbReasoningSegs(node, bkt.segs);
           node.rev++;
           pendingBuckets.delete(bkey);
         }
@@ -488,6 +678,30 @@ export function createAssembler() {
     if (kind === "tool") {
       const merge = REGISTRY[type].merge;
       if (merge === "call") {
+        /* [前插·跨页配对] 调用在旧页、结果已在已装窗口 ⇒ 孤儿行被认领。
+           与全量重建**同形态**：节点键/seq/ts 换调用的（重建时节点生在调用处），
+           行从结果处拔起按调用 ts 重落位——顺序、节点数、详情键三者对齐重建。 */
+        if (_pre) {
+          const hit = _preResultTarget(data, runId, seq);
+          if (hit) {
+            byKey.delete(hit.key);
+            order = order.filter((k) => k !== hit.key);
+            _pre.pending = _pre.pending.filter((p) => p.node !== hit);
+            hit.key = base.key;                    // keyOf(ns, 调用seq, "tool")
+            hit.seq = seq;
+            hit.ts = String(rec.ts || "");
+            /* 字段级对齐重建：节点身份字段取自调用记录（ns/run/round/model/
+               _brief），data/type/result/closed/_result* 已是结果侧原样。 */
+            hit.ns = ns; hit.run_id = runId; hit.round = base.round;
+            hit.model = base.model; hit._brief = base._brief;
+            hit.call = data;
+            hit.rev++;
+            byKey.set(hit.key, hit);
+            _pre.created.add(hit.key);             // 新键 ⇒ added（旧键随 order 差集卸载）
+            place(hit);
+            return hit;
+          }
+        }
         return push(Object.assign({}, base, { call: data, result: null, closed: false }));
       }
       const target = toolTargetOf(data, runId);
@@ -496,10 +710,18 @@ export function createAssembler() {
         target.closed = true;
         target.type = "tool_result";
         target.data = data;
+        /* [窄投影] result 字段被预览化时记下取回键——展开时按它补全文。 */
+        target._resultSeq = seq;
+        target._resultBrief = !!rec._brief;
         target.rev++;
         return target;
       }
-      return push(Object.assign({}, base, { call: null, result: data, closed: true }));
+      /* 孤儿结果（调用未装/不在本批）：详情回取键现在就带上——旧页调用随后
+         前插认领时只换位置和 call 字段，_resultSeq/_resultBrief 不再丢。 */
+      return push(Object.assign({}, base, {
+        call: null, result: data, closed: true,
+        _resultSeq: seq, _resultBrief: !!rec._brief,
+      }));
     }
 
     if (kind === "seats") {
@@ -529,7 +751,7 @@ export function createAssembler() {
       if (model) {                              // 三席思考 → 席卡
         const node = seatsOf(runId, rec);
         const m = memberOf(node, model);
-        if (m) { m.thinking += text; node.rev++; }
+        if (m) { _accText(m, "thinking", text); node.rev++; }
         return node;
       }
       /* [5702 · C-1] 主模型思考：**每 run+round 一个节点**（思考-only 的轮也建），
@@ -542,21 +764,79 @@ export function createAssembler() {
            · 该轮后续的 assistant_text 事件**定稿**同一个节点（内容更新、位置不变）。
          老数据（round 缺失/为 0，多轮挤同一键）仍走 pending 兜底，不回归。 */
       const roundNo = toInt(rec.round, 0);
+      /* [窄投影·修] 记**全部**贡献段（{seq, text, brief}，到达序）：展开时
+         brief 段按 seq 取回原文、按段序重拼（两段预览相同也不会拼错位）。 */
+      const trackSeg = (n) => {
+        _accSegs(n, { seq, text, brief: !!rec._brief });
+      };
       if (ns === "live" || roundNo > 0) {
-        const sn = streamNode(runId, roundNo, seq, ns, modelOf(rec, data));
-        sn.reasoning = (sn.reasoning || "") + text;
+        const sn = streamNode(runId, roundNo, seq, ns, modelOf(rec, data), rec.ts);
+        _accText(sn, "reasoning", text);
+        trackSeg(sn);
         sn.rev++;
         return sn;
       }
       const sn = byKey.get("stream:" + (runId || "?") + ":" + toInt(rec.round, 0));
-      if (sn) { sn.reasoning = (sn.reasoning || "") + text; sn.rev++; return sn; }
-      appendReasoning(text, runId, toInt(rec.round, 0));  // 落盘历史：并入**同 run 同轮**的 assistant
+      if (sn) {
+        _accText(sn, "reasoning", text);
+        trackSeg(sn);
+        sn.rev++;
+        return sn;
+      }
+      appendReasoning(text, runId, toInt(rec.round, 0),
+        { seq, text, brief: !!rec._brief });  // 落盘历史：并入**同 run 同轮**的 assistant
       return null;
     }
 
     const node = push(Object.assign({}, base)); // chain / sys / injection
     if (type === "done" || type === "error") flushPendingReasoning(runId, toInt(rec.round, 0));
     return node;
+  }
+
+  /* ── 前插增量装配（2026-11-22 · 性能批次二·任务二）────────────────
+     上翻取回的**旧页**记录走这里：不重装全窗口，只 apply 本批记录——
+       · 新建节点按 ts 落位（同 ts 插到既有之前）；
+       · 命中既有节点的合并（工具配对/round_start 合流/思考归位）记 touched；
+       · 思考与席位思考**前补**（段序保持：批内按序，批先于已装）；
+       · 本批内的 revoke 只罩本批新建（时点语义，不碰已装窗口）；
+       · 重复记录由 seen 去重（页界重叠安全）。
+     返回 {added:[新键], touched:[被改的既有键], records} 供渲染层只挂新行。 */
+  function prepend(items) {
+    const list = Array.isArray(items) ? items : [];
+    if (!list.length) return { added: [], touched: [], records: 0 };
+    _pre = { created: new Set(), texts: new Map(), segs: new Map(),
+             pending: [], pseq: 0, scanned: 0 };
+    const touched = new Set();
+    const t0 = (typeof performance !== "undefined") ? performance.now() : 0;
+    try {
+      for (const rec of list) {
+        const n = applyRecord(rec);
+        if (n && n.key && !_pre.created.has(n.key)) touched.add(n.key);
+      }
+    } finally {
+      /* 前补文本落账：批内顺序 join + 既有内容在后（段序保持）。
+         对象字段级记账（node.reasoning / member.thinking 同器）。 */
+      for (const [obj, rec] of _pre.texts) {
+        for (const f of Object.keys(rec)) {
+          obj[f] = rec[f].join("") + String(obj[f] || "");
+        }
+      }
+      for (const [node, arr] of _pre.segs) {
+        node._reasoningSegs = arr.concat(node._reasoningSegs || []);
+      }
+      _preFlush();                     // 收尾归并：pending 一次性落 order
+      const batch = _pre;
+      _pre = null;
+      structRev++;                     // touched 也要让快照缓存失效
+      return {
+        added: order.filter((k) => batch.created.has(k)),
+        touched: Array.from(touched),
+        records: list.length,
+        scanned: batch.scanned,            // 归并通道的实际比对步数（热路径对账）
+        copied: batch.copied || 0,           // 引用搬移量（验收对账：单次数组通道）
+        ms: (typeof performance !== "undefined") ? performance.now() - t0 : 0,
+      };
+    }
   }
 
   function rebuild(items) {
@@ -576,6 +856,7 @@ export function createAssembler() {
   /** 丢弃全部**未被认领**的本地节点（乐观上屏的临时气泡）——发送失败时回退用。
       已被真实 run 认领的节点属正式轮，绝不误伤。 */
   function dropLocal() {
+    if (_pre) _preFlush();
     const keepKeys = order.filter((k) => {
       const n = byKey.get(k);
       if (String(n.ns || "") !== "local") return true;
@@ -592,11 +873,12 @@ export function createAssembler() {
 
   /** 快照：结构未变 ⇒ 返回**同一引用**（渲染层据此零重排）。 */
   function snapshot() {
+    if (_pre) _preFlush();                      // 批中快照必须含已归并的 pending
     if (snapCache && snapCacheRev === structRev) return snapCache;
     snapCache = { order, nodes: byKey, rev: structRev };
     snapCacheRev = structRev;
     return snapCache;
   }
 
-  return { applyRecord, rebuild, snapshot, dropLocal };
+  return { applyRecord, rebuild, prepend, snapshot, dropLocal };
 }

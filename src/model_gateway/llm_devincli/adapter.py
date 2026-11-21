@@ -40,6 +40,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 from ..llm.errors import LlmError
 from ..llm.retry import ResolvedRetryPolicy
 from ..llm.runtime import LlmAdapter
+from ..llm.transport import record_dispatch
 from ..llm.types import (
     AbortedReason,
     BlockEnd,
@@ -242,6 +243,7 @@ class DevinCliAdapter(LlmAdapter):
             logger.info("[devincli] 起进程 model=%s cwd=%s", options.model, cwd)
 
             proc = await spawn(argv, env, cwd)
+            record_dispatch(options, options.model, transport="cli")
             # stdout/stderr 先挂 drain——poll wait 期间缓冲不会堵死。
             stdout_task = asyncio.create_task(proc.stdout.read())
             stderr_task = asyncio.create_task(proc.stderr.read())

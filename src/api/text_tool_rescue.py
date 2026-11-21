@@ -323,6 +323,32 @@ _JSON_REGION_END = {
 }
 _REFERENCE = r"```.*?(?:```|\Z)|^[ \t]*>[^\n]*"
 _INLINE_REFERENCE = r"`[^`\r\n]+`"
+# ---------------------------------------------------------------------------
+# [异常正文跨度 2026-11-20 · card_007/card_648 实录] 供方协议残片——不是
+# 调用、不是正文，但会触发「未知标签对」兜底把整跳误判成伪调用未派发：
+#   · <ds_safety>…</ds_safety> 整段（含内部安全判定正文）——card_007 23:00/
+#     23:07 两跳实录，判成 pseudo_call_unparsed 还引来重发提醒；
+#   · CDATAEND> 残片——与 ds_safety 区块相邻出现，独立出现同处理；
+#   · <｜begin▁of▁sentence｜> 起始标记——card_648 23:11 实录（BOS 泄漏
+#     进正文，后面跟着真调用同跳）。
+# 判定只用可证明的跨度：块有结构边界（开闭标签），标记是确定 token 本身。
+# 围栏/引用里的同形文本仍是引用身份——区表顺序保证先判引用区。
+# ---------------------------------------------------------------------------
+_ANOMALY_OPEN = r"<\s*ds_safety\s*>"
+# 引用里的标签不参与配对。遇到下一个裸开标签时，前块只留下开头残片。
+_ANOMALY_EDGE = re.compile(
+    rf"{_REFERENCE}|{_INLINE_REFERENCE}"
+    r'|"(?:\\[^\r\n]|[^"\\\r\n])*"'
+    r"|(?<![A-Za-z0-9_])'(?:\\[^\r\n]|[^'\\\r\n])*'"
+    r"|“[^”\r\n]*”|‘[^’\r\n]*’|「[^」\r\n]*」|『[^』\r\n]*』"
+    rf"|(?P<open>{_ANOMALY_OPEN})"
+    r"|(?P<close></\s*ds_safety\s*>)",
+    re.IGNORECASE | re.DOTALL | re.MULTILINE)
+_CDATAEND = r"CDATAEND>"
+_ANOMALY_LINE_END = r"(?=[ \t]*\r?$)"
+_ANOMALY_SUFFIX = re.compile(
+    rf"[ \t]*{_CDATAEND}{_ANOMALY_LINE_END}", re.IGNORECASE | re.MULTILINE)
+_BOS_TOKEN = r"<[｜|]\s*begin[▁_\s]*of[▁_\s]*sentence\s*[｜|]>"
 _CONTEXT_REGION = re.compile(
     rf"(?P<reference>{_REFERENCE})"
     rf"|(?P<inline>{_INLINE_REFERENCE})"
@@ -332,7 +358,10 @@ _CONTEXT_REGION = re.compile(
     r"|(?P<reportshell><\s*function_calls\s*>)"
     r"|(?P<legacy><tool_call>\s*(?=\{))"
     rf"|(?P<cjk_call>{_G_CALL_OPEN})"
-    rf"|(?P<invoke>{_H_INVOKE_OPEN})",
+    rf"|(?P<invoke>{_H_INVOKE_OPEN})"
+    rf"|(?P<anomaly_open>^[ \t]*(?P<anomaly_start>(?:{_CDATAEND}[ \t]*)?{_ANOMALY_OPEN}))"
+    rf"|(?P<anomaly_cdata>^[ \t]*(?P<cdata_start>{_CDATAEND}){_ANOMALY_LINE_END})"
+    rf"|(?P<anomaly_bos>{_BOS_TOKEN})",
     re.IGNORECASE | re.DOTALL | re.MULTILINE)
 _XML_EDGES = {
     tag: re.compile(
@@ -375,13 +404,17 @@ def _cjk_call_region(content: str, start: int) -> tuple[int, dict | None]:
     return (close.end() if close else len(content)), None
 
 
-def _context_regions(content: str):
+def _context_regions(content: str, *, scan_anomalies: bool = True):
     """按原文位置枚举引用区、结果区、报告壳和需按整段处理的调用块。"""
     cursor = 0
     while match := _CONTEXT_REGION.search(content, cursor):
         kind = match.lastgroup
+        start = match.start()
         end = match.end()
         payload = None
+        if not scan_anomalies and kind.startswith("anomaly_"):
+            cursor = end
+            continue
         if kind == "result":
             # JSON 值中可能含字面闭合标签，优先从完整数据之后找外壳结尾。
             value_start = _JSON_START.match(content, end)
@@ -434,7 +467,32 @@ def _context_regions(content: str):
             end, payload = _xml_call_region(content, end, kind)
         elif kind == "cjk_call":
             end, payload = _cjk_call_region(content, end)
-        yield match.start(), end, kind, payload
+        elif kind == "anomaly_open":
+            # 行首可先有 CDATAEND>。闭合确认前，跨度只覆盖起始残片。
+            start = match.start("anomaly_start")
+            for edge in _ANOMALY_EDGE.finditer(content, end):
+                if edge["open"]:
+                    break
+                if edge["close"]:
+                    end = edge.end()
+                    if suffix := _ANOMALY_SUFFIX.match(content, end):
+                        end = suffix.end()
+                    break
+            kind = "anomaly"
+        elif kind == "anomaly_cdata":
+            start = match.start("cdata_start")
+            kind = "anomaly"
+        elif kind == "anomaly_bos":
+            # BOS 起始标记可以紧贴正文，648 的实录就是这种形态。
+            line_head = content.rfind("\n", 0, start) + 1
+            line_tail = content.find("\n", end)
+            if line_tail < 0:
+                line_tail = len(content)
+            if content[line_head:start].strip() and content[end:line_tail].strip():
+                cursor = end
+                continue
+            kind = "anomaly"
+        yield start, end, kind, payload
         cursor = end
 
 
@@ -478,18 +536,35 @@ def parse_legacy_text_tool_calls(content: str) -> list[dict]:
 # 遮蔽保留坐标，标记用于拒绝跨越引用区或结果区的候选块；
 # 未闭合区（``` 无收尾 / function_results 无闭合）遮蔽到文末——保守口径。
 # ---------------------------------------------------------------------------
-def _scan_call_text(content: str) -> tuple[str, list[tuple[int, int, str, dict | str | None]]]:
-    """保留原文坐标，整块遮蔽引用、结果和由专用解析器处理的调用。"""
+def _scan_call_text(content: str) -> tuple[
+        str, list[tuple[int, int, str, dict | str | None]],
+        list[tuple[int, int]]]:
+    """保留原文坐标，整块遮蔽引用、结果、供方残片和由专用解析器处理的调用。
+
+    三元组：(遮蔽文本, 兼容调用区, 异常跨度)。异常跨度（anomaly——
+    ds_safety 块/CDATAEND>/begin▁of▁sentence）单列返回：同一跨度
+    既做调用识别遮蔽（其内永不出候选），也做出站剥离名单（§二.2）。
+    """
     pieces = []
     xml_calls = []
+    anomaly_spans = []
     cursor = 0
     for start, end, kind, payload in _context_regions(content):
         pieces.extend((content[cursor:start], _MASKED_CHAR * (end - start)))
         if kind in _COMPAT_ORIGINS:
             xml_calls.append((start, end, kind, payload))
+        elif kind == "anomaly":
+            anomaly_spans.append((start, end))
         cursor = end
     pieces.append(content[cursor:])
-    return "".join(pieces), xml_calls
+    return "".join(pieces), xml_calls, anomaly_spans
+
+
+def anomaly_fragments(content: str) -> list[tuple[int, int]]:
+    """可证明的供方残片跨度列表（ds_safety 块 / CDATAEND> /
+    begin▁of▁sentence 标记）。空＝无——供收口判定「只剩残片」。"""
+    _, _, spans = _scan_call_text(content or "")
+    return spans
 
 
 def _unmasked_matches(pattern: re.Pattern, scan: str):
@@ -499,7 +574,7 @@ def _unmasked_matches(pattern: re.Pattern, scan: str):
 def detect_protocol_hint(content: str) -> str:
     """可识别但未启用的协议族提示（空＝无）——关闭路由兼容时
     只记识别事实，供 anomaly 事件 detail 携带。"""
-    scan, xml_calls = _scan_call_text(content or "")
+    scan, xml_calls, _ = _scan_call_text(content or "")
     if xml_calls:
         return xml_calls[0][2]
     if _F_DSML.search(scan) or re.search(_DSML, scan):
@@ -640,12 +715,14 @@ _Q_TAIL = re.compile(
 
 ANOMALY_NOTE = "〔系统〕该回复含调用格式文本，未派发执行（原文见会话档案）。"
 _MIXED_ANOMALY_NOTE = "〔系统〕该回复中的部分调用文本或回执未经执行确认（原文见会话档案）。"
+_FRAGMENT_ANOMALY_NOTE = "〔系统〕该回复含供方协议残片（非正文、非调用），已从上下文移除（原文见会话档案）。"
 
 def _quarantine_text(content: str, *, unwrap_report: bool = True) -> str:
     _, _, stripped = extract_text_tool_calls(content, protocols=frozenset({"dsml", "call"}))
     parts = []
     cursor = 0
-    for start, end, kind, payload in _context_regions(stripped):
+    # 残片只按原文位置剥一次。去掉前面的调用后，原来的行内文本可能来到行首。
+    for start, end, kind, payload in _context_regions(stripped, scan_anomalies=False):
         if kind == "inline":
             continue  # 保留整行语境，仿系统行中的行内代码也随该行剔除。
         parts.append(_strip_furniture_lines(stripped[cursor:start]))
@@ -671,17 +748,24 @@ def _strip_furniture_lines(content: str) -> str:
     return "".join(kept)
 
 
-def quarantine_view(content: str, *, has_dispatch: bool = False) -> str:
+def quarantine_view(content: str, *, has_dispatch: bool = False,
+                    fragment: bool = False) -> str:
     """隔离块供模型使用的内容（ctx_content 候选值）。
 
     只切"能对应到坏片段"的部分：已解析跨度经 stripped 剥；仿回执整段
     剔除（外壳+假数据），function_calls 结果壳剥壳留 content 报告；
-    未解析的孤立标签按行剔除（行首调用族判据）。残部非空 ⇒ 残部＋宿主
-    状态行；空 ⇒ 只剩状态行（方案：必要时只留宿主生成的一行状态）。
-    围栏代码块内不做任何剔除（代码示例保留引用身份）。
+    未解析的孤立标签按行剔除（行首调用族判据）；供方协议残片
+    （ds_safety 块/CDATAEND>/begin▁of▁sentence）随 anomaly 跨度退出。
+    残部非空 ⇒ 残部＋宿主状态行；空 ⇒ 只剩状态行（方案：必要时只留
+    宿主生成的一行状态）。围栏代码块内不做任何剔除（代码示例保留
+    引用身份）。``fragment``＝本块唯一异常是供方残片 ⇒ 用残片口径
+    状态行（不提"调用文本"——那不是它的罪名）。
     """
     residue = _quarantine_text(content or "").strip()
-    note = _MIXED_ANOMALY_NOTE if has_dispatch else ANOMALY_NOTE
+    if fragment:
+        note = _FRAGMENT_ANOMALY_NOTE
+    else:
+        note = _MIXED_ANOMALY_NOTE if has_dispatch else ANOMALY_NOTE
     return f"{residue}\n\n{note}" if residue else note
 
 
@@ -706,7 +790,11 @@ def extract_text_tool_calls(
     spans: list[tuple[int, int]] = []
     # 解析/疑似判定跑遮蔽文本（引用区/结果区不参与）；span 与原文等长
     # 对齐，stripped 仍从原文算——围栏样例不进 spans、不被派发。
-    scan, xml_calls = _scan_call_text(content)
+    scan, xml_calls, anomaly_spans = _scan_call_text(content)
+    # [异常跨度 2026-11-20] 供方残片随候选剥离——它们从遮蔽文本里就已
+    # 消失（其内永不出候选/疑似），这里把跨度并进 stripped 名单让
+    # 「供模型使用的内容」同样不含它们（§二.2 同一跨度两用）。
+    spans.extend(anomaly_spans)
 
     # ---- 形态G 预扫描：中日文标签块（<函数调用>/<関数呼び出し>/<调用> 壳）----
     # [2026-11-20 返修 · 用户裁定] G 只识别、只清理、**零派发**——错配闭标签

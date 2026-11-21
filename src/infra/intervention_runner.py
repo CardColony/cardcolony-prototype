@@ -19,8 +19,11 @@
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
+import os
 import time
 from typing import Any, Optional
 
@@ -73,8 +76,72 @@ def _check_review_promote(work_id: str, matter: dict[str, Any]) -> tuple[str, di
     return "cancelled", {"reason": f"批次已不在（now={batch_now or '空'}）且无正稿"}
 
 
+# [超限提醒合并 2026-11-20 · 成本优化批五·开关 COST_WAKE_COALESCE]
+# 同一连续超限期的多次超限编辑合并到**同一事项/动作**：首次立案＋
+# 起轮一次；后续编辑只刷新台账事实与待投递材料；回阈值内 _check
+# 按**当前卡面**关事项（待受理动作随事项销账）；再超限起新事项。
+_OVERSIZE_PID = "status_block_oversize_reminder"
+_OVERSIZE_LIMIT = 10000
+
+
+def _coalesce_on() -> bool:
+    return str(os.environ.get("COST_WAKE_COALESCE") or "").strip() == "1"
+
+
+def _status_len(work_id: str, card_id: str) -> Optional[int]:
+    """同步读卡的当前 status_block 长度（读不到 ⇒ None，判不了保持 open）。"""
+    if not card_id:
+        return None
+    from ..storage import card_db
+
+    def _fn(conn: Any) -> Optional[int]:
+        row = conn.execute(
+            "SELECT status_block FROM cards WHERE card_id=?",
+            (card_id,)).fetchone()
+        return len(row["status_block"] or "") if row else None
+
+    try:
+        out = card_db.read_sync(work_id, _fn, None)
+        return int(out) if out is not None else None
+    except Exception:  # noqa: BLE001 判不了 ⇒ None（_check 保持 open）
+        return None
+
+
+def _oversize_card(matter: dict[str, Any]) -> str:
+    """事项的目标卡：投递目标优先，回退 scope 的卡位。"""
+    objects = matter.get("objects") or {}
+    targets = [str(t) for t in (objects.get("deliver_targets") or []) if t]
+    if targets:
+        return targets[0]
+    for cand in (objects.get("target"), objects.get("review_card")):
+        if str(cand or ""):
+            return str(cand)
+    scope = str(matter.get("scope_key") or "")
+    return scope.split(":", 1)[-1] if scope.startswith("card:") else ""
+
+
+def _check_status_oversize(work_id: str, matter: dict[str, Any]) -> tuple[str, dict]:
+    """连续超限事项裁定：卡面现状说了算——回阈值内 ⇒ resolved。
+
+    用**当前 status_block 长度**而非事件携带的 new_len：晚到/回放
+    的旧超限事实不能反转已恢复的现状（任务书批五「无法证明顺序时
+    读当前卡面」）。读不到 ⇒ open（宁可多留）。
+    """
+    card = _oversize_card(matter)
+    if not card:
+        return "open", {"reason": "缺目标卡"}
+    n = _status_len(work_id, card)
+    if n is None:
+        return "open", {"reason": "现状块读不到", "card": card}
+    if n >= _OVERSIZE_LIMIT:
+        return "open", {"card": card, "current_len": n}
+    return "resolved", {"card": card, "current_len": n,
+                        "recovered_below": _OVERSIZE_LIMIT}
+
+
 _CHECKERS = {
     "review_promote": _check_review_promote,
+    "status_oversize": _check_status_oversize,
 }
 
 
@@ -102,6 +169,10 @@ def _check(work_id: str, matter: dict[str, Any]) -> tuple[str, dict]:
 #: 接管判据是**租约过期**，不是进程 boot 时刻——新 runner 启动抢不走
 #: 仍在宽限内的在途投递（批次A第三轮返工）。
 CLAIM_STALE_S = 1800.0
+#: [在途续约 2026-11-20 · 批次A第四轮返工] 活发送者的心跳间隔——
+#: 投递等待期间周期性 touch_claim，让 ``sending`` 行保持新鲜；
+#: resume 的租约过期判据只在「发送者真的退出（心跳停了）」后成立。
+CLAIM_HEARTBEAT_S = 20.0
 
 
 def _scope_str(scope: Any) -> str:
@@ -147,6 +218,48 @@ def _resolve_function(work_id: str, fn_key: str, venue_kind: str) -> str:
         return ""
 
 
+def _refresh_oversize_matter(work_id: str, st: Any, matter_id: str,
+                             f: dict[str, Any], basis: dict[str, Any],
+                             trigger: dict[str, Any], then: dict[str, Any],
+                             ctx: dict[str, Any]) -> None:
+    """同一连续超限期的后续超限编辑：刷新事项事实锚＋待投递材料。
+
+    - 事项 basis 记录最新事实锚（card/seq/ts）＋**当前卡面实测字数**
+      ——事件里的 new_len 可能是迟到旧值，材料以现状为准。
+    - 仍超限 ⇒ 待受理动作（pending/failed）的 message 按当前字数重渲
+      染；已受理（sending/sent/delivered）的只更新台账事实，历史提醒
+      原样可查。恢复后 _check 会关事项——这里只负责刷新。
+    - 刷新失败只记错不拦——重复事实的合并语义已成立。
+    """
+    try:
+        m = st.get_matter(work_id, matter_id) or {}
+        card = _oversize_card(m)
+        cur = _status_len(work_id, card)
+        st.update_matter_basis(
+            work_id, matter_id,
+            basis={**(basis or {}),
+                   "current_len": cur,
+                   "event_new_len": trigger.get("new_len")})
+        if cur is None or cur < _OVERSIZE_LIMIT:
+            return
+        from . import harness
+        c2 = dict(ctx)
+        c2["trigger_data"] = {**(trigger or {}), "new_len": cur}
+        text = harness.render_message(
+            {"message": str(then.get("message") or "")}, c2)
+        if not text:
+            return
+        for aid in (f.get("_actions") or {}).values():
+            st.refresh_action_message(work_id, str(aid), text)
+    except Exception as exc:  # noqa: BLE001 合并刷新失败不拦主链
+        logger.warning("[intervention] 超限材料刷新失败 work=%s: %s",
+                       work_id, exc)
+        st.record_error(work_id, stage="record", kind="coalesce_refresh",
+                        policy_id=_OVERSIZE_PID,
+                        matter_id=str(matter_id or ""),
+                        detail={"error": str(exc)})
+
+
 def record_fired(work_id: str, fired: list[dict[str, Any]]) -> None:
     """命中即落账：解目标 → 立案（声明了 matter 的）→ 逐目标登记动作。
 
@@ -178,6 +291,10 @@ def record_fired(work_id: str, fired: list[dict[str, Any]]) -> None:
         # 待投）换 seq/ts 再来 ⇒ 动作身份不变、零重投；真正进入下一步
         # ⇒ 新 biz_key ⇒ 恰好续一次。
         _dedup = then.get("dedup_fields")
+        # [批五·开关] 伪调用同异常业务键只在合并试点开时启用——关态
+        # 沿事实级 fire_key＋既有节流（行为同基线）。
+        if pid == "pseudo_call_reinvoke" and not _coalesce_on():
+            _dedup = None
         biz_key = ""
         step_map: Optional[dict] = None
         if isinstance(_dedup, list) and _dedup:
@@ -190,7 +307,22 @@ def record_fired(work_id: str, fired: list[dict[str, Any]]) -> None:
             # 字段全空 ⇒ 键退化成分隔符串——不启用 biz 去重，回落
             # fire_key 事实级（宁可多发不吞步骤）。
             biz_key = _biz if _biz.strip("|").strip() else ""
+            # [批五·缺证回落] 伪调用缺原回合身份（旧事件无 pair_id）⇒
+            # 不用业务键——沿事实级 fire_key＋recent 节流，记缺证。
+            if (pid == "pseudo_call_reinvoke"
+                    and not str(_vals.get("pair_id") or "")):
+                biz_key = ""
+                st.record_error(
+                    work_id, stage="record", kind="missing_identity",
+                    policy_id=pid,
+                    card_id=str(basis.get("card") or ""),
+                    detail={"fields": [x for x in _dedup
+                                       if not str(_vals.get(str(x)) or "")]})
             step_map = _vals
+            if pid == "review_step_not_finished":
+                draft_fp = _resolve_ref("event:draft_fp", trigger)
+                if draft_fp:
+                    step_map["draft_fp"] = draft_fp
         f["_ledger"] = True   # 本单已过台账记账——投递必须有可核对 action_id
 
         from . import harness
@@ -214,8 +346,27 @@ def record_fired(work_id: str, fired: list[dict[str, Any]]) -> None:
 
         matter_id = ""
         mspec = then.get("matter")
+        # [超限合并开关] 超限策略的 matter 合并只在试点开时生效——关态
+        # 沿旧路：每次超限编辑各起一动作、各醒一次（行为逐字同基线）。
+        if pid == _OVERSIZE_PID and not _coalesce_on():
+            mspec = None
         if isinstance(mspec, dict) and mspec.get("kind"):
             mkey = _matter_key(mspec, trigger)
+            # [超限立案前核验] 新立案（非复用）前按当前卡面复核——迟到/
+            # 回放的旧超限事实不能在现状已恢复时重开事项；复用分支由
+            # _check 每事实复核，不受此闸影响。
+            if pid == _OVERSIZE_PID:
+                _pre_card = (str(basis.get("card") or "")
+                             or (str(targets[0]) if targets else ""))
+                _pre_len = _status_len(work_id, _pre_card)
+                if (_pre_len is not None
+                        and _pre_len < _OVERSIZE_LIMIT):
+                    logger.info(
+                        "[intervention] %s 现状 %d 字已恢复，旧超限事实"
+                        "不立案 card=%s", pid, _pre_len, _pre_card)
+                    f["_matter_reused"] = True
+                    f["_actions"] = {}
+                    continue
             objects = {
                 "review_card": (ctx.get("card_id")
                                 or (ctx.get("scope") or [""])[-1]),
@@ -246,6 +397,9 @@ def record_fired(work_id: str, fired: list[dict[str, Any]]) -> None:
                     str(a.get("target") or ""): str(a.get("action_id") or "")
                     for a in st.matter_actions(work_id, matter_id)
                 }
+                if pid == _OVERSIZE_PID:
+                    _refresh_oversize_matter(
+                        work_id, st, matter_id, f, basis, trigger, then, ctx)
                 continue
             if not matter_id:
                 logger.warning("[intervention] 立案落空 work=%s pid=%s",
@@ -382,24 +536,173 @@ def claim_for_delivery(work_id: str, action_id: str) -> Optional[str]:
         dead_sending_before=time.time() - CLAIM_STALE_S)
 
 
+@contextlib.asynccontextmanager
+async def claim_lease(work_id: str, action_id: str, claim_token: str,
+                      *, interval: float = CLAIM_HEARTBEAT_S):
+    """[在途续约 2026-11-20 · 批次A第四轮返工] 投递等待期间周期性
+    ``touch_claim``——**活发送者让 ``sending`` 行保持新鲜**：resume
+    的租约过期判据只在发送者真的退出（心跳停了）后成立，活在途
+    投递不再被当成死账抢投。凭据已易主 ⇒ 心跳自停。"""
+    if not claim_token:
+        yield
+        return
+
+    stop = asyncio.Event()
+
+    async def _beat() -> None:
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+                return
+            except asyncio.TimeoutError:
+                pass
+            try:
+                ok = intervention_store.store().touch_claim(
+                    work_id, action_id, claim_token)
+                if ok is False:
+                    return      # 凭据已易主 ⇒ 不再替别人续约
+                # ok None＝可重试错误（锁冲突等瞬时 I/O）——本轮没续上，
+                # 下轮再试，一次冲突不把心跳打死（批次A第五轮返工）。
+            except Exception:  # noqa: BLE001 心跳失败下轮再试
+                pass
+
+    task = asyncio.ensure_future(_beat())
+    try:
+        yield
+    finally:
+        stop.set()
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+
+
 def step_expect(action: dict[str, Any]) -> Optional[dict[str, str]]:
     """动作行的步骤身份（``record_fired`` 按 ``dedup_fields`` 落的
-    ``step_json``）——投递/恢复把它传给评审属主执行前复核。"""
+    ``step_json``）——投递/恢复把它传给评审属主执行前复核。
+
+    ``pin`` 这类结构化附加字段原样保留（点名席位的执行指定）——
+    它不在 ``{batch,draft,next}`` 身份三元组里，复核只核三元组。"""
     raw = (action or {}).get("step_json")
     if isinstance(raw, dict) and raw:
-        return {str(k): str(v) for k, v in raw.items()}
+        return {str(k): (v if isinstance(v, (dict, list)) else str(v))
+                for k, v in raw.items()}
     return None
 
 
-def step_unverifiable(action: dict[str, Any]) -> bool:
-    """[批次A第三轮返工] continue 动作带步骤身份但 ``next`` 为空 ⇒
-    **旧格式事件只做诊断**：它证明不了"下一步要干什么"，不许触发
-    投递——由恢复入口重读当前状态另行立案（新格式事件自带 next）。"""
-    if str((action or {}).get("mode") or "") != "continue":
+def step_contract_of(then: Any) -> bool:
+    """策略 ``then`` 是否声明 ``dedup_fields``（＝continue 动作带
+    步骤身份契约）。"""
+    df = (then or {}).get("dedup_fields") if isinstance(then, dict) \
+        else None
+    return isinstance(df, list) and bool(df)
+
+
+def _policy_then(action: dict[str, Any]) -> Optional[dict]:
+    """动作所属策略的 ``then`` 配置；查不到策略 ⇒ ``None``。"""
+    pid = str((action or {}).get("policy_id") or "")
+    if not pid:
+        return None
+    try:
+        from . import policy_set
+        then = getattr(policy_set.dispatcher().policy(pid), "then", None)
+        return then if isinstance(then, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _action_step_contract(action: dict[str, Any]) -> bool:
+    """动作所属策略是否声明 ``dedup_fields``（＝continue 动作带步骤
+    身份契约）。查不到策略 ⇒ False（按无契约处理，不误伤）。"""
+    return step_contract_of(_policy_then(action))
+
+
+def step_unverifiable(action: dict[str, Any], *,
+                      contract: bool = True) -> bool:
+    """[批次A第三/四轮返工] continue 动作在**步骤契约**下无法确认
+    下一步身份：
+
+    - ``step_json`` 缺失（契约策略的旧账，登记早于 step 列）或
+      ``next`` 为空（旧格式事件只报了 runnable 没报身份）⇒ True；
+    - 无契约策略（``dedup_fields`` 未声明）⇒ False——它们本就没有
+      步骤身份概念，照常投递；
+    - ``contract=False`` 显式声明无契约 ⇒ False。"""
+    if str((action or {}).get("mode") or "") != "continue" \
+            or not contract:
         return False
     step = step_expect(action)
-    return step is not None and "next" in step \
-        and not str(step.get("next") or "")
+    return step is None or not str(step.get("next") or "")
+
+
+async def _refresh_step_expect(work_id: str,
+                               action: dict[str, Any]
+                               ) -> Optional[dict[str, str]]:
+    """[批次A第四轮返工] 无法确认身份的旧 continue 账 ⇒ **重读当前
+    状态**：评审属主现状有可跑下一步 ⇒ 返回现状身份作 ``expect``
+    （属主执行前仍会再核，换批照样 stale）；无批次/无下一步 ⇒
+    ``None``（调用方销账 stale——新事件会另行立案）。"""
+    target = str((action or {}).get("target") or "")
+    if not target:
+        return None
+    try:
+        from ..api import review_runner
+        ident = await review_runner._step_identity(work_id, target)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[intervention] 重读步骤身份失败 %s: %s",
+                       target, exc)
+        return None
+    if not isinstance(ident, dict) \
+            or not str(ident.get("next") or ""):
+        return None
+    return {k: str(ident.get(k) or "")
+            for k in ("batch", "draft", "next", "draft_fp") if k in ident}
+
+
+def _merge_refreshed_action(work_id: str, action: dict[str, Any],
+                            expect: dict[str, str]) -> str:
+    """[旧账归并 2026-11-20 · 批次A第五轮返工] 刷新出的现状身份按
+    **当前业务键**对账，再决定本行去留：
+
+    - 已有同 ``(policy,scope,target,biz)`` 的另一动作 ⇒ 本行并入
+      （``stale``＋``superseded_by`` 审计），由那一行负责投递；
+    - 没有 ⇒ 本行 ``rekey`` 到当前键（登记现状身份，后续恢复/
+      并发按现键查得到）后照常投；``rekey`` 撞键（并发先到）⇒
+      同样并入占键者。
+
+    返回 ``"superseded"``（并入，勿投）／``"ok"``（本行投）。"""
+    st = intervention_store.store()
+    aid = str(action.get("action_id") or "")
+    then = _policy_then(action) or {}
+    df = then.get("dedup_fields")
+    if not isinstance(df, list) or not df:
+        return "ok"      # 无契约字段集——无从拼业务键，照常投
+    biz = "|".join(str(expect.get(str(f)) or "") for f in df)
+    if not biz.strip("|").strip():
+        return "ok"      # 退化键不启用（与 record_fired 同口径）
+
+    pid = str(action.get("policy_id") or "")
+    scope = str(action.get("scope_key") or "")
+    target = str(action.get("target") or "")
+
+    def _supersede(kept: str) -> str:
+        st.mark_action(
+            work_id, aid, "stale",
+            receipt={"reason": "superseded_by", "kept": kept,
+                     "biz_key": biz})
+        logger.info("[intervention] 旧账并入既有动作 %s→%s"
+                    " (biz=%s)", aid, kept, biz)
+        return "superseded"
+
+    other = st.find_action_by_biz(work_id, pid, scope, target, biz)
+    if other and other != aid:
+        return _supersede(other)
+    rk = st.rekey_action(work_id, aid, biz_key=biz, step=expect)
+    if rk == "conflict":   # 并发先到一步占键 ⇒ 并入占键者
+        other = st.find_action_by_biz(work_id, pid, scope, target,
+                                      biz)
+        return _supersede(other or "(unknown)")
+    return "ok"
 
 
 def mark_receipt(work_id: str, action_id: str, result: Any, *,
@@ -413,20 +716,73 @@ def mark_receipt(work_id: str, action_id: str, result: Any, *,
     from . import harness
     st = intervention_store.store()
     s = str(result or "")
+    details = result.details if isinstance(result, harness.ContinueReceipt) else {}
+    if s.startswith("continue:"):
+        previous = st.get_action(work_id, action_id) or {}
+        if (previous.get("receipt") or {}).get("legacy_resume"):
+            details = {**details, "legacy_resume": True}
     if s == "continue:stale":
         st.mark_action(work_id, action_id, "stale",
-                       receipt={"result": s, "stale": True},
+                       receipt={"result": s, "stale": True, **details},
                        claim_token=claim_token)
         return
     ok = harness.deliver_accepted(result)
     st.mark_action(work_id, action_id,
                    "delivered" if ok else "failed",
-                   receipt={"result": s, "accepted": ok},
+                   receipt={"result": s, "accepted": ok, **details},
                    claim_token=claim_token)
     if not ok:
         st.record_error(work_id, stage="deliver", kind="delivery_failed",
                         action_id=str(action_id or ""),
-                        detail={"result": s})
+                        detail={"result": s, **details})
+
+
+async def deliver_registered_action(work_id: str,
+                                    action_id: str) -> str:
+    """兑现**已登记**的一条动作：领取 → deliver → 回执——与
+    ``deliver_fired``/``resume`` 同一组闸（action_skip/claim/claim_lease/
+    mark_receipt），专给「人工/正卡请求」这条**非策略触发**的登记用。
+
+    返回结局短码：``delivered`` / ``continue:N`` / ``failed`` /
+    ``in_flight``（在途，没抢着）/ ``skipped``（已送过或销账）/
+    ``missing`` / ``error``——调用方如实上报，不猜受理。"""
+    st = intervention_store.store()
+    a = st.get_action(work_id, action_id)
+    if not a:
+        return "missing"
+    if a.get("state") in ("delivered", "stale"):
+        return str(a.get("state"))
+    try:
+        if action_skip(work_id, action_id):
+            return "skipped"
+    except Exception as exc:  # noqa: BLE001 查不了不拦投递
+        logger.warning("[intervention] 投前复核失败 %s: %s", action_id, exc)
+    token = st.claim_action(
+        work_id, action_id,
+        dead_sending_before=time.time() - CLAIM_STALE_S)
+    if not token:
+        return "in_flight"
+    try:
+        from . import harness
+        a = st.get_action(work_id, action_id) or a
+        _mode = str(a.get("mode") or "continue")
+        _expect = step_expect(a) if _mode == "continue" else None
+        async with claim_lease(work_id, action_id, token):
+            res = await harness.deliver(
+                work_id, str(a.get("target") or ""),
+                str(a.get("message") or ""),
+                rule_id=str(a.get("policy_id") or ""),
+                wake=bool(a.get("wake")), mode=_mode,
+                action_id=action_id, expect=_expect)
+        mark_receipt(work_id, action_id, res, claim_token=token)
+        return str(res or "failed")
+    except Exception as exc:  # noqa: BLE001 单动作失败记回执
+        logger.warning("[intervention] 登记动作兑现失败 %s: %s",
+                       action_id, exc)
+        st.mark_action(work_id, action_id, "failed",
+                       receipt={"result": f"deliver_exc:{exc}"},
+                       claim_token=token)
+        return "error"
 
 
 def already_delivered(work_id: str, action_id: str) -> bool:
@@ -437,11 +793,15 @@ def already_delivered(work_id: str, action_id: str) -> bool:
     投递没有 started 字段，照常算已送达。"""
     from . import fact_store
     try:
+        row = intervention_store.store().get_action(work_id, action_id) or {}
+        legacy_resume = bool((row.get("receipt") or {}).get("legacy_resume"))
         rows = fact_store.store().query(
             work_id, types=["harness_message"],
             where={"action_id": action_id}, limit=5)
         for r in rows:
             d = r.get("data") or {}
+            if legacy_resume and d.get("accepted") is not True:
+                continue
             if str(d.get("mode") or "") == "continue" \
                     and d.get("started") is False:
                 continue   # 续跑被评审侧拒绝（already_running/stopped…）
@@ -652,27 +1012,54 @@ async def resume(work_id: str) -> dict[str, int]:
         if action_skip(work_id, aid):
             stats["skipped"] += 1
             continue
-        # [过期步骤销账 2026-11-20 · 批次A第三轮返工] 旧格式事件
-        # （runnable 但缺 next）只做诊断——证明不了"下一步要干什么"，
-        # 不触发投递、动作销账；当前状态由评审属主/新事件另行立案。
-        if step_unverifiable(a):
-            st.mark_action(work_id, aid, "stale",
-                           receipt={"reason": "unverifiable_step",
-                                    "policy_id": str(a.get("policy_id") or "")})
-            stats["skipped"] += 1
-            continue
         _mode = str(a.get("mode") or "message")
-        _expect = step_expect(a) if _mode == "continue" else None
+        _expect: Optional[dict] = None
+        if _mode == "continue":
+            _expect = step_expect(a)
+            contract = _action_step_contract(a)
+            old_revise = bool(contract and _expect
+                              and _expect.get("next") == "dispatch:revise")
+            # [过期步骤销账 2026-11-20 · 批次A第三/四轮返工] 契约策略下
+            # 无法确认身份的旧账（step_json 缺失/next 空）⇒ **恢复入口
+            # 重读当前状态**：现状有可跑下一步 ⇒ 用现状身份重锚 expect
+            # 投递（属主执行前仍会再核，换批照样 stale）；没有 ⇒ 销账。
+            if old_revise or step_unverifiable(a, contract=contract):
+                refreshed = await _refresh_step_expect(work_id, a)
+                # 旧派修订缺应收回应水位。只允许归并到同批同稿的派修订。
+                if old_revise and refreshed and _expect and (
+                        refreshed["batch"] != _expect.get("batch")
+                        or refreshed["draft"] != _expect.get("draft")
+                        or not refreshed["next"].startswith("dispatch:revise:")):
+                    refreshed = None
+                if not refreshed:
+                    st.mark_action(
+                        work_id, aid, "stale",
+                        receipt={"reason": "unverifiable_step",
+                                 "policy_id": str(a.get("policy_id") or "")})
+                    stats["skipped"] += 1
+                    continue
+                _expect = refreshed
+                # [旧账归并] 刷新出的现状身份先按当前业务键对账——
+                # 已有同键动作并入它，否则本行重锚到现键，不让旧账
+                # 与已登记的当前动作各投一次（批次A第五轮返工）。
+                if _merge_refreshed_action(work_id, a, _expect) \
+                        == "superseded":
+                    stats["skipped"] += 1
+                    continue
         # [并发领取+凭据 2026-11-20 · 批次A第三轮返工] 发出前原子领取——
         # 与实时投递同一租约口径（now-CLAIM_STALE_S）：在途宽限内的
         # sending 属主仍活着不抢；租约过期＝确认退出才可接管，写回
         # 还须持本次 claim_token。
+        # [在途续约 2026-11-20 · 批次A第四轮返工] claim_lease 让活
+        # 发送者的行保鲜——超时≠退出，心跳停了才算。
         token = st.claim_action(
             work_id, aid,
             dead_sending_before=time.time() - CLAIM_STALE_S)
         if not token:
             stats["skipped"] += 1
             continue
+        if _mode == "continue":
+            _expect = step_expect(st.get_action(work_id, aid) or a)
         try:
             if _mode == "deploy":
                 # [deploy] 差事动作走部署执行器，不走送话管线；
@@ -682,10 +1069,11 @@ async def resume(work_id: str) -> dict[str, int]:
                     spec = json.loads(str(a.get("spec") or "{}") or "{}")
                 except (TypeError, ValueError):
                     spec = {}
-                res = await deploy_runner.execute(
-                    work_id, spec=spec, venue=str(a.get("target") or ""),
-                    mandate=str(a.get("message") or ""), action_id=aid,
-                    policy_id=str(a.get("policy_id") or ""))
+                async with claim_lease(work_id, aid, token):
+                    res = await deploy_runner.execute(
+                        work_id, spec=spec, venue=str(a.get("target") or ""),
+                        mandate=str(a.get("message") or ""), action_id=aid,
+                        policy_id=str(a.get("policy_id") or ""))
                 st.mark_action(work_id, aid,
                                "delivered" if res.get("ok") else "failed",
                                receipt=res, claim_token=token)
@@ -696,11 +1084,13 @@ async def resume(work_id: str) -> dict[str, int]:
                                     detail=res)
                 stats["redelivered"] += 1
                 continue
-            res = await harness.deliver(
-                work_id, str(a.get("target") or ""),
-                str(a.get("message") or ""), rule_id=str(a.get("policy_id") or ""),
-                wake=bool(a.get("wake")), mode=_mode,
-                action_id=aid, expect=_expect)
+            async with claim_lease(work_id, aid, token):
+                res = await harness.deliver(
+                    work_id, str(a.get("target") or ""),
+                    str(a.get("message") or ""),
+                    rule_id=str(a.get("policy_id") or ""),
+                    wake=bool(a.get("wake")), mode=_mode,
+                    action_id=aid, expect=_expect)
             mark_receipt(work_id, aid, res, claim_token=token)
             stats["redelivered"] += 1
         except Exception as exc:  # noqa: BLE001 单动作失败不拖垮其余

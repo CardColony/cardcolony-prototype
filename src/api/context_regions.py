@@ -139,6 +139,12 @@ class RegionCtx:
     # draft）——缩量**只对普通主对话**生效；三席与起草保持原有材料（总方案 §三
     # 通过条件：「以普通主对话为首批覆盖范围，评审、草稿和席位原有分区另行复验」）。
     request_profile: str = ""
+    # [批三·评审按阶段缩量 2026-11-20 · 成本总方案 §四·第三批] 受限**当轮决定**：
+    # 评审席位回合的材料快照（review_runner._material_snapshot）判
+    # restricted=True ⇒ 本轮只发完成表态所需的材料——整棵卡片清单、子卡
+    # 状态、被评卡长历史、大段记忆、无关依赖全文由各区渲染守卫跳过
+    # （`_review_restricted(ctx)`）。空 dict ⇒ 逐字同旧（缺省完整装配）。
+    turn_decision: dict[str, Any] = field(default_factory=dict)
 
 
 def _count_duty_lines(ctx: RegionCtx, text: str) -> int:
@@ -392,6 +398,29 @@ def _scope_for(ctx: RegionCtx) -> Any:
     return scope
 
 
+def _review_restricted(ctx: RegionCtx) -> bool:
+    """[批三·评审按阶段缩量 2026-11-20] 本轮是受限评审步骤
+    （confirm/vote_nudge 材料快照判定 restricted）——与本次动作无关的
+    大分区（卡片清单/子卡现状/记忆/依赖全文/被评长历史）跳过。"""
+    td = getattr(ctx, "turn_decision", None) or {}
+    return bool(td.get("restricted"))
+
+
+def _render_card_list(ctx: RegionCtx) -> str:
+    """100 区渲染（注册表入口）：关系线对方标注文本 ＋ 缩量范围 ＋ 对象卡卡面。"""
+    scope = _scope_for(ctx)
+    return render_card_list_region(
+        ctx.cards, ctx.work_card_id, ctx.card_id,
+        [{"card_id": str(r.get("target") or ""), "dir": "out",
+          "kind": str(r.get("kind") or ""), "detail": str(r.get("detail") or "")}
+         for r in (ctx.dep_relations_out or [])]
+        + [{"card_id": str(r.get("source") or ""), "dir": "in",
+            "kind": str(r.get("kind") or ""), "detail": str(r.get("detail") or "")}
+           for r in (ctx.dep_relations_in or [])],
+        scope=scope,
+        target_body=(ctx.scope_target_body if scope else None))
+
+
 def _as_tail_facts(mark: str, text: str) -> list[dict[str, Any]]:
     """区文本 → tail 槽当轮事实消息（assistant 角色，与〔工作规范〕等注入同族）。
 
@@ -564,15 +593,8 @@ REGION_TABLE: list[dict[str, Any]] = [
         "source": "context_assembler._load_cards_index（查库，每卡一行 id·标题·父卡）",
         "render": lambda ctx: _as_tail_facts(
             "〔卡片清单〕",
-            render_card_list_region(
-                ctx.cards, ctx.work_card_id, ctx.card_id,
-                [{"card_id": str(r.get("target") or ""), "dir": "out",
-                  "kind": str(r.get("kind") or ""), "detail": str(r.get("detail") or "")}
-                 for r in (ctx.dep_relations_out or [])]
-                + [{"card_id": str(r.get("source") or ""), "dir": "in",
-                    "kind": str(r.get("kind") or ""), "detail": str(r.get("detail") or "")}
-                   for r in (ctx.dep_relations_in or [])],
-                scope=_scope_for(ctx))),
+            # [批三] 受限评审步不发整棵清单——与本次表态无关的材料跳过
+            ("" if _review_restricted(ctx) else _render_card_list(ctx))),
         "count": lambda ctx, text: len(ctx.cards),
     },
     {
@@ -693,8 +715,10 @@ REGION_TABLE: list[dict[str, Any]] = [
                    "需求文档不给——用户 2026-10-27 裁定「太长」；两块都空则跳过）"),
         "render": lambda ctx: _as_tail_facts(
             "〔直接子卡现状〕",
-            render_direct_child_status_region(ctx.direct_child_status,
-                                              scope=_scope_for(ctx))),
+            # [批三] 受限评审步不发子卡现状（与本次表态无关）
+            ("" if _review_restricted(ctx)
+             else render_direct_child_status_region(ctx.direct_child_status,
+                                                    scope=_scope_for(ctx)))),
         "count": lambda ctx, text: sum(
             1 for child in ctx.direct_child_status
             if _child_status_body(child) or _child_mission_body(child)),
@@ -731,7 +755,10 @@ REGION_TABLE: list[dict[str, Any]] = [
         "delivery": "system",
         "profiles": ("main", "viewpoint", "draft"),
         "source": "memory_store.load_memory（works/{work_id}/memory/{card_id}.json 凝练归拢 entries；调用方完成 IO 后传入渲染）",
-        "render": lambda ctx: render_memory_region(ctx.memory_entries),
+        "render": lambda ctx: (
+            # [批三] 受限评审步不发大段记忆（与本次表态无关）
+            "" if _review_restricted(ctx)
+            else render_memory_region(ctx.memory_entries)),
         "count": lambda ctx, text: len(ctx.memory_entries),
     },
     {
@@ -754,9 +781,12 @@ REGION_TABLE: list[dict[str, Any]] = [
         "delivery": "system",
         "profiles": ("main", "viewpoint", "draft"),
         "source": "当前卡的依赖关联线（relations）：正向＝本卡自己的条目（带目标当前需求文档）；反向＝全库卡索引扫 target==本卡（零额外 IO）",
-        "render": lambda ctx: render_dep_relations_region(
-            ctx.dep_relations_out, ctx.dep_relations_in,
-            scope=_scope_for(ctx), doc_meta=_dep_doc_meta(ctx)),
+        "render": lambda ctx: (
+            # [批三] 受限评审步不发依赖全文（与本次表态无关）
+            "" if _review_restricted(ctx)
+            else render_dep_relations_region(
+                ctx.dep_relations_out, ctx.dep_relations_in,
+                scope=_scope_for(ctx), doc_meta=_dep_doc_meta(ctx))),
         "count": lambda ctx, text: len(ctx.dep_relations_out) + len(ctx.dep_relations_in),
     },
     {
@@ -1767,7 +1797,12 @@ def render_card_list_region(
         # 一层**——对象卡（single）或本卡（global）的直接子卡。执行者要的是
         # "父子及关系坐标"，更深层按需 read_card 取；证不出来（unknown）仍旧全树。
         if scope is not None and getattr(scope, "narrowed", False):
-            anchor_id = str(getattr(scope, "target_card", "") or current_id) or current_id
+            # global 档的管辖范围＝**本卡**的直属子卡（与子卡区同一份数据）；
+            # single 档的锚＝对象卡（对象≠本卡时也把对象的直接子卡带上）。
+            if getattr(scope, "is_global", False):
+                anchor_id = current_id
+            else:
+                anchor_id = str(getattr(scope, "target_card", "") or current_id) or current_id
             visible = {current_id}
             for _root in (current_id, anchor_id):
                 cur = _root                       # 祖先链（本卡＋对象卡各一条）
@@ -2662,6 +2697,13 @@ def render_dep_relations_region(
     readback = True if scope is None else bool(getattr(scope, "readback_available", True))
     meta_by_id = doc_meta or {}
     lines: list[str] = []
+    outgoing = [r for r in (out_entries or [])
+                if isinstance(r, dict) and r.get("target")]
+    doc_details: dict[tuple[str, str], list[str]] = {}
+    if narrowed and readback:
+        for r in outgoing:
+            key = (str(r["target"]), str(r.get("requirements") or ""))
+            doc_details.setdefault(key, []).append(str(r.get("detail") or ""))
     # [去重 2026-11-20 · 成本优化任务书批一] 同一张卡被多条正向边指着时，
     # 改前逐边全文重贴同一份需求正稿——实测 card_009 单次装配内 card_007
     # 正稿（~102K 字符）重复两份、整依赖区重 ~287KB。身份＝「目标卡＋正文
@@ -2669,34 +2711,24 @@ def render_dep_relations_region(
     # 首次原样展示，其后沿关系线留一行指针；**key 含 target**——不同卡号
     # 即便文字相同也各有自己的文档身份，不互相去重。
     shown_docs: set[tuple[str, str]] = set()
-    for r in out_entries or []:
-        if not isinstance(r, dict):
-            continue
-        target = str(r.get("target") or "")
-        if not target:
-            continue
+    for r in outgoing:
+        target = str(r["target"])
         lines.append(
             f"- 我依赖/关联：{target}（{_rel_suffix(str(r.get('kind') or ''), str(r.get('detail') or ''))}）")
         # [2026-11-01] 依赖线的意义＝我消费它的对外信息。把目标**当前**需求
         # 文档投影进来：它改了卡面，我这里下一轮就是新的——关系线本身即更新
         # 通道，不需要「告诉你变了再自己去读」的通知。
-        req = str(r.get("requirements") or "").strip()
-        if not req:
+        req = str(r.get("requirements") or "")
+        if not req.strip():
             continue
         fp = _dl.doc_fingerprint(req)
-        detail = str(r.get("detail") or "")
         if narrowed:
             lines.extend(_dep_doc_lines_narrowed(
-                _dl, target, req, fp, detail, scope, readback, meta_by_id))
+                _dl, target, req, fp, doc_details.get((target, req), []),
+                scope, readback, meta_by_id,
+                shown_docs))
             continue
-        if (target, fp) in shown_docs:
-            lines.append(
-                f"  {target} 的需求文档：同本区上方首次展示的正稿"
-                f"（同一卡面同一正文，此处不重复展开）")
-            continue
-        shown_docs.add((target, fp))
-        lines.append(f"  {target} 的需求文档（随它卡面更新）：")
-        lines.extend(f"  {ln}" for ln in req.split("\n"))
+        lines.extend(_dep_doc_full_lines(target, req, fp, shown_docs))
     for r in in_entries or []:
         if not isinstance(r, dict):
             continue
@@ -2727,15 +2759,10 @@ def _dep_doc_meta(ctx: RegionCtx) -> dict[str, dict[str, Any]]:
 
 
 def _dep_doc_lines_narrowed(dl: Any, target: str, req: str, fp: str,
-                            detail: str, scope: Any, readback: bool,
-                            meta_by_id: dict[str, dict[str, Any]]) -> list[str]:
-    """缩量档下的一条依赖正稿：**定位优先，定位不到按档位回退**。
-
-    - 条款号锚（关系说明里点名的条目）⇒ 精确命中，内联短段；
-    - 标题短语锚（关系说明里的中文短语逐字命中某个标题）⇒ 坐标；
-    - 都定位不到 ⇒ single 给完整正稿；global 只给版本指纹与回读入口；
-    - 本轮没有 read_card 工具 ⇒ 一律给完整正稿（坐标读不到就是白给）。
-    """
+                            details: list[str], scope: Any, readback: bool,
+                            meta_by_id: dict[str, dict[str, Any]],
+                            shown_docs: set[tuple[str, str]]) -> list[str]:
+    """汇总同份存档正稿在各边的定位；按文档去重、按行段保留证据。"""
     title = str((meta_by_id.get(target) or {}).get("title") or "")
     total_lines = len(req.split("\n"))
     head = f"  {target} 的需求文档"
@@ -2743,25 +2770,55 @@ def _dep_doc_lines_narrowed(dl: Any, target: str, req: str, fp: str,
         head += f"《{title}》"
     head += f"（当前版本 {fp}，{total_lines} 行）"
 
-    anchors = dl.extract_clause_anchors(detail)
-    ranges = dl.locate_clauses(req, anchors)
-    if not ranges:
-        phrases = dl.extract_title_phrases(detail)
-        ranges = dl.locate_sections(req, phrases)
+    if not readback:
+        return _dep_doc_full_lines(target, req, fp, shown_docs)
+    if (target, fp) in shown_docs:
+        return [f"  {target} 的需求文档：同本区上方首次展示的正稿"
+                f"（同一卡面同一正文，此处不重复展开）"]
+
+    ranges = {}
+    task_anchors = (getattr(scope, "anchors", ())
+                    if scope.target_card == target else ())
+    if task_anchors:
+        for rg in dl.locate_clauses(req, list(task_anchors)):
+            ranges[(rg.start, rg.end)] = rg
+    incomplete = bool(task_anchors and not ranges)
+    for detail in details:
+        anchors = dl.extract_clause_anchors(detail)
+        located = dl.locate_clauses(req, anchors)
+        if not located:
+            located = dl.locate_sections(req, dl.extract_title_phrases(detail))
+        for rg in located:
+            ranges.setdefault((rg.start, rg.end), rg)
+        incomplete |= bool(anchors and not located)
+    if getattr(scope, "is_single", False) and incomplete:
+        return _dep_doc_full_lines(target, req, fp, shown_docs)
     if ranges:
+        shown_docs.add((target, fp))
         out = [head + "：本轮定位到以下条目（其余按需按坐标回读）："]
-        for rg in ranges:
+        for coords in sorted(ranges):
+            rg = ranges[coords]
             out.append(f"  · {rg.anchor}「{rg.title}」→ 行 {rg.start}-{rg.end}")
             out.append("    " + dl.range_read_hint(
                 target, "需求文档", rg.start, rg.end))
             if rg.text and len(rg.text.encode("utf-8")) <= _DEP_INLINE_MAX:
                 out.extend(f"    {ln}" for ln in rg.text.split("\n"))
         return out
-    # 定位不到 ⇒ 按档位回退
-    if getattr(scope, "is_global", False) and readback:
-        out = [head + "：未定位到本轮消费的条款（正文不在此处展开）。",
-               f"  需读全文：read_card(card_id=\"{target}\", block=\"需求文档\")"]
-        return out
+    # 定位不到 ⇒ global 档只给版本与回读入口；single 档回退完整正稿
+    if getattr(scope, "is_global", False):
+        shown_docs.add((target, fp))
+        return [head + "：未定位到本轮消费的条款（正文不在此处展开）。",
+                f"  需读全文：read_card(card_id=\"{target}\", block=\"需求文档\")"]
+    return _dep_doc_full_lines(target, req, fp, shown_docs)
+
+
+def _dep_doc_full_lines(target: str, req: str, fp: str,
+                         shown_docs: set[tuple[str, str]]) -> list[str]:
+    """完整正稿展开（**沿用批一去重**：同目标同正文只展开一次）。"""
+    if (target, fp) in shown_docs:
+        return [f"  {target} 的需求文档：同本区上方首次展示的正稿"
+                f"（同一卡面同一正文，此处不重复展开）"]
+    shown_docs.add((target, fp))
     out = [f"  {target} 的需求文档（随它卡面更新）："]
     out.extend(f"  {ln}" for ln in req.split("\n"))
     return out

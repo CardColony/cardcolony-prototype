@@ -64,6 +64,8 @@ rebuild() 从真相（会话文件）全量重建；写路径（append/scan_tail
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future
+from threading import Lock, local
 import json
 import logging
 import os
@@ -72,11 +74,11 @@ import time
 import uuid
 from collections import deque
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import aiofiles
 
-from . import card_store, event_log, origin_store, revision_store, session_ops, session_store
+from . import card_db, card_store, event_log, origin_store, revision_store, session_ops, session_store
 
 logger = logging.getLogger("storage.session_facade")
 
@@ -108,7 +110,7 @@ BLOCK_FIELDS = ("seq", "actor", "from", "turn", "pair", "model", "behavior", "en
                 # （ok/error——存根三态投影的数据源）与调用来源标记
                 # （native/declared_text/pseudo_compat——来源面在块上可审计）。
                 # 存量旧块无这两字段 → 解析为零迁移（缺字段＝空）。
-                "status", "origin",
+                "status", "origin", "task_proof", "coordination_scope",
                 # [超长会话漏调专项 2026-11-19] 回复块的收口核对＋系统结果
                 # （JSON 单行——「没有执行却显示完成」的结构化对账锚，刷新后
                 # 的历史与最终回复同源）。存量旧块缺字段＝空（零迁移）。
@@ -117,7 +119,12 @@ BLOCK_FIELDS = ("seq", "actor", "from", "turn", "pair", "model", "behavior", "en
                 # （pseudo_unparsed/refused_strict/over_cap——原文只留档案面）；
                 # ctx_content＝供模型使用的视图（残部＋宿主状态行，JSON 单行
                 # 规则同 reasoning_content）。存量旧块缺字段＝空（零迁移）。
-                "quarantine", "ctx_content")
+                "quarantine", "ctx_content",
+                # [评审按阶段缩量·发言回读锚 2026-11-20] 评审席位发言块的材料
+                # 身份锚（JSON 单行 dict：review_id/batch/seat/step/draft_ver/
+                # draft_fp——绑定的是**实际送给席位的稿**，不是落块时最新稿）。
+                # 存量旧块缺字段＝None（零迁移；无锚发言走完整装配）。
+                "review_anchor")
 BLOCK_REQUIRED = ("seq", "actor", "turn")
 END_VALUES = ("model_done", "policy_stop", "human_stop", "error")
 ACTOR_HUMAN = "human"
@@ -467,6 +474,8 @@ def _materialize_v2_block(kv: dict, content_lines: list[str],
         # （缺＝空串；存量旧块零迁移——存根投影按内容判三态）
         "status": kv.get("status", "") or "",
         "origin": kv.get("origin", "") or "",
+        "task_proof": _parse_receipt_json(kv.get("task_proof", "")),
+        "coordination_scope": _parse_receipt_json(kv.get("coordination_scope", "")),
         # [超长会话漏调专项 2026-11-19] 回复块收口核对＋系统结果（JSON 单行；
         # 缺＝None——存量旧块零迁移，解析失败退化为原文串不丢内容）
         "receipt": _parse_receipt_json(kv.get("receipt", "")),
@@ -475,6 +484,9 @@ def _materialize_v2_block(kv: dict, content_lines: list[str],
         # JSON 单行字符串，解析失败退化为原文串（不丢内容；缺字段＝空）
         "quarantine": kv.get("quarantine", "") or "",
         "ctx_content": _parse_text_json(kv.get("ctx_content", "")),
+        # [评审按阶段缩量·发言回读锚 2026-11-20] JSON 单行 dict；
+        # 缺字段＝None（存量旧块零迁移），解析失败按原文串包装不丢内容。
+        "review_anchor": _parse_receipt_json(kv.get("review_anchor", "")),
         "format": "v2",
     }
     damaged = bool(missing) or not header_closed or not closed
@@ -533,13 +545,26 @@ def _enrich_v1(msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+_READ_LOOP_LOCAL = local()
+
+
 def _read_v1_sync(work_id: str, card_id: str) -> list[dict[str, Any]]:
     """V1 会话整读＋解析的**同步门面**——给 ``asyncio.to_thread`` 用。
 
     〔2026-11-04〕``session_store.read_session`` 是协程，to_thread 只能吃同步
     函数；worker 线程里没有运行中的循环 ⇒ ``asyncio.run`` 起一个把它跑完。
+    〔2026-11-21〕``asyncio.run`` 每次都新建并销毁一整个事件循环——Windows
+    上 Proactor 初始化要建 socketpair（一对真插座＋临时 listen），每读一次
+    会话烧一轮插座开合（尸检日志几千条 LISTEN close 的主源）⇒ 改为**线程
+    局部复用 loop**：同一线程内 read_session 反复跑在同一循环上，aiofiles
+    的执行器也随之复用。
     """
-    return asyncio.run(session_store.read_session(work_id, card_id))
+    loop = getattr(_READ_LOOP_LOCAL, "loop", None)
+    if loop is None or loop.is_closed():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        _READ_LOOP_LOCAL.loop = loop
+    return loop.run_until_complete(session_store.read_session(work_id, card_id))
 
 
 # ---------------------------------------------------------------- 读（T023）
@@ -865,6 +890,7 @@ async def _read_parsed(work_id: str, card_id: str,
     峰值与常驻都按投影后的小体积算。
     """
     path = _session_path(work_id, card_id)
+    await _recover_review_publication(work_id, card_id, path)
     if not path.exists():
         return []
     stamp = _file_stamp(path)
@@ -955,6 +981,7 @@ async def read(work_id: str, card_id: str, *, from_seq: Optional[int] = None,
 async def read_header(work_id: str, card_id: str) -> Optional[dict[str, Any]]:
     """读 V2 文件头（体检器／迁移通道用）。非 V2 或文件不存在返回 None。"""
     path = _session_path(work_id, card_id)
+    await _recover_review_publication(work_id, card_id, path)
     if not path.exists():
         return None
     async with aiofiles.open(path, mode="r", encoding="utf-8") as f:
@@ -1005,6 +1032,10 @@ def _render_v2_block(b: dict[str, Any]) -> str:
     if b.get("origin"):
         # [调用来源与真实回执 2026-11-19] 调用来源标记（native/declared_text/pseudo_compat）
         lines.append(f"origin: {b['origin']}")
+    if b.get("task_proof"):
+        lines.append("task_proof: " + json.dumps(b["task_proof"], ensure_ascii=False))
+    if b.get("coordination_scope"):
+        lines.append("coordination_scope: " + json.dumps(b["coordination_scope"], ensure_ascii=False))
     if b.get("receipt"):
         # [超长会话漏调专项 2026-11-19] 回复块收口核对＋系统结果（JSON 单行，
         # 换行转义保单行——规则同 tool_calls）
@@ -1020,6 +1051,11 @@ def _render_v2_block(b: dict[str, Any]) -> str:
         # 投影视图 JSON 单行（规则同 reasoning_content）
         lines.append("ctx_content: " +
                      json.dumps(b["ctx_content"], ensure_ascii=False))
+    if b.get("review_anchor"):
+        # [评审按阶段缩量·发言回读锚 2026-11-20] JSON 单行 dict
+        # （规则同 receipt/tool_calls：换行转义保单行）
+        lines.append("review_anchor: " +
+                     json.dumps(b["review_anchor"], ensure_ascii=False))
     if b.get("end"):
         lines.append(f"end: {b['end']}")
     lines.append(f"ts: {b.get('ts') or session_store._now_iso()}")
@@ -1280,6 +1316,8 @@ def _assign_block(existing: list[dict[str, Any]], block: dict[str, Any]) -> dict
         # （空值不落行——渲染侧有值才写；存量旧块零迁移）。
         "status": block.get("status", "") or "",
         "origin": block.get("origin", "") or "",
+        "task_proof": block.get("task_proof") or None,
+        "coordination_scope": block.get("coordination_scope") or None,
         # [超长会话漏调专项 2026-11-19] 回复块收口核对＋系统结果（结构化 dict）
         "receipt": block.get("receipt") or None,
         "reasoning_content": block.get("reasoning_content") or "",
@@ -1287,6 +1325,9 @@ def _assign_block(existing: list[dict[str, Any]], block: dict[str, Any]) -> dict
         # 时若漏掉这两键，标记在落盘瞬间被剥——reasoning_content 同族教训）
         "quarantine": block.get("quarantine") or "",
         "ctx_content": block.get("ctx_content") or "",
+        # [评审按阶段缩量·发言回读锚 2026-11-20] 评审发言块的材料身份锚
+        # （随块落盘——白名单重建时漏键＝锚在落盘瞬间被剥，同 receipt 教训）
+        "review_anchor": block.get("review_anchor") or None,
         "ts": now,
         "format": "v2",
     }
@@ -1301,6 +1342,7 @@ def _assign_block(existing: list[dict[str, Any]], block: dict[str, Any]) -> dict
 async def _read_existing_locked(work_id: str, card_id: str,
                                 path: Path) -> tuple[str, int, list[dict[str, Any]]]:
     """锁内读现状：返回 (原文, 格式号, 已落块列表)。V1 委托旧解析并补派生字段。"""
+    await _recover_review_publication(work_id, card_id, path)
     if path.exists():
         # [读路径锁重试 2026-10-20] 原来这里裸 `aiofiles.open`——撞上 Windows 文件锁
         # 直接抛 Errno 13，整轮被按「模型调用失败」收口。与写路径同一套重试。
@@ -1315,6 +1357,107 @@ async def _read_existing_locked(work_id: str, card_id: str,
     else:
         existing = _enrich_v1(await asyncio.to_thread(_read_v1_sync, work_id, card_id))
     return text, fmt, existing
+
+
+def _review_journal(path: Path) -> Path:
+    return path.with_suffix(".publish")
+
+
+def _recover_review_publication_sync(work_id: str, card_id: str, path: Path) -> str:
+    """以 SQLite 提交令牌判定保留新文件还是恢复旧文件。"""
+    journal = _review_journal(path)
+    backup = journal.with_suffix(".publish-old")
+    key = f"review_session_publish:{card_id}"
+
+    def _recover(conn: Any) -> str:
+        if not journal.exists():
+            return ""
+        entry = json.loads(journal.read_text(encoding="utf-8"))
+        row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        committed = bool(row and row["value"] == entry["token"])
+        if not committed:
+            if entry["had_file"]:
+                previous = backup.read_text(encoding="utf-8")
+                if not path.exists() or path.read_text(encoding="utf-8") != previous:
+                    _atomic_write_text(path, previous)
+            else:
+                path.unlink(missing_ok=True)
+            if entry.get("archive"):
+                (path.parent / entry["archive"]).unlink(missing_ok=True)
+        try:
+            journal.unlink()
+            backup.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("评审会话发布日志待回收 card=%s", card_id, exc_info=True)
+        return str(entry["token"]) if committed else ""
+
+    return card_db.write_sync(work_id, _recover)
+
+
+async def _recover_review_publication(work_id: str, card_id: str, path: Path) -> None:
+    if _review_journal(path).exists():
+        await asyncio.to_thread(_recover_review_publication_sync, work_id, card_id, path)
+
+
+async def publish_review_session_locked(
+        work_id: str, card_id: str, *, previous: str, replacement: str,
+        archive_id: str, archive_text: str,
+        update: Callable[[Any, str], None]) -> str:
+    """在会话写锁内发布评审会话。旧文件先备份，原文账与投影同事务提交。"""
+    path = _session_path(work_id, card_id)
+    journal = _review_journal(path)
+    backup = journal.with_suffix(".publish-old")
+    token = uuid.uuid4().hex
+    key = f"review_session_publish:{card_id}"
+    archive_name = ""
+
+    def _publish(conn: Any) -> None:
+        nonlocal archive_name
+        if journal.exists():
+            raise OSError("上一笔评审会话发布日志尚未回收")
+        chosen_id = archive_id
+        archive = _session_path(work_id, chosen_id)
+        serial = 2
+        while archive.exists() or conn.execute(
+                "SELECT 1 FROM session_blocks WHERE card_id=? LIMIT 1", (chosen_id,)).fetchone():
+            chosen_id = f"{archive_id}-{serial}"
+            archive = _session_path(work_id, chosen_id)
+            serial += 1
+        archive_name = archive.name if archive_text else ""
+        had_file = path.exists()
+        if had_file:
+            _atomic_write_text(backup, previous)
+        _atomic_write_text(journal, json.dumps({
+            "token": token, "had_file": had_file,
+            "archive": archive_name,
+        }))
+        if archive_text:
+            _atomic_write_text(archive, archive_text)
+        update(conn, chosen_id)
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, token))
+        _atomic_write_text(path, replacement)
+
+    def _run() -> str:
+        try:
+            card_db.write_sync(work_id, _publish)
+        except Exception:
+            if (not journal.exists()
+                    or _recover_review_publication_sync(work_id, card_id, path) != token):
+                raise
+        else:
+            try:
+                _recover_review_publication_sync(work_id, card_id, path)
+            except Exception:  # 已提交，下一次读写可清理残留日志。
+                logger.warning("评审会话已提交，待回收发布日志 card=%s", card_id, exc_info=True)
+        return archive_name
+
+    task = asyncio.create_task(asyncio.to_thread(_run))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # 等工作线程交回，防止取消的协程先释放会话写锁。
+        await asyncio.shield(task)
+        raise
 
 
 def _write_new_blocks_locked(work_id: str, card_id: str, path: Path,
@@ -1762,26 +1905,44 @@ async def create_with_session(work_id: str, title: str, source: str, *,
 # ============================================================
 
 # 在途登记：(work, card) → owner（"turn:xxxx"＝主线回合；"condense"＝凝练支线）。
-# 纯内存 dict、无 await 区间内读写（事件循环内原子）；字节锁（session_store._session_lock）
+# 纯内存登记，各槽环共用；字节锁（session_store._session_lock）
 # 保留为门面内部实现细节（T083）。旧防护（重发去重、写锁语义）不动不删（T087），
 # 退役时点＝生产生效时刻。
 _active_turns: dict[tuple[str, str], str] = {}
+_turn_released: dict[tuple[str, str], Future] = {}
+_turn_registry_lock = Lock()
 
 
 def turn_try_acquire(work_id: str, card_id: str, owner: str) -> bool:
     """登记在途；已被占（任何 owner）→ False。主线第二回合到达即拒（T084，
     10-08 口径「同卡 409 不排队」，排队策略归迭代二 T085）。"""
     key = (work_id, card_id)
-    if key in _active_turns:
-        return False
-    _active_turns[key] = owner
-    return True
+    with _turn_registry_lock:
+        if key in _active_turns:
+            return False
+        _active_turns[key] = owner
+        return True
 
 
 def turn_release(work_id: str, card_id: str, owner: str) -> None:
     key = (work_id, card_id)
-    if _active_turns.get(key) == owner:
+    with _turn_registry_lock:
+        if _active_turns.get(key) != owner:
+            return
         del _active_turns[key]
+        released = _turn_released.pop(key, None)
+    if released is not None:
+        released.set_result(None)
+
+
+async def wait_for_turn_release(work_id: str, card_id: str) -> None:
+    """等待当前持有者释放逻辑锁。空闲时立即返回。"""
+    key = (work_id, card_id)
+    with _turn_registry_lock:
+        if key not in _active_turns:
+            return
+        released = _turn_released.setdefault(key, Future())
+    await asyncio.shield(asyncio.wrap_future(released))
 
 
 def turn_holder(work_id: str, card_id: str) -> str:
@@ -1796,8 +1957,9 @@ def turn_sessions_for_card(work_id: str, card_id: str) -> list[str]:
     卡级动作（停止/诊断）要扫全树——键前缀 ``card@`` 即附加会话。
     """
     prefix = str(card_id) + "@"
-    return [cid for (w, cid) in _active_turns
-            if w == work_id and (cid == card_id or cid.startswith(prefix))]
+    with _turn_registry_lock:
+        return [cid for (w, cid) in _active_turns
+                if w == work_id and (cid == card_id or cid.startswith(prefix))]
 
 
 # ============================================================

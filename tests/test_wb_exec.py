@@ -526,15 +526,22 @@ def test_repo_config_shape_is_valid(monkeypatch):
     #   ⇒ 更便宜的 hy4flash-free 顶上（x0.03，付费也只是 x0.03 < glm x0.08）
     assert "wb-cn:glm-5.3-flash" not in prios
     assert "wb-intl:glm-5.3-flash" not in prios
-    assert prios.get("wb-cn:hy4flash-free") == 29
-    assert prios.get("wb-cn:hy4flash") == 30
+    assert prios.get("wb-cn:hy4flash-free") == 33
+    assert prios.get("wb-cn:hy4flash") == 34
+    assert prios.get("wb-intl:hy4flash-free") == 35
+    # ★ cc inkling-2-small:free 11-20 上游 404 免费撤档 ⇒ 已从表删（防回加）
+    assert "wb-cc:thinkingmachines/inkling-2-small:free" not in prios
     # ★ 表里**存在**的候选：优先级必须按档位语义严格递增（表序＝优先级序）
     expected_order = [
         "wb-devin:swe-2-flash-max", "wb-oc:flint-40b-free",
         "wb-oc:deepseek-v4.1-flash-free", "wb-oc:big-pickle",
         "wb-oc:glm-5.3-flash-free", "wb-oc:mimo-v2.6-flash-free",
-        "wb-cc:thinkingmachines/inkling-2-small:free",
-        "wb-cc:recursive/flint-v1.0:free",
+        # ★ [2026-11-20 批量真调 ok 的新免费档]（目录 53 个免费档，
+        #   验证窗口里真调通过才进表；其余 43 档挂起时段未验 ⇒ 待验）
+        "wb-oc:hy4-flash-free", "wb-oc:longcat-2.5-free",
+        "wb-oc:nemotron-3.5-lightning-free", "wb-oc:nemotron-3.5-super-vl-free",
+        "wb-oc:iceman-free", "wb-oc:tidepool-alpha-free",
+        "wb-cc:recursive/flint-v1.0:free",   # inkling-2-small:free 11-20 404 撤档已删
         "wb-cc:reflection/beam:free",
         "wb-cc:stealth/glyph-cluster:free",
         "wb-cn:hy4flash-free", "wb-cn:hy4flash",
@@ -574,7 +581,11 @@ def test_repo_config_shape_is_valid(monkeypatch):
     assert oc.oc_provider_id == "opencode"
     assert list(oc.oc_models) == [
         "flint-40b-free", "deepseek-v4.1-flash-free", "big-pickle",
-        "glm-5.3-flash-free", "mimo-v2.6-flash-free"]
+        "glm-5.3-flash-free", "mimo-v2.6-flash-free",
+        # ★ [2026-11-20 批量真调 ok 新档]（与候选表 oc 段一致）
+        "hy4-flash-free", "longcat-2.5-free",
+        "nemotron-3.5-lightning-free", "nemotron-3.5-super-vl-free",
+        "iceman-free", "tidepool-alpha-free"]
     assert list(oc.oc_api_key_envs) == ["OPENCODE_API_KEY", "OPENCODE2_API_KEY",
                                         "OPENCODE3_API_KEY"]
     assert oc.oc_pool_size == 3

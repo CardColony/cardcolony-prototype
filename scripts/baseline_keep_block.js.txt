@@ -1,0 +1,49 @@
+      // [超长会话漏调专项 2026-11-20 · 用户复验] 系统结果独立行——执行事实
+      // 与模型正文分开显示；实时（SSE）与刷新（timeline）同一条渲染路。
+      // status：none=未执行工具 / done=全部成功 / partial / fail。
+      case "system_result": {
+        if (!d.text) return null;
+        const srCls = d.status === "none" ? "warn" :
+          (d.status === "fail" ? "fail err" :
+            (d.status === "partial" ? "warn" : "ok"));
+        return makeRow(t, "<b>系统结果</b>：" + esc(d.text),
+          d.status === "none" ? "本轮未执行工具" : null,
+          (d.items && d.items.length) ? JSON.stringify(d.items, null, 1) : null,
+          srCls);
+      }
+      // [按回执交付] 绑定动作回合收口核对未满足——「没有执行却显示完成」
+      // 的系统对账行。
+      case "action_not_executed":
+        if (d.text) {
+          return makeRow(t, esc(d.text), null, fmtData(d),
+            d.severity === "warn" ? "warn" : "fail err");
+        }
+        return makeRow(t, "<b>系统回执</b>：本回合任务未执行" +
+          fld("detail", d.detail), null, fmtData(d), "fail err");
+      // [定向补救续跳] 零派发＋完成声明 → 一次定向续跳（事件面可数）。
+      case "remediation_jump":
+        return makeRow(t, "定向补救续跳（欠动作，续跳一次）" +
+          fld("rounds", d.rounds), null, fmtData(d), "warn");
+      // [原生协议失败] 端点声称调了工具但网关没拿到有效调用——与「模型没调」
+      // 分开的计数面。
+      case "native_protocol_error":
+        return makeRow(t, "原生协议失败：端点报告了调用但未收到有效调用" +
+          fld("finish_reason", d.finish_reason),
+          "缺名 " + esc(d.native_dropped || 0) + " · 截断 " + esc(d.native_truncated || 0),
+          fmtData(d), "fail err");
+      // [正文伪调用拒绝] 验收模式（TOOL_CALL_STRICT=1）下原生端点正文伪
+      // 调用不代执行。
+      case "pseudo_call_refused":
+        return makeRow(t, "正文伪调用已拒绝（只认标准调用通道）" +
+          fld("names", (d.names || []).join("、")), null, fmtData(d), "warn");
+      // [伪调用未解析] 写了形似调用的文本但解析不出——机械事实落账，纠偏
+      // 归 harness 策略（2026-11-12 harness 化）。
+      case "pseudo_call_unparsed":
+        return makeRow(t, "正文伪调用未解析（未执行）" + fld("chars", d.chars),
+          null, fmtData(d), "warn");
+      case "pseudo_receipt":
+        return makeRow(t, "模型自写回执（未获执行确认）" + fld("count", d.count),
+          null, fmtData(d), "warn");
+      case "text_proto_refused":
+        return makeRow(t, "正文协议调用已拒绝（当前协议仅支持只读工具）" +
+          fld("name", d.name), null, fmtData(d), "warn");

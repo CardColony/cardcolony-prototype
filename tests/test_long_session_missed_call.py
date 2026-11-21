@@ -1481,6 +1481,7 @@ async def test_interrupt_after_request_boundary_not_delivered(
         if n["c"] == 1:
             return ({"content": "好的，明白了。", "tool_calls": [],
                      "protocol_meta": _proto()}, "fake")
+        _["on_transport"]({"model_used_entry": model_name, "transport": "test"})
         raise RuntimeError("injected interrupt: request sent, no response")
 
     monkeypatch.setattr(routes.model_service, "call_main", fake_call_main)
@@ -1635,9 +1636,12 @@ async def test_report_only_remediation_names_actual_creditor(
     monkeypatch.setenv("MOCK_LLM", "1")
     monkeypatch.setenv("ECO_NO_AUTO_DELIVER", "1")
     wid = work["work_id"]
+    parent = work_store.work_card_id_of(wid)
+    sender = (await card_store.create_card(
+        wid, "执行卡", "模型生成", parent=parent))["meta"]["card_id"]
     tgt = (await card_store.create_card(
         wid, "任务目标卡", "模型生成",
-        parent=work_store.work_card_id_of(wid)))["meta"]["card_id"]
+        parent=sender))["meta"]["card_id"]
     prompts: list[str] = []
     n = {"c": 0}
 
@@ -1656,6 +1660,10 @@ async def test_report_only_remediation_names_actual_creditor(
                                        "instruction": "推进",
                                        "acceptance": "有回执"})],
                      "protocol_meta": _proto()}, "fake")
+        if n["c"] == 3:
+            return ({"content": "", "tool_calls": [
+                _tc("report_up", {"content": "仅汇报编号 test-report-only"})],
+                "protocol_meta": _proto()}, "fake")
         return ({"content": "好的。", "tool_calls": [],
                  "protocol_meta": _proto()}, "fake")
 
@@ -1663,21 +1671,157 @@ async def test_report_only_remediation_names_actual_creditor(
     task = {"task_id": "task-r1", "rev": 3, "text": "把指令发给目标卡",
             "action": "direct", "target": tgt, "accept": "实际投递受理"}
     result = await routes._run_message(
-        wid, "card_001", "推进一下",
+        wid, sender, "推进一下",
         source_kind="directive",
-        source={"kind": "card_msg", "from": "card_A",
+        source={"kind": "card_msg", "from": parent,
                 "require_report": True, "task": task})
     assert "error" not in result
-    assert n["c"] == 3, f"欠汇报应补一次: {n['c']}"
+    assert n["c"] == 4, f"欠汇报应补一次，真实工具结果另有续跳: {n['c']}"
     p3 = prompts[2]
-    assert "欠汇报" in p3 and "card_A" in p3, \
-        f"补救提示必须点名实际欠项 card_A: {p3[:300]}"
+    assert "欠汇报" in p3 and parent in p3, p3
     assert "欠任务动作" not in p3, \
         "任务动作已受理——提示不得说目标卡没收到"
     # B 实收保持一条（补救不重复发任务指令）
     blocks = await session_facade.read(wid, tgt)
     hits = [b for b in blocks if "推进" in str(b.get("content") or "")]
     assert len(hits) == 1, f"B 的消息数必须保持一条: {len(hits)}"
+    reports = await session_facade.read(wid, parent)
+    assert sum("test-report-only" in str(b.get("content") or "") for b in reports) == 1
+
+
+def test_report_with_unknown_actual_recipient_holds_original_anchor():
+    task = {"task_id": "t", "action": "report_up", "target": "card_001"}
+    event = {"tool": "report_up", "ok": True,
+             "send": {"recipients": [{"to": "", "msg_id": "cmsg-original", "state": "pending"}]}}
+    verdict = _task_state_for([event], task)
+    assert verdict["task_state"] == "unverified"
+    assert verdict["action_dispatched"] and not verdict["task_missing"]
+    assert "cmsg-original" in verdict["task_note"]
+
+
+def test_op_already_dispatched_only_remediates_report():
+    state = SimpleNamespace(op="update_status", report_after={"card_001": 0},
+                            tool_events=[{"tool": "propose_status", "ok": True}])
+    verdict = tool_receipt.receipt_verdict(state)
+    assert verdict["op_satisfied"] and not verdict["op_missing"]
+    assert verdict["reports"] == {"card_001": "not_sent"}
+    prompt = tool_receipt.remediation_prompt(state, verdict["bound"], verdict)
+    assert "欠汇报：card_001" in prompt and "欠绑定动作" not in prompt
+
+
+@pytest.mark.parametrize("outcome", ["pre_send", "in_flight_stop", "terminal", "stream_error"])
+async def test_remediation_uses_adapter_transport_evidence(work, sandbox, monkeypatch, outcome):
+    import asyncio
+    import httpx
+    from types import SimpleNamespace
+
+    from src.api import control, model_config, model_service
+    from src.infra import intervention_runner, intervention_store
+    from src.model_gateway.gateway import ModelGateway
+
+    wid, root = work["work_id"], "card_001"
+    target = (await card_store.create_card(
+        wid, "收件卡", "模型生成", parent=root))["meta"]["card_id"]
+    seat, wire_model = "audit-seat", "audit-wire"
+    fallback, fallback_wire = "audit-fallback", "fallback-wire"
+    monkeypatch.delenv("MOCK_LLM", raising=False)
+    monkeypatch.setenv("ECO_NO_AUTO_DELIVER", "1")
+    gateway = ModelGateway({"models": {
+        seat: {"provider": "openai", "model": wire_model,
+               "base_url": "https://audit.test/v1", "api_key": "test-token"},
+        fallback: {"provider": "openai", "vendor": "fallback-provider", "model": fallback_wire,
+                   "base_url": "https://fallback.test/v1", "api_key": "test-token"},
+    }})
+    monkeypatch.setattr(gateway, "_retry_params", lambda _seat: (1, 0))
+    monkeypatch.setattr(model_service, "get_gateway", lambda: gateway)
+    monkeypatch.setattr(message_runner, "_pick_step_model", lambda state: seat)
+    monkeypatch.setattr(message_runner, "_RESUME_MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(model_config, "layer_fallbacks", lambda *args, **kwargs:
+                        [fallback] if outcome == "stream_error" else [])
+
+    store = intervention_store.store()
+    sent_bodies = []
+    events = []
+    monkeypatch.setattr(message_runner.event_stream, "emit",
+                        lambda w, s, kind, data: events.append((kind, data)))
+
+    def row():
+        return dict(store._conn(wid).execute(
+            "SELECT * FROM actions WHERE mode='remediation'").fetchone())
+
+    def sse(payload):
+        return ("data: " + json.dumps(payload) + "\n\n").encode()
+
+    class Interrupted(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield sse({"model": "reply-model", "choices": [
+                {"index": 0, "delta": {"content": "部分正文"}, "finish_reason": None}
+            ]})
+            control.request_stop(wid, root)
+            await asyncio.Event().wait()
+
+    async def transport(request):
+        second = bool(sent_bodies)
+        body = json.loads(request.content)
+        trace = request.extensions["trace"]
+        if second:
+            assert row()["state"] == "pending"
+            if outcome == "pre_send":
+                await trace("http11.send_request_body.started",
+                            {"request": SimpleNamespace(method=b"CONNECT")})
+                await trace("http11.send_request_body.complete", {})
+                raise httpx.ConnectError("no connection", request=request)
+            if outcome == "stream_error" and body["model"] == wire_model:
+                raise httpx.ConnectError("first seat unavailable", request=request)
+        sent_bodies.append(body)
+        # 模拟 httpcore 完整写出请求体。MockTransport 本身没有底层 socket trace。
+        await trace("http11.send_request_body.started", {"request": request})
+        await trace("http11.send_request_body.complete", {})
+        if second:
+            assert row()["state"] == "sent"
+            if outcome == "in_flight_stop":
+                return httpx.Response(200, stream=Interrupted())
+            if outcome == "stream_error":
+                return httpx.Response(200, content=(
+                    sse({"model": "failed-reply-model", "choices": []})
+                    + sse({"error": {"message": "after request body"}})))
+        return httpx.Response(200, content=(
+            sse({"model": "reply-model", "choices": [
+                {"index": 0, "delta": {"content": "收到"}, "finish_reason": "stop"}
+            ]}) + b"data: [DONE]\n\n"))
+
+    client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw:
+                        client(*a, transport=httpx.MockTransport(transport), **kw))
+    await routes._run_message(wid, root, "执行任务", source_kind="human",
+                              source={"task": _task_record(target)})
+    action = row()
+    ledger = [json.loads(line) for line in
+              (sandbox.logs / "tool_dispatch_ledger.jsonl").read_text(encoding="utf-8").splitlines()]
+    records = [e for e in ledger if e.get("action_id") == action["action_id"]]
+    sends = [e for e in records if e.get("kind") == "remediation_request"]
+    jumps = [e for e in records if e.get("kind") == "remediation_jump"]
+    if outcome == "pre_send":
+        assert len(sent_bodies) == 1 and not sends and not jumps
+        assert action["state"] == "pending"
+        assert intervention_runner._reconcile_remediation(wid, action) == "stale"
+    else:
+        assert len(sent_bodies) == 2 and len(sends) == 1
+        expected_seat, expected_model = ((fallback, fallback_wire) if outcome == "stream_error"
+                                         else (seat, wire_model))
+        assert sends[0]["request_model"] == sent_bodies[1]["model"] == expected_model
+        assert sends[0]["model_used_entry"] == expected_seat
+        assert len(jumps) == int(outcome == "terminal")
+        assert action["state"] == {
+            "in_flight_stop": "unverified", "terminal": "delivered", "stream_error": "sent"
+        }[outcome]
+    if outcome == "stream_error":
+        last = [data for kind, data in events if kind == "hop_accounting"][-1]
+        assert last["failed"] and last["executor_attempts"] == 0
+        assert last["requested_model"] == seat
+        assert last["model_used_entry"] == fallback and last["request_model"] == fallback_wire
+        assert last["api_base"] == "https://fallback.test/v1"
+        assert last["response_model"] == "failed-reply-model"
 
 
 async def test_stop_synthetic_result_marks_unverified_not_delivered(
@@ -1701,6 +1845,7 @@ async def test_stop_synthetic_result_marks_unverified_not_delivered(
             return ({"content": "好的，明白了。", "tool_calls": [],
                      "protocol_meta": _proto()}, "fake")
         # 人停断流的合成收口：半截正文＋stopped 标记、无终帧
+        _["on_transport"]({"model_used_entry": model_name, "transport": "test"})
         return ({"content": "补救进行到一半被停止", "tool_calls": [],
                  "stopped": True, "protocol_meta": _proto()}, "fake")
 
@@ -1742,7 +1887,13 @@ async def test_hop_accounting_failure_path_emits(work, sandbox, monkeypatch):
         message_runner.event_stream, "emit",
         lambda w, s, t, d: events.append((t, d)))
 
+    calls = []
+
     async def fake_call_main(*a, **k):
+        calls.append(k)
+        if len(calls) == 1:
+            return ({"content": "", "tool_calls": [_tc("read_card", {"card_id": "card_001"})],
+                     "model_used": "first-seat"}, "first-wire")
         raise RuntimeError("endpoint exploded mid-stream")
 
     monkeypatch.setattr(routes.model_service, "call_main", fake_call_main)
@@ -1750,12 +1901,13 @@ async def test_hop_accounting_failure_path_emits(work, sandbox, monkeypatch):
                                        source_kind="human")
     assert getattr(result, "status_code", 200) >= 500
     accs = [d for t, d in events if t == "hop_accounting"]
-    assert len(accs) == 1, f"失败请求也要有对账: {accs}"
-    acc = accs[0]
+    assert len(accs) == 2 and accs[0]["executor_attempts"] == 1, accs
+    acc = accs[1]
     assert acc.get("failed") is True
     assert "RuntimeError" in str(acc.get("error") or "")
     assert acc["candidates"] == 0 and acc["admitted"] == 0
     assert acc["executor_attempts"] == 0 and acc["completed"] == 0
+    assert acc["model_used_entry"] == acc["model_used"] == acc["request_model"] == ""
     assert "requested_model" in acc and "endpoint_protocol" in acc
 
 

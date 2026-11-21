@@ -506,14 +506,16 @@
   {
    "code": "respond_review",
    "name": "回应评审批次",
-   "desc": "在自己被评的批次里交回本轮改稿/回应（评审回合的出口）。",
+   "desc": "在自己被评的批次里交回本轮改稿/回应（评审回合的出口）、查卡点、续跑/点名席位。",
    "applies_to": [
     "card"
    ],
    "impl": {
     "kind": "tools",
     "tools": [
-     "submit_revision"
+     "submit_revision",
+     "read_review_status",
+     "resume_review"
     ],
     "switch": "edit"
    }

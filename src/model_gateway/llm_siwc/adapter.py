@@ -37,6 +37,7 @@ from ..llm.errors import (
     is_quota_exceeded_error,
 )
 from ..llm.runtime import LlmAdapter, ResolvedRetryPolicy
+from ..llm.transport import send_stream
 from ..llm.types import (
     BlockEnd,
     BlockStart,
@@ -360,7 +361,9 @@ class SiwcAdapter(LlmAdapter):
             try:
                 request = client.build_request("POST", url, headers=headers,
                                                content=json.dumps(body, ensure_ascii=False))
-                response = await client.send(request, stream=True)
+                response = await send_stream(client, request, options,
+                                             model=str(body["model"]),
+                                             api_base=connection.base_url)
             except Exception as exc:  # noqa: BLE001
                 raise LlmError(f"SIWC 请求发不出去（proxy={self._proxy}）", "TRANSPORT",
                                cause=exc) from exc

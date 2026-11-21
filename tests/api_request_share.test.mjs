@@ -138,3 +138,99 @@ test("S5：silent 的读口不弹错误 toast", { skip: SKIP }, async () => {
   assert.equal(box.querySelectorAll(".toast").length, 1,
     "不 silent 的读口失败要照旧弹 toast");
 });
+
+/* ══════════════════════════════════════════════════════════════════════════
+   S6–S8：2026-11-20 返工项 —— 共享条目的三个时序缺口
+   （这三个都能独立复现，且都能**先红后绿**）
+   ══════════════════════════════════════════════════════════════════════════ */
+
+test("S6：最后一位消费者取消后**立即**（同步）重开同一 URL ⇒ 新请求不能接到已取消的条目", { skip: SKIP }, async () => {
+  const { call } = await freshApi();
+  let hits = 0;
+  globalThis.fetch = async (url, init) => {
+    hits += 1;
+    if (hits === 1) {
+      // 第一条：等着被 abort（模拟服务端还没回）
+      await new Promise((_, rej) => {
+        init.signal.addEventListener("abort", () => {
+          const e = new Error("aborted"); e.name = "AbortError"; rej(e);
+        });
+      });
+    }
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    });
+  };
+  const c1 = new AbortController();
+  const p1 = call("GET", "/api/reopen", undefined, { signal: c1.signal });
+  p1.catch(() => { });                 // 不让未接的 rejection 变成 unhandledrejection
+  c1.abort();                         // 最后一位消费者退订
+  /* ★ **同步**重开（不 await 任何东西）：原来条目只在 promise 的 finally 里摘表，
+     而 finally 是**微任务** ⇒ 这一刻表里还挂着那条**已取消**的条目
+     ⇒ 新请求会并上去 ⇒ 直接 AbortError（等于这次读没发生）。 */
+  const p2 = call("GET", "/api/reopen");
+  const v = await p2;
+  assert.equal(hits, 2,
+    "重开必须是**新的一条**请求（原来会并到已取消的条目上 ⇒ 直接 AbortError）");
+  assert.deepEqual(v, { ok: true });
+});
+
+test("S7：响应头到达后取消 ⇒ **正文读取**也要被取消（不能只停消费者）", { skip: SKIP }, async () => {
+  const { call } = await freshApi();
+  let bodyAborted = false;
+  globalThis.fetch = async (url, init) => {
+    // 头先到、正文还在流（首屏那条时序就是 1.3MB ⇒ 漏取消＝白拉一整条）
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"ok":'));
+        init.signal.addEventListener("abort", () => {
+          bodyAborted = true;
+          try { controller.error(new Error("aborted")); } catch (e) { /* 已关 */ }
+        });
+      },
+    });
+    return new Response(stream, {
+      status: 200, headers: { "Content-Type": "application/json" },
+    });
+  };
+  const c = new AbortController();
+  const p = call("GET", "/api/bodycancel", undefined, { signal: c.signal });
+  await new Promise((r) => setTimeout(r, 40));    // 等头到、正文开始读
+  c.abort();
+  await assert.rejects(p, (e) => e && e.name === "AbortError");
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(bodyAborted, true,
+    "头到之后取消 ⇒ 底层正文读取必须一起停（原来头一到就解除了 abort 连线）");
+});
+
+test("S8：写**期间**发起的 GET 不能被提交后的重读复用 ⇒ 保存成功后必须读到新值", { skip: SKIP }, async () => {
+  const { call } = await freshApi();
+  let value = "old";
+  let hits = 0;
+  globalThis.fetch = async (url, init) => {
+    hits += 1;
+    const v = value;                       // 取**发起时**的值（服务端语义）
+    if (init.method === "GET") {
+      await new Promise((r) => setTimeout(r, 60));   // 保持它在途
+      return new Response(JSON.stringify({ v }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    }
+    // 写：在途 60ms（让「写期间」这个窗口真的存在）
+    await new Promise((r) => setTimeout(r, 60));
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    });
+  };
+  const putP = call("PUT", "/api/save", { v: "new" });   // 写在途
+  await new Promise((r) => setTimeout(r, 15));          // 让写还没落定
+  const duringP = call("GET", "/api/save");              // ★ **写期间**发起
+  await putP;                                            // 写落定
+  value = "new";
+  const afterP = call("GET", "/api/save");               // 提交后重读
+  const [during, after] = await Promise.all([duringP, afterP]);
+  assert.equal(during.v, "old", "写期间发起的读拿旧值（正常）");
+  assert.equal(after.v, "new",
+    "提交后的重读必须拿到**新值**（原来纪元在写**之前**推进 ⇒ 写期间那条与重读同纪元 ⇒ 重读并上去 ⇒ 读到旧值）");
+  assert.equal(hits, 3, "两条 GET 必须各走一次网络（不能合并）");
+});

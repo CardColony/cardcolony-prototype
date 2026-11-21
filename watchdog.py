@@ -126,6 +126,24 @@ def breaker_ok(restarts):
     return True
 
 
+def _looks_like_web(cmdline: str) -> bool:
+    """命令行是否**真的**在跑 web（main.py）。
+
+    [2026-11-21 误杀事故] 原来判据是 ``"main.py" in 命令行``——而
+    ``condense_main.py`` / ``runner_main.py`` 都包含这个子串，于是 condense
+    进程被当成"web 已有实例"，web 被杀后**跳过拉起**（13:11 实测：web 挂死、
+    看门狗杀掉重启的新实例、再把 condense 的 pid 认成 web ⇒ 服务彻底没恢复）。
+    改成按 token 精确比对文件名。
+    """
+    if not cmdline:
+        return False
+    for tok in cmdline.replace("\\\\", "\\").replace("/", "\\").split():
+        name = os.path.basename(tok.strip("\"'"))
+        if name.lower() == "main.py":
+            return True
+    return False
+
+
 def find_pid():
     """先信 .server.pid（校验它还活着且是 main.py），落空则按命令行找"""
     pf = os.path.join(ROOT, ".server.pid")
@@ -139,13 +157,14 @@ def find_pid():
                 ["powershell", "-NoProfile", "-Command",
                  f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"],
                 capture_output=True, text=True, timeout=15)
-            if "main.py" in (r.stdout or ""):
+            if _looks_like_web(r.stdout or ""):
                 return pid
     r = subprocess.run(
         ["powershell", "-NoProfile", "-Command",
          "Get-CimInstance Win32_Process -Filter \"name='python.exe'\" | "
          "Where-Object {$_.CommandLine -like '*main.py*' "
-         "-and $_.CommandLine -notlike '*runner_main*'} | "
+         "-and $_.CommandLine -notlike '*runner_main*' "
+         "-and $_.CommandLine -notlike '*condense_main*'} | "
          "Select-Object -ExpandProperty ProcessId"],
         capture_output=True, text=True, timeout=15)
     for tok in (r.stdout or "").split():

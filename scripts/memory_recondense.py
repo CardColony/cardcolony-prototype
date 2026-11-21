@@ -188,9 +188,10 @@ async def _drain_card(wid: str, cid: str, *, fold_every: int, max_batches: int) 
             break
         window = m._truncate_window(pending, win)
         print(f"[drain] {wid}/{cid} 批{batches + 1} 未凝 {toks} tok ≥ 线 {K}，本批 {len(window)} 块", flush=True)
-        ok = await m._condense_one_batch(wid, cid, window, mark, batch_no=batches + 1)
-        if not ok:
-            print(f"[drain] {wid}/{cid} 批{batches + 1} 失败——停（失败账在，重跑续）", flush=True)
+        result = await m._condense_one_batch(wid, cid, window, mark, batch_no=batches + 1)
+        if not result["ok"]:
+            print(f"[drain] {wid}/{cid} 批{batches + 1} 失败（{result['stage']}）"
+                  "，重跑从已提交水位续", flush=True)
             break
         batches += 1
         # [2026-11-01 · 修账] drain 直调 _condense_one_batch 绕过了

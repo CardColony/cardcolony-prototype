@@ -21,6 +21,7 @@ import httpx
 from ..llm.errors import LlmError
 from ..llm.retry import ResolvedRetryPolicy
 from ..llm.runtime import LlmAdapter
+from ..llm.transport import send_stream
 from ..llm.types import GenerateOptions, StreamChunk
 from .serialize import serialize_request
 from .sse import parse_sse
@@ -125,7 +126,9 @@ class AnthropicMessagesAdapter(LlmAdapter):
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
                 request = client.build_request("POST", url, headers=headers, content=payload)
-                response = await client.send(request, stream=True)
+                response = await send_stream(client, request, options,
+                                             model=str(body.get("model") or ""),
+                                             api_base=connection.base_url)
             except Exception as exc:  # noqa: BLE001
                 raise LlmError(
                     f"API request to {connection.base_url} failed", "TRANSPORT", cause=exc

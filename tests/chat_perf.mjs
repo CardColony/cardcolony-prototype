@@ -11,10 +11,25 @@
  *
  * 只读：全程只发 GET 与页面导航，不点任何写按钮（不落盘、不改生产数据）。
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
+
+/** 杀掉浏览器**整棵树**（Windows 上 child.kill() 只杀父进程，
+ *  渲染进程会留下来变成孤儿（实测一轮基准能攒 6 个）⇒ 既占内存，
+ *  也会让下一次「Chrome 未起来」）。
+ *  ★ 只杀本进程起的这棵树，不碰用户自己的浏览器。 */
+function killTree(child) {
+  try {
+    if (process.platform === "win32" && child.pid) {
+      spawnSync("taskkill", ["/T", "/F", "/PID", String(child.pid)],
+        { stdio: "ignore", timeout: 15000 });
+      return;
+    }
+  } catch (e) { /* 落到默认分支 */ }
+  try { child.kill("SIGKILL"); } catch (e) { /* 已死 */ }
+}
 
 const BASE = process.argv[2] || "http://127.0.0.1:5707";
 const WID = process.argv[3] || "work_073";
@@ -97,7 +112,7 @@ async function openChrome(port, profileDir) {
     } catch { /* wait */ }
     if (!tr) await sleep(200);
   }
-  if (!tr) { child.kill(); throw new Error("Chrome 未起来"); }
+  if (!tr) { killTree(child); throw new Error("Chrome 未起来"); }
   return { child, target: tr };
 }
 
@@ -166,6 +181,21 @@ async function oneRun(idx) {
       if (o && o.settledMs != null) { perf = o; break; }
     }
   }
+  // 服务端挂掉时（连接被拒）页面会显示 ERR_CONNECTION_REFUSED ⇒ 立刻判失败，
+  // 别把 30s 超时当成一个「很慢的样本」混进统计。
+  if (!perf) {
+    const dead = await send("Runtime.evaluate", {
+      expression: "document.body && document.body.innerText.includes('ERR_CONNECTION_REFUSED') ? 'refused' : 'slow'",
+      returnByValue: true,
+    });
+    const why = dead.result && dead.result.result ? dead.result.result.value : "slow";
+    if (why === "refused") {
+      ws.close();
+      killTree(child);
+      try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch (e) { /* 临时目录 */ }
+      throw new Error("服务不可达（ERR_CONNECTION_REFUSED）——服务端进程多半已经掉了监听");
+    }
+  }
   // 再等一会儿，让剩余请求落地（统计完整字节）
   await sleep(600);
 
@@ -183,8 +213,49 @@ async function oneRun(idx) {
   const totalBytes = list.reduce((a, r) => a + (r.kb || 0), 0);
   const apiBytes = apiOnly.reduce((a, r) => a + (r.kb || 0), 0);
 
+  /* 分段：导航起点 → 各读口回包 → 首批对话行上屏。
+     用来把「等网络」与「主线程干活」分开（回交要指出长任务的变化）。 */
+  const phases = await send("Runtime.evaluate", {
+    expression: `(() => {
+      const rs = performance.getEntriesByType('resource');
+      const pick = (frag) => {
+        const e = rs.filter(x => x.name.includes(frag));
+        if (!e.length) return null;
+        return { start: Math.round(e[0].startTime), end: Math.round(e[0].responseEnd) };
+      };
+      const perf = window.__PERF__ || {};
+      const row = perf.firstRowMs != null ? Math.round(perf.firstRowMs) : null;
+      const out = { firstRowMs: row, reads: {} };
+      for (const [k, frag] of [["timeline","/timeline"], ["card","/cards/"], ["meta","projection=meta"],
+                              ["model","model-overrides"], ["nav","/api/nav"]]) {
+        const p = pick(frag);
+        if (p) out.reads[k] = p;
+      }
+      /* 模块图：静态资源什么时候开始下载、什么时候下完（首屏第一请求之前的那段） */
+      const st = rs.filter(x => x.name.includes("/static/"));
+      if (st.length) {
+        out.modules = {
+          count: st.length,
+          firstStart: Math.round(Math.min.apply(null, st.map(x => x.startTime))),
+          lastEnd: Math.round(Math.max.apply(null, st.map(x => x.responseEnd))),
+          bytes: st.reduce((a, x) => a + (x.encodedBodySize || 0), 0),
+          dupApi: st.filter(x => x.name.includes("/esm/api.js")).length,
+        };
+      }
+      /* 首个 API 请求何时发出 */
+      const api = rs.filter(x => x.name.includes("/api/"));
+      if (api.length) {
+        out.firstApiStart = Math.round(Math.min.apply(null, api.map(x => x.startTime)));
+      }
+      return JSON.stringify(out);
+    })()`,
+    returnByValue: true,
+  });
+  let phaseInfo = null;
+  try { phaseInfo = JSON.parse(phases.result.result.value); } catch (e) { /* 忽略 */ }
+
   ws.close();
-  child.kill();
+  killTree(child);
   try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch (e) { /* 临时目录 */ }
 
   return {
@@ -203,6 +274,7 @@ async function oneRun(idx) {
     dom: domInfo.dom || 0,
     rows: domInfo.rows || 0,
     htmlKB: Math.round((domInfo.body || 0) / 1024),
+    phases: phaseInfo,
     requests: apiOnly,
   };
 }

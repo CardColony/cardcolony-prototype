@@ -149,11 +149,13 @@ async def call_main(
     fallbacks: Optional[list[str]] = None,
     *,
     on_chunk: Optional[Any] = None,
+    on_transport: Optional[Any] = None,
     trace_id: Optional[str] = None,
     caller: str = "",
     work_id: str = "",
     card_id: str = "",
     max_tokens: Optional[int] = None,
+    before_send: Optional[Any] = None,
 ) -> tuple[dict[str, Any], str]:
     """以指定模型名发起调用，返回 (gateway结果, 实际使用的模型名)。
 
@@ -253,10 +255,15 @@ async def call_main(
                 # [F8b/F22 · 2026-10-31] chunk 旁路＋观测因果链
                 # [二轮审计] 卡位透给网关（在途台账与 model_call 行的「卡」位）
                 on_chunk=on_chunk,
+                on_transport=on_transport,
                 trace_id=trace_id,
                 caller=caller or (f"card:{work_id}/{card_id}" if (work_id or card_id) else ""),
                 work_id=work_id,
                 card_id=card_id,
+                # [批三返修②] 发送边界守卫：网关**每次**真实出站前
+                # （含同座重试/换座 attempt）调用——材料在网关内部重试
+                # 边界一样要复核，不能只在进 call_main 前查一次。
+                before_send=before_send,
             ),
             _stop_ev, _stream_key)
     try:
@@ -363,7 +370,7 @@ async def call_main(
     # 调用**——按实际端点协议打来源标（declared_text＝宿主声明协议端点的
     # 合法通道；pseudo_compat＝原生端点的正文伪调用），循环侧的派发台账与
     # 事件据此单列，不再冒充 native。
-    if not (result.get("tool_calls") or []):
+    if not result.get("stopped") and result.get("terminal_received", True) and not result.get("tool_calls"):
         parsed = _parse_text_tool_calls(str(result.get("content") or ""))
         allowed = {str(((t or {}).get("function") or t).get("name") or "")
                    for t in (tools or [])}

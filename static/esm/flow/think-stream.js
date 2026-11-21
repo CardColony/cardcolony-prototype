@@ -19,6 +19,25 @@
  * 这是**载体替换**：原 stream.js 里的 makeThink 逐字搬进来，只多了增量路径。
  */
 
+/* [窄投影·修 2026-11-21] 思考全文**按贡献段序重建**（纯函数，可单测）：
+ * ``segs``＝``[{seq, text, brief}]``（到达序）；``items``＝详情回包完整记录；
+ * ``revokedSeqs``＝回包点名的撤销 seq。
+ *   · brief 段：命中 ⇒ 换全文；撤销 ⇒ 占位标记「〔该段思考已撤销〕」——旧预览
+ *     不再冒充全文；既未命中也未列撤销 ⇒ 留预览（缺段如实）。
+ *   · 非 brief 段原样保留 ⇒ 两段预览相同也不会拼错位（拼接按段序，不查子串）。
+ */
+export function rebuildReasoningText(segs, items, revokedSeqs) {
+  const bySeq = new Map((items || []).map((i) => [i.seq, i]));
+  const revoked = new Set((revokedSeqs || []).map(Number));
+  return (segs || []).map((s) => {
+    if (!s || !s.brief) return s ? String(s.text || "") : "";
+    if (revoked.has(Number(s.seq))) return "〔该段思考已撤销〕";
+    const it = bySeq.get(s.seq);
+    const ft = it && it.data && it.data.text;
+    return ft == null ? String(s.text || "") : String(ft);
+  }).join("");
+}
+
 /** 摘要：运行中取**最新一行**（跟着思考走），完成取**第一行**（一眼知主题）。 */
 export function thinkSummary(text, running) {
   const lines = String(text == null ? "" : text).split("\n").map((s) => s.trim()).filter(Boolean);
@@ -93,14 +112,34 @@ export function createThinkRenderer({ summaryOf } = {}) {
   /** 节点键 → {text, el} */
   const cache = new Map();
 
-  function build(text, done) {
+  function build(key, text, done, briefLoad, open) {
     const el = document.createElement("div");
-    el.className = "think" + (done ? " done" : " thinking") + " collapsed";
+    /* [有界挂载] open＝恢复展开态（行移出窗口被释放后重挂，展开态随节点恢复）。 */
+    el.className = "think" + (done ? " done" : " thinking") + (open ? "" : " collapsed");
     el.innerHTML = HEAD_HTML;
     el.querySelector(".think-sum").textContent = summary(text, !done);
+    /* [窄投影 2026-11-21 · 性能批次二] brief 模式：body 先装预览文本
+       （折叠摘要用第一行，本来就够了）；首次展开才经 briefLoad() 回取
+       全文换上——不再把 208KB 不渲染的思考塞进首屏 DOM。 */
     el.querySelector(".think-body").textContent = text || "";
+    if (briefLoad) el._briefLoad = briefLoad;
     el.querySelector(".think-head").onclick = () => {
+      const opening = el.classList.contains("collapsed");
       el.classList.toggle("collapsed");
+      if (el._onToggle) { try { el._onToggle(opening); } catch (e) { /* 零阻断 */ } }
+      if (opening && el._briefLoad && !el._fullLoaded) {
+        el._fullLoaded = true;
+        const body = el.querySelector(".think-body");
+        Promise.resolve(el._briefLoad()).then((full) => {
+          if (!el.isConnected) return;   // 切会话/重建后到达：不往孤儿元素写
+          body.textContent = String(full == null ? "" : full);
+          cache.set(key, { text: body.textContent, el });
+        }).catch(() => {
+          if (!el.isConnected) return;
+          el._fullLoaded = false;      // 允许再展开时重试
+          body.textContent = "完整思考加载失败（再点开一次重试）";
+        });
+      }
     };
     return el;
   }
@@ -109,11 +148,12 @@ export function createThinkRenderer({ summaryOf } = {}) {
     /**
      * 取（或建）思考行。
      * @param {string} key   节点键（缓存与复用都靠它）
-     * @param {string} text  累积全文
+     * @param {string} text  累积全文（brief 模式＝预览文本）
      * @param {object} [opts]
      * @param {boolean} [opts.done] 是否已定稿
+     * @param {() => Promise<string>} [opts.briefLoad] 展开时回取全文（窄投影）
      */
-    row(key, text, { done = true } = {}) {
+    row(key, text, { done = true, briefLoad = null, open = false, onToggle = null } = {}) {
       const t = String(text == null ? "" : text);
       const prev = cache.get(key);
       if (prev && prev.el && t.indexOf(prev.text) === 0) {
@@ -128,14 +168,20 @@ export function createThinkRenderer({ summaryOf } = {}) {
         // 完成态变化要跟上，但**保留用户的折叠态**
         const collapsed = prev.el.classList.contains("collapsed") ? " collapsed" : "";
         prev.el.className = "think" + (done ? " done" : " thinking") + collapsed;
+        if (briefLoad) prev.el._briefLoad = briefLoad;
+        if (onToggle) prev.el._onToggle = onToggle;
         cache.set(key, { text: t, el: prev.el });
         return prev.el;
       }
       // 整块重写（文本被替换／首次渲染）
-      const el = build(t, done);
+      const el = build(key, t, done, briefLoad, open);
+      if (onToggle) el._onToggle = onToggle;
       cache.set(key, { text: t, el });
       return el;
     },
+
+    /** 释放某个键的缓存元素（有界挂载：行移出窗口时调用）。 */
+    drop(key) { cache.delete(key); },
 
     /** 清掉不在页面上的节点（防缓存持有旧元素）。 */
     prune(aliveKeys) {

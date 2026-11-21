@@ -33,6 +33,7 @@ from ..llm.errors import (
 )
 from ..llm.retry import ResolvedRetryPolicy
 from ..llm.runtime import LlmAdapter
+from ..llm.transport import send_stream
 from ..llm.types import SerializeTimingChunk
 from ..llm.types import GenerateOptions, StreamChunk
 from .serialize import RequestDefaults, serialize_request
@@ -191,7 +192,9 @@ class OpenAICompatAdapter(LlmAdapter):
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
                 request = client.build_request("POST", url, headers=headers, content=payload)
-                response = await client.send(request, stream=True)
+                response = await send_stream(client, request, options,
+                                             model=str(body.get("model") or ""),
+                                             api_base=connection.base_url)
             except Exception as exc:  # noqa: BLE001
                 if _is_cancelled(options.signal):
                     raise LlmError("request aborted by caller", "ABORTED", cause=exc) from exc

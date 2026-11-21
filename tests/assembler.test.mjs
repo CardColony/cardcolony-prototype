@@ -9,6 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createAssembler, REGISTRY } from "../static/esm/assembler.js";
+import { rebuildReasoningText } from "../static/esm/flow/think-stream.js";
 
 /** 造一条落盘形态记录（七键骨架：seq/card_id/run_id/round/type/data/model）。 */
 let _seq = 0;
@@ -482,3 +483,393 @@ test("round_start：live 与 disk 两条同轮合流（两套数据源也只一�
   assert.equal(rounds.length, 1, "同一轮的 live/disk 两份只出一个节点");
 });
 
+
+
+/* ── 8. 窄投影契约位传播（2026-11-21 · 性能批次二）────────────────────
+   view=brief 的记录带 ``_brief``——装配器要把它传到节点上，渲染层据此
+   在展开时按 seq 回取完整记录（timeline/event）。 */
+
+test("_brief 标记传到节点（sys 类）", () => {
+  reset();
+  const a = createAssembler();
+  const r = rec("card_block_edited",
+    { block: "现状", by: "card_x", old: "…", new: "…" }, { seq: 5 });
+  r._brief = true;
+  a.applyRecord(r);
+  const nodes = list(a);
+  assert.equal(nodes.length, 1);
+  assert.equal(nodes[0]._brief, true, "节点带契约位");
+  assert.equal(nodes[0].seq, 5, "节点 seq 就是详情回取键");
+});
+
+test("tool_result 合体节点记 _resultSeq/_resultBrief", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord(rec("tool_call", { tool: "read_card", arguments: { p: 1 } },
+    { seq: 10 }));
+  const res = rec("tool_result",
+    { tool: "read_card", ok: true, result: { _brief: true, ok: true } },
+    { seq: 11 });
+  res._brief = true;
+  a.applyRecord(res);
+  const nodes = list(a);
+  const tn = nodes.find((n) => n.kind === "tool");
+  assert.ok(tn, "call+result 合成一条");
+  assert.equal(tn._resultSeq, 11, "详情回取键＝result 记录的 seq");
+  assert.equal(tn._resultBrief, true, "占位标记传到节点");
+});
+
+test("非 brief 的工具结果不挂详情键", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord(rec("tool_call", { tool: "t" }, { seq: 1 }));
+  a.applyRecord(rec("tool_result", { tool: "t", ok: true, result: { ok: true } },
+    { seq: 2 }));
+  const tn = list(a).find((n) => n.kind === "tool");
+  assert.equal(tn._resultSeq, 2, "仍记 seq（无 brief 时也安全留键）");
+  assert.equal(tn._resultBrief, false, "非 brief ⇒ false");
+});
+
+test("brief reasoning 贡献段挂 _reasoningSegs（按到达序记全部段）", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord(rec("assistant_text", { content: "答" },
+    { run_id: "R", round: 1, seq: 10 }));
+  const r = rec("reasoning", { text: "思考预览…" },
+    { run_id: "R", round: 1, seq: 11 });
+  r._brief = true;
+  a.applyRecord(r);
+  const nodes = list(a);
+  const an = nodes.find((n) => n.kind === "assistant");
+  assert.ok(an.reasoning.includes("思考预览"), "思考仍并入节点");
+  assert.ok(Array.isArray(an._reasoningSegs) && an._reasoningSegs.length === 1,
+    "贡献段入 _reasoningSegs");
+  assert.equal(an._reasoningSegs[0].seq, 11);
+  assert.equal(an._reasoningSegs[0].text, "思考预览…");
+  assert.equal(an._reasoningSegs[0].brief, true, "brief 标记供展开时回取");
+});
+
+test("非 brief reasoning 段也记序但 brief=false（不付详情往返）", () => {
+  reset();
+  const a = createAssembler();
+  a.applyRecord(rec("assistant_text", { content: "答" },
+    { run_id: "R", round: 1, seq: 1 }));
+  a.applyRecord(rec("reasoning", { text: "完整思考" },
+    { run_id: "R", round: 1, seq: 2 }));
+  const an = list(a).find((n) => n.kind === "assistant");
+  assert.ok(an._reasoningSegs.length === 1, "段仍记序（混排时重建要用）");
+  assert.equal(an._reasoningSegs[0].brief, false, "非 brief 段不触发详情回取");
+});
+
+test("混排思考段保持到达序（相同预览不错位的数据前提）", () => {
+  reset();
+  const a = createAssembler();
+  const brief = (seq) => { const r = rec("reasoning", { text: "相同预览" },
+    { run_id: "R", round: 1, seq }); r._brief = true; return r; };
+  a.applyRecord(brief(7));                      // seq=7 先到（预览与 seq=9 相同）
+  a.applyRecord(rec("reasoning", { text: "中间全文段" },
+    { run_id: "R", round: 1, seq: 8 }));
+  a.applyRecord(brief(9));
+  a.applyRecord(rec("assistant_text", { content: "答" },
+    { run_id: "R", round: 1, seq: 10 }));
+  const an = list(a).find((n) => n.kind === "assistant");
+  assert.deepEqual(an._reasoningSegs.map((s) => s.seq), [7, 8, 9],
+    "段序＝到达序：重建按此拼接，相同预览不串位");
+  assert.deepEqual(an._reasoningSegs.map((s) => s.brief), [true, false, true]);
+});
+
+test("思考先于 assistant 到达：桶暂存的贡献段随归位传递", () => {
+  reset();
+  const a = createAssembler();
+  // round=0 的老数据：reasoning 落 pending 桶（无 run/round 归属节点）
+  const r = rec("reasoning", { text: "桶里预览…" },
+    { run_id: "R", round: 0, seq: 5 });
+  r._brief = true;
+  a.applyRecord(r);
+  // assistant 到达（同 run、round 缺失 ⇒ 同 run 最近一条归位）
+  a.applyRecord(rec("assistant_text", { content: "答" },
+    { run_id: "R", round: 0, seq: 6 }));
+  const an = list(a).find((n) => n.kind === "assistant");
+  assert.ok(an && an._reasoningSegs && an._reasoningSegs.length === 1,
+    "桶里的贡献段随 assistant 归位传递");
+  assert.equal(an._reasoningSegs[0].seq, 5);
+  assert.equal(an._reasoningSegs[0].brief, true);
+});
+
+/* ── 思考详情重建（窄投影·修 2026-11-21）：按贡献段序拼接，
+   撤销/缺段/相同预览各就其位 ─────────────────────────────────── */
+test("rebuildReasoningText: brief 段换全文、非 brief 段原样、段序保持", () => {
+  const segs = [
+    { seq: 7, text: "预览A", brief: true },
+    { seq: 8, text: "中间全文段", brief: false },
+    { seq: 9, text: "预览B", brief: true },
+  ];
+  const items = [
+    { seq: 7, data: { text: "全文A" } },
+    { seq: 9, data: { text: "全文B" } },
+  ];
+  assert.equal(rebuildReasoningText(segs, items, []), "全文A中间全文段全文B");
+});
+
+test("rebuildReasoningText: 两段预览相同不拼错位（修字符串替换 bug）", () => {
+  const segs = [
+    { seq: 7, text: "相同预览", brief: true },
+    { seq: 9, text: "相同预览", brief: true },
+  ];
+  const items = [
+    { seq: 7, data: { text: "AAAA" } },
+    { seq: 9, data: { text: "BBBB" } },
+  ];
+  // 旧实现 full.replace("相同预览","AAAA") 只换首个 ⇒ "AAAA相同预览" 再换错。
+  // 段序拼接 ⇒ 各自就位。
+  assert.equal(rebuildReasoningText(segs, items, []), "AAAABBBB");
+});
+
+test("rebuildReasoningText: 撤销段换标记，旧预览不冒充全文", () => {
+  const segs = [
+    { seq: 7, text: "预览A", brief: true },
+    { seq: 8, text: "保留段", brief: false },
+  ];
+  assert.equal(rebuildReasoningText(segs, [], [7]),
+    "〔该段思考已撤销〕保留段");
+});
+
+test("rebuildReasoningText: 缺段留预览（未命中也未列撤销）", () => {
+  const segs = [
+    { seq: 7, text: "预览A", brief: true },
+    { seq: 8, text: "保留段", brief: false },
+  ];
+  assert.equal(rebuildReasoningText(segs, [], []), "预览A保留段");
+});
+
+/* ── 前插增量装配（性能批次二·任务二 2026-11-22）─────────────────
+   多页装配结果与一次性装配逐项对账：可见顺序、工具归属、同轮思考、
+   缺字段老记录；覆盖跨页配对、重复回包、ts/seq 乱序、跨页撤销。 */
+
+function recTs(type, ts, data = {}, opts = {}) {
+  const r = rec(type, data, opts);
+  r.ts = ts;
+  return r;
+}
+
+test("prepend：两页拼装 == 一次全量装配（顺序/内容/节点数一致）", () => {
+  reset();
+  const T = (i) => new Date(1700000000000 + i * 1000).toISOString();
+  const older = [
+    recTs("user_message", T(1), { content: "问1" }, { seq: 1 }),
+    recTs("reasoning", T(2), { text: "思1" }, { seq: 2, round: 1 }),
+    recTs("assistant_text", T(3), { content: "答1" }, { seq: 3, round: 1 }),
+    recTs("tool_call", T(4), { name: "read_file", tool_call_id: "c1" }, { seq: 4 }),
+    recTs("tool_result", T(5), { output: "结果1", tool_call_id: "c1" }, { seq: 5 }),
+  ];
+  const newer = [
+    recTs("user_message", T(6), { content: "问2" }, { seq: 6 }),
+    recTs("reasoning", T(7), { text: "思2" }, { seq: 7, round: 2 }),
+    recTs("assistant_text", T(8), { content: "答2" }, { seq: 8, round: 2 }),
+    recTs("done", T(9), {}, { seq: 9 }),
+  ];
+  const full = createAssembler();
+  full.rebuild(older.concat(newer));
+  const inc = createAssembler();
+  inc.rebuild(newer);
+  const res = inc.prepend(older);
+  assert.equal(res.records, 5);
+  assert.equal(res.added.length, 3,
+    "5 条旧页记录出 3 个新节点（思考+答并入同轮节点，工具调用结果合体）");
+  const fa = list(full), ia = list(inc);
+  assert.deepEqual(ia.map((n) => n.key), fa.map((n) => n.key),
+    "顺序：前插装配与全量重建的可见键序一致");
+  for (let i = 0; i < fa.length; i++) {
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(ia[i].data || {})),
+      JSON.parse(JSON.stringify(fa[i].data || {})),
+      "节点 " + i + " 内容一致");
+  }
+  const tool = ia.find((n) => n.kind === "tool");
+  assert.ok(tool.call && tool.result && tool.closed, "跨页工具行合体");
+});
+
+test("prepend：调用在旧页结果在新页 ⇒ 孤儿结果行被调用归并", () => {
+  reset();
+  const T = (i) => new Date(1700000000000 + i * 1000).toISOString();
+  const a = createAssembler();
+  a.rebuild([
+    recTs("tool_result", T(5), { output: "R", tool_call_id: "c9" }, { seq: 5 }),
+    recTs("assistant_text", T(6), { content: "尾" }, { seq: 6, round: 1 }),
+  ]);
+  const res = a.prepend([
+    recTs("tool_call", T(4), { name: "read_file", tool_call_id: "c9" }, { seq: 4 }),
+  ]);
+  const tools = list(a).filter((n) => n.kind === "tool");
+  assert.equal(tools.length, 1, "调用并入结果行，不出双行");
+  assert.equal(tools[0].call.name, "read_file");
+  assert.equal(tools[0].result.output, "R");
+  assert.ok(tools[0].closed);
+  /* [任务二收尾] 与全量重建同形态：节点换到**调用**的键与位置（重建时
+     节点生在调用处），不再留在回执处。 */
+  assert.equal(tools[0].seq, 4, "节点身份＝调用 seq");
+  assert.equal(tools[0].ts, T(4));
+  assert.deepEqual(list(a).map((n) => n.seq), [4, 6], "行序＝调用处，与重建一致");
+  assert.equal(tools[0]._resultSeq, 5, "详情回取键不丢");
+  assert.ok(res.added.includes(tools[0].key), "换键后按新行记 added（旧键随差集卸载）");
+  // 与全量重建逐项一致
+  const b = createAssembler();
+  b.rebuild([
+    recTs("tool_call", T(4), { name: "read_file", tool_call_id: "c9" }, { seq: 4 }),
+    recTs("tool_result", T(5), { output: "R", tool_call_id: "c9" }, { seq: 5 }),
+    recTs("assistant_text", T(6), { content: "尾" }, { seq: 6, round: 1 }),
+  ]);
+  assert.deepEqual(a.snapshot().order, b.snapshot().order, "键序 == 全量重建");
+});
+
+test("prepend：「调用→用户→回执」跨页行序/详情/节点数全对账", () => {
+  reset();
+  const T = (i) => new Date(1700000000000 + i * 1000).toISOString();
+  // 已装窗口：用户消息(seq5) + 孤儿回执(seq6)
+  const a = createAssembler();
+  const orph = recTs("tool_result", T(6), { output: "R", tool_call_id: "cX" }, { seq: 6 });
+  orph._brief = true;
+  a.rebuild([
+    recTs("user_message", T(5), { content: "插话" }, { seq: 5 }),
+    orph,
+    recTs("assistant_text", T(7), { content: "尾" }, { seq: 7, round: 2 }),
+  ]);
+  a.prepend([
+    recTs("tool_call", T(4), { name: "read_card", tool_call_id: "cX" },
+      { seq: 4, round: 1, model: "m1" }),
+  ]);
+  const nodes = list(a);
+  assert.equal(nodes.filter((n) => n.kind === "tool").length, 1);
+  const tool = nodes[0];
+  assert.equal(tool.kind, "tool", "工具行在序列最前（调用处）");
+  assert.equal(tool.seq, 4);
+  assert.equal(tool.round, 1, "节点字段取自调用记录");
+  assert.equal(tool.model, "m1");
+  assert.equal(tool._resultSeq, 6, "详情回取键随归并保留");
+  assert.equal(tool._resultBrief, true, "回执 brief 位随归并保留");
+  assert.deepEqual(nodes.map((n) => n.seq), [4, 5, 7]);
+});
+
+test("prepend：缺 call_id 的旧记录——调用认领 seq 紧随的首个孤儿结果", () => {
+  reset();
+  const T = (i) => new Date(1700000000000 + i * 1000).toISOString();
+  const a = createAssembler();
+  a.rebuild([
+    recTs("tool_result", T(5), { output: "R1" }, { seq: 5 }),
+    recTs("tool_result", T(7), { output: "R2" }, { seq: 7 }),
+  ]);
+  a.prepend([
+    recTs("tool_call", T(4), { name: "f1" }, { seq: 4 }),
+    recTs("tool_call", T(6), { name: "f2" }, { seq: 6 }),
+  ]);
+  const tools = list(a).filter((n) => n.kind === "tool");
+  assert.equal(tools.length, 2, "两对各自归并（首个未认领孤儿依次配对）");
+  assert.equal(tools[0].call.name, "f1");
+  assert.equal(tools[0].result.output, "R1");
+  assert.equal(tools[1].call.name, "f2");
+  assert.equal(tools[1].result.output, "R2");
+  assert.deepEqual(tools.map((n) => n.seq), [4, 6], "均归位调用处");
+  // 与全量重建逐项一致
+  const b = createAssembler();
+  b.rebuild([
+    recTs("tool_call", T(4), { name: "f1" }, { seq: 4 }),
+    recTs("tool_result", T(5), { output: "R1" }, { seq: 5 }),
+    recTs("tool_call", T(6), { name: "f2" }, { seq: 6 }),
+    recTs("tool_result", T(7), { output: "R2" }, { seq: 7 }),
+  ]);
+  assert.deepEqual(a.snapshot().order, b.snapshot().order, "键序 == 全量重建");
+});
+
+test("prepend：重复回包去重（页界重叠记录不二次装配）", () => {
+  reset();
+  const T = (i) => new Date(1700000000000 + i * 1000).toISOString();
+  const a = createAssembler();
+  const shared = recTs("assistant_text", T(5), { content: "界" }, { seq: 5, round: 1 });
+  a.rebuild([shared, recTs("done", T(6), {}, { seq: 6 })]);
+  const before = list(a).length;
+  const res = a.prepend([
+    recTs("user_message", T(4), { content: "旧问" }, { seq: 4 }),
+    recTs("assistant_text", T(5), { content: "界" }, { seq: 5, round: 1 }),  // 重复
+  ]);
+  assert.equal(list(a).length, before + 1, "只新增 1 个节点");
+  assert.equal(res.added.length, 1);
+});
+
+test("prepend：ts 乱序按 (ts,seq) 落位，不按到达序", () => {
+  reset();
+  const T = (i) => new Date(1700000000000 + i * 1000).toISOString();
+  const a = createAssembler();
+  a.rebuild([recTs("done", T(9), {}, { seq: 9 })]);
+  // 批内乱序：seq2 的 ts 比 seq1 早
+  a.prepend([
+    recTs("user_message", T(2), { content: "后到时戳早" }, { seq: 1 }),
+    recTs("user_message", T(1), { content: "先到时戳晚" }, { seq: 2 }),
+    recTs("user_message", T(3), { content: "三" }, { seq: 3 }),
+  ]);
+  const texts = list(a).map((n) => (n.data && n.data.content) || n.type);
+  assert.deepEqual(texts.slice(0, 3), ["先到时戳晚", "后到时戳早", "三"],
+    "可见序按 ts 而非到达序");
+  assert.equal(texts[3], "done");
+});
+
+test("prepend：批内同 ts 保持批内到达序、整体先于已装同 ts 节点", () => {
+  reset();
+  const T = "2026-11-22T00:00:00.000Z";
+  const a = createAssembler();
+  a.rebuild([recTs("done", T, {}, { seq: 9 })]);
+  a.prepend([
+    recTs("user_message", T, { content: "一" }, { seq: 1 }),
+    recTs("user_message", T, { content: "二" }, { seq: 2 }),
+  ]);
+  const texts = list(a).map((n) => (n.data && n.data.content) || n.type);
+  assert.deepEqual(texts, ["一", "二", "done"]);
+});
+
+test("prepend：批内 revoke 只罩本批新建，不碰已装窗口", () => {
+  reset();
+  const T = (i) => new Date(1700000000000 + i * 1000).toISOString();
+  const a = createAssembler();
+  a.rebuild([
+    recTs("user_message", T(9), { content: "新问" }, { seq: 9 }),
+    recTs("assistant_text", T(10), { content: "新答" }, { seq: 10, round: 1 }),
+  ]);
+  a.prepend([
+    recTs("user_message", T(1), { content: "保留" }, { seq: 1 }),
+    recTs("user_message", T(2), { content: "被撤1" }, { seq: 3 }),
+    recTs("user_message", T(3), { content: "被撤2" }, { seq: 4 }),
+    recTs("revoke", T(4), { from_seq: 3 }, { seq: 5 }),
+  ]);
+  const texts = list(a).map((n) => (n.data && n.data.content) || n.type);
+  assert.deepEqual(texts, ["保留", "新问", "新答"],
+    "撤销罩掉批内 seq>=3，已装窗口原样");
+});
+
+test("prepend：同轮思考前补——旧页段排在既有段之前且段序保持", () => {
+  reset();
+  const T = (i) => new Date(1700000000000 + i * 1000).toISOString();
+  const a = createAssembler();
+  a.rebuild([
+    recTs("reasoning", T(5), { text: "思B" }, { seq: 5, round: 1 }),
+    recTs("assistant_text", T(6), { content: "答" }, { seq: 6, round: 1 }),
+  ]);
+  a.prepend([
+    recTs("reasoning", T(1), { text: "思A1" }, { seq: 1, round: 1 }),
+    recTs("reasoning", T(2), { text: "思A2" }, { seq: 2, round: 1 }),
+  ]);
+  const an = list(a).find((n) => n.kind === "assistant");
+  assert.equal(an.reasoning, "思A1思A2思B", "旧页思考段序保持并先于既有");
+  assert.deepEqual((an._reasoningSegs || []).map((s) => s.seq), [1, 2, 5]);
+});
+
+test("prepend：返回 added/touched 供渲染层只挂新行", () => {
+  reset();
+  const T = (i) => new Date(1700000000000 + i * 1000).toISOString();
+  const a = createAssembler();
+  a.rebuild([recTs("done", T(9), {}, { seq: 9 })]);
+  const res = a.prepend([
+    recTs("round_start", T(7), { n: 1 }, { seq: 7, round: 1 }),
+    recTs("round_start", T(8), { n: 2 }, { seq: 8, round: 2 }),
+  ]);
+  assert.equal(res.added.length, 2);
+  assert.equal(res.touched.length, 0);
+});

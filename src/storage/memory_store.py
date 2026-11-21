@@ -40,8 +40,11 @@ import hashlib
 import json
 import logging
 import os
-import time
 import re
+import sqlite3
+import time
+from collections.abc import Callable
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -301,7 +304,8 @@ class _StaleCondenseBatch(Exception):
 
 def _publish_memory(work_id: str, card_id: str, data: dict[str, Any], *,
                     expected_state: dict[str, Any] | None = None,
-                    origin_prefix: list[dict[str, Any]] | None = None) -> None:
+                    origin_prefix: list[dict[str, Any]] | None = None,
+                    create_only: bool = False) -> None:
     """[§三.2 · 2026-11-20] **单事务发布**：memory 行（链+水位+簿记）＋
     memory_nodes 索引 ＋ context_board 裁板——一个 `_write_sync`（BEGIN
     IMMEDIATE），任一组件失败整体回滚，不留「新链旧索引／新水位旧板」的
@@ -322,10 +326,13 @@ def _publish_memory(work_id: str, card_id: str, data: dict[str, Any], *,
 
     def _fn(conn: Any) -> None:
         extra = _extra
-        if expected_state is not None:
+        if expected_state is not None or create_only:
             row = conn.execute(
                 "SELECT chain, condense_mark, batch_starts FROM memory WHERE card_id=?",
                 (card_id,)).fetchone()
+            if create_only and row is not None:
+                raise _StaleCondenseBatch("记忆行已由其他入口创建")
+        if expected_state is not None:
             old_mark = int(row["condense_mark"] or 0) if row else 0
             old_entries = json.loads(row["chain"] or "[]") if row else []
             if (old_mark != int(expected_state.get("mark") or 0)
@@ -337,7 +344,9 @@ def _publish_memory(work_id: str, card_id: str, data: dict[str, Any], *,
                 if _condense_origin_blocks(work_id, card_id, blocks) != origin_prefix:
                     raise _StaleCondenseBatch("提交范围内的原文或可见视图已变化")
             if row:
-                extra = {**_memory_extra(row["batch_starts"]), **_extra}
+                changes = {key: value for key, value in _extra.items()
+                           if key not in expected_state or expected_state[key] != value}
+                extra = {**_memory_extra(row["batch_starts"]), **changes}
         conn.execute(
             "INSERT INTO memory(card_id, chain, condense_mark, batch_starts, updated_at) "
             "VALUES(?,?,?,?,?) ON CONFLICT(card_id) DO UPDATE SET "
@@ -365,7 +374,8 @@ def _memory_extra(value: str | None) -> dict[str, Any]:
     return extra if isinstance(extra, dict) else {}
 
 
-def _update_memory_meta(work_id: str, card_id: str, update) -> None:
+def _update_memory_meta(work_id: str, card_id: str,
+                        update: Callable[[dict[str, Any]], None]) -> None:
     """事务内以当前版本写簿记字段，不重发旧链、重建索引或裁板。"""
     from . import card_db
 
@@ -386,7 +396,7 @@ def _update_memory_meta(work_id: str, card_id: str, update) -> None:
 
 def _save_to_db(work_id: str, card_id: str, data: dict[str, Any]) -> None:
     """写 `memory` 表（唯一事实源）。[§三.2] 与索引/缓存板同事务（_publish_memory）。"""
-    _publish_memory(work_id, card_id, data)
+    _publish_memory(work_id, card_id, data, create_only=True)
 
 
 def load_memory(work_id: str, card_id: str) -> dict[str, Any]:
@@ -405,6 +415,8 @@ def load_memory(work_id: str, card_id: str) -> dict[str, Any]:
             _save_to_db(work_id, card_id, legacy)
             logger.info("[condense_fold] 记忆懒迁移入库 work=%s card=%s mark=%s entries=%d",
                         work_id, card_id, legacy.get("mark"), len(legacy.get("entries") or []))
+        except _StaleCondenseBatch:
+            return _load_from_db(work_id, card_id) or legacy
         except Exception as exc:  # noqa: BLE001 迁移失败照旧用文件值，不阻断
             logger.warning("[condense_fold] 记忆懒迁移失败（本次仍用文件值）%s/%s: %s",
                            work_id, card_id, exc)
@@ -518,18 +530,21 @@ def _snapshot_once(work_id: str, card_id: str) -> dict[str, Any]:
                     (work_id, card_id)).fetchall()]
             except Exception:  # noqa: BLE001 表未建 ⇒ 空索引
                 nodes = []
-            board = []
+            board = None
             if context_board.enabled():
-                board = [dict(r) for r in conn.execute(
-                    "SELECT seq, role, actor, content, reasoning_content,"
-                    " pair_id, is_review FROM context_board"
-                    " WHERE card_id=? ORDER BY seq", (card_id,)).fetchall()]
+                try:
+                    board = [dict(r) for r in conn.execute(
+                        "SELECT seq, role, actor, content, reasoning_content,"
+                        " pair_id, is_review FROM context_board"
+                        " WHERE card_id=? ORDER BY seq", (card_id,)).fetchall()]
+                except sqlite3.OperationalError:
+                    pass  # 旧库还没有缓存板时，用同事务内原文。
             # 板新鲜度（与 context_board._maybe_rebuild 同判据，同连接同版本）
-            bmax = max((int(r.get("seq") or 0) for r in board), default=None)
+            bmax = max((int(r.get("seq") or 0) for r in (board or [])), default=None)
             smax = conn.execute(
                 "SELECT MAX(seq) FROM session_blocks WHERE card_id=? AND seq>=?",
                 (card_id, state["mark"])).fetchone()[0]
-            fresh = context_board.enabled() and (
+            fresh = board is not None and (
                 smax is None or (bmax is not None and int(bmax) >= int(smax)))
             return {"state": state, "nodes": nodes,
                     "board_rows": board if fresh else None,
@@ -800,7 +815,14 @@ async def ensure_watermark(work_id: str, card_id: str) -> bool:
         return False
     if not session_store._session_path(work_id, card_id).exists():
         return False
-    await save_memory(work_id, card_id, _empty_state(card_id))
+    if memory_path(work_id, card_id).exists():
+        load_memory(work_id, card_id)
+        if _load_from_db(work_id, card_id) is not None:
+            return True
+    try:
+        _publish_memory(work_id, card_id, _empty_state(card_id), create_only=True)
+    except _StaleCondenseBatch:
+        return False
     return True
 
 
@@ -1146,31 +1168,26 @@ async def migrate_archive_if_needed(work_id: str, card_id: str) -> None:
                     for k, v in (rows or {}).items()
                     if isinstance(k, tuple) and k[1] == "gist" and (v or {}).get("process")]
     if not archive_list:
-        state["archive_migrated"] = True
-        await save_memory(work_id, card_id, state)
+        _update_memory_meta(work_id, card_id, lambda extra: extra.update(archive_migrated=True))
         logger.info("[condense_fold] archive 冻结确认（无存量行）work=%s card=%s", work_id, card_id)
         return
-    chain = memory_domain.load_chain(work_id, card_id)
+    chain = state.get("entries") or []
     new_chain, report = memory_domain.migrate_archive(chain, archive_list)
     if report.get("violations"):
         logger.warning("[condense_fold] archive 迁移被不变量门控拒绝（不写、下轮再试）"
                        "work=%s card=%s 违例=%d: %s",
                        work_id, card_id, len(report["violations"]), report["violations"])
         return
+    try:
+        await save_memory(
+            work_id, card_id, {**state, "entries": new_chain, "archive_migrated": True},
+            expected_state=state)
+    except _StaleCondenseBatch:
+        logger.info("[condense_fold] archive 迁移版本已变化 work=%s card=%s", work_id, card_id)
+        return
     if report.get("created"):
-        # [§三.2] CAS：事务内当前链与读入快照不一致 ⇒ 放弃本轮（下轮重算），
-        # 旧快照不得覆盖新记忆。
-        if not memory_domain.save_chain(work_id, card_id, new_chain,
-                                        expected_chain=chain):
-            logger.info("[condense_fold] archive 迁移链冲突（CAS）——本轮放弃 work=%s card=%s",
-                        work_id, card_id)
-            return
-        state["entries"] = new_chain          # entries 与链同源推进（见上注）
-        await save_memory(work_id, card_id, state)
         logger.info("[condense_fold] archive 一次性迁移完成 work=%s card=%s created=%d 孤儿=%d",
                     work_id, card_id, report["created"], report.get("skippedOrphans", 0))
-    state["archive_migrated"] = True
-    await save_memory(work_id, card_id, state)
 
 
 # ---------------------------------------------------------------------------
@@ -1184,33 +1201,15 @@ async def reclaim_turn_end(work_id: str, card_id: str) -> None:
     凝练全景（render_condense_memory 的 !sunk 判据）。无 touch 账的条目豁免
     （零误伤优先），mark 不动、原文不动。"""
     try:
-        chain = memory_domain.load_chain(work_id, card_id)
+        state = load_memory(work_id, card_id)
+        chain = state.get("entries") or []
         if not chain:
             return
         now_ms = int(time.time() * 1000)
         new_chain, report = memory_lifecycle.reclaim(chain, now_ms)
         if report.get("newly_sunk"):
-            # [§三.2] CAS：链被并发推进 ⇒ 本轮回收放弃（下轮基于新链重算）
-            if not memory_domain.save_chain(work_id, card_id, new_chain,
-                                            expected_chain=chain):
-                logger.info("[condense_fold] 时效回收链冲突（CAS）——本轮放弃 work=%s card=%s",
-                            work_id, card_id)
-                return
-            state = load_memory(work_id, card_id)
-            # entries 与链同源：把 sunk 位同步回 entries（链是派生物）
-            sunk_by_key = {(int((n.get("anchor") or {}).get("seq") or 0),
-                            str(n.get("role") or "gist"))
-                           for n in new_chain if n.get("sunk")}
-            changed = False
-            for e in (state.get("entries") or []):
-                if not isinstance(e, dict):
-                    continue
-                key = (_entry_anchor_seq(e) or 0, str(e.get("role") or "gist"))
-                if key in sunk_by_key and not e.get("sunk"):
-                    e["sunk"] = True
-                    changed = True
-            if changed:
-                await save_memory(work_id, card_id, state)
+            await save_memory(work_id, card_id, {**state, "entries": new_chain},
+                              expected_state=state)
         from ..infra import observe as _obs
         _obs.log_reclaim(work_id=work_id, card_id=card_id,
                          sunk_total=int(report.get("sunk_total") or 0),
@@ -1218,6 +1217,8 @@ async def reclaim_turn_end(work_id: str, card_id: str) -> None:
         if report.get("newly_sunk"):
             logger.info("[condense_fold] 时效回收 work=%s card=%s 新沉没=%d",
                         work_id, card_id, report["newly_sunk"])
+    except _StaleCondenseBatch:
+        logger.info("[condense_fold] 时效回收版本已变化 work=%s card=%s", work_id, card_id)
     except Exception as exc:  # noqa: BLE001 回收零阻断
         logger.warning("[condense_fold] 时效回收失败（不阻断）work=%s card=%s: %s",
                        work_id, card_id, exc)
@@ -1796,7 +1797,7 @@ async def _condense_one_batch(work_id: str, card_id: str,
     # （与归拢的 1e9 段分开），coveredSeqs 统一记原块号——结构不变量可通过
     # （I1 锚点唯一；I3 只查同父兄弟），mark 靠 coveredSeqs 含原块号越过。
     _win_budget = window_budget_tokens()
-    _chunk_size = max(2_000, _win_budget // 2)          # 段大小＝窗口半预算
+    _chunk_size = min(_win_budget, max(2_000, _win_budget // 2))
     _CHUNK_BASE = 2_000_000_000
     _tombstones: list[dict[str, Any]] = []               # 兼容旧名：现在是「分块替换表」
     _new_blocks: list[dict[str, Any]] = []
@@ -1820,7 +1821,7 @@ async def _condense_one_batch(work_id: str, card_id: str,
         if _buf:
             _chunks.append("".join(_buf))
         # [§三.1 · 单行也要切] 一行本身超预算时行打包切不动——按字符二分
-        # 到预算内（前缀单调，二分得最长合规前缀；1 字符不可能超 2000 token 下限）。
+        # 到预算内。极小的显式预算连一个字符也放不下时，本批留账。
         _fixed: list[str] = []
         for _ck in _chunks:
             while _msg_meter_tokens({"content": _ck}) > _chunk_size:
@@ -1831,7 +1832,10 @@ async def _condense_one_batch(work_id: str, card_id: str,
                         _lo = _mid
                     else:
                         _hi = _mid - 1
-                _fixed.append(_ck[:_lo])
+                piece = _ck[:_lo]
+                if _msg_meter_tokens({"content": piece}) > _chunk_size:
+                    return _batch_fail("window_budget", "预算不足以容纳单字符分片")
+                _fixed.append(piece)
                 _ck = _ck[_lo:]
             if _ck:
                 _fixed.append(_ck)
@@ -2720,9 +2724,20 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
     tops = _foldable_tops(state)
     if (count - last < FOLD_EVERY_BATCHES) and (len(tops) < fold_top_trigger()):
         return
+    fold_base = {**state, "entries": deepcopy(state.get("entries") or [])}
+
+    async def _publish_fold() -> bool:
+        try:
+            await save_memory(work_id, card_id, state, expected_state=fold_base)
+        except _StaleCondenseBatch:
+            logger.info("[condense_fold] 归拢提交版本已变化 work=%s card=%s", work_id, card_id)
+            return False
+        return True
+
     if len(tops) < 2:
         state["last_fold_check"] = count
-        await save_memory(work_id, card_id, state)
+        if not await _publish_fold():
+            return
         logger.info("[condense_fold] 归拢判断空转（fold-l1.judge-empty tops<2，零模型）work=%s card=%s 批数=%d",
                     work_id, card_id, count)
         return
@@ -2783,7 +2798,8 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
     verdict, groups = _parse_fold_groups(text1, top_seqs)
     if verdict == "empty":
         state["last_fold_check"] = count
-        await save_memory(work_id, card_id, state)
+        if not await _publish_fold():
+            return
         logger.info("[condense_fold] 归拢判断无果（fold-l1.judge-empty）work=%s card=%s 批数=%d",
                     work_id, card_id, count)
         return
@@ -2976,7 +2992,8 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
         if n_fail == 0:
             # 全部组诚实弃权 / 产出有效但认领后无成组 → judge-empty → 推游标
             state["last_fold_check"] = count
-            await save_memory(work_id, card_id, state)
+            if not await _publish_fold():
+                return
             logger.info("[condense_fold] 归拢判断无果（fold-l1.judge-empty 全组弃权）"
                         "work=%s card=%s 批数=%d", work_id, card_id, count)
         else:
@@ -2988,7 +3005,8 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
         return
     state["entries"] = entries
     state["last_fold_check"] = count
-    await save_memory(work_id, card_id, state)
+    if not await _publish_fold():
+        return
     # [观测 F22] 归拢动作留痕（JSONL），附带结构不变量体检（违例只记、不阻断）。
     try:
         _viol = memory_domain.check_invariants(state.get("entries") or [])
@@ -3127,6 +3145,18 @@ def _debt_blocks(state: dict[str, Any], now: float) -> bool:
     return nxt > now
 
 
+def _retry_due(state: dict[str, Any], pending: list[dict[str, Any]]) -> bool:
+    return bool(pending and _condense_debt_of(state) and not _debt_blocks(state, time.time()))
+
+
+def _store_condense_debt(work_id: str, card_id: str, debt: dict[str, Any]) -> None:
+    try:
+        _update_memory_meta(work_id, card_id, lambda extra: extra.update(condense_debt=debt))
+    except Exception as exc:  # noqa: BLE001 记账错误独立留痕
+        logger.error("[condense_fold] 重试账落库失败 work=%s card=%s stage=%s: %s",
+                     work_id, card_id, debt.get("stage"), exc)
+
+
 def _card_is_archived(work_id: str, card_id: str) -> bool:
     """归档拦截（F14c）：卡已归档（卡表无此行）⇒ 不触发凝练。
     archive_card 把卡行从 `cards` 表移进归档记录 ⇒ 存在性判据即归档判据。"""
@@ -3191,7 +3221,7 @@ async def condense_turn_end(work_id: str, card_id: str,
                                   block_tokens=block_size, request_tokens=request_tokens,
                                   threshold=k, triggered=size >= k,
                                   source="turn_end", pending_blocks=len(pending), mark=mark)
-        if size < k:
+        if size < k and not _retry_due(state, pending):
             return  # 未到线：安静观察（K 首版估值下常态；标定期看 debug）
         # [F14c 归档拦截] 卡已归档（卡表无行）⇒ 不再触发（原版 archivedAt 拦截同位）
         if _card_is_archived(work_id, card_id):
@@ -3234,33 +3264,27 @@ async def condense_turn_end(work_id: str, card_id: str,
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[condense_fold] archive 迁移失败（不挡凝练）work=%s card=%s: %s",
                                work_id, card_id, exc)
-            res = await _run_condense_pipeline(work_id, card_id, pending, mark)
+            res = await _run_condense_pipeline(work_id, card_id, pending, mark) or {}
             # [§三.1 · 失败账] 前批有效提交保留；当前未成功批次（failed/partial）
             # 记账退避，重试从 committed_mark 续跑；到期重试成功才清账。
-            state = load_memory(work_id, card_id)
             if res.get("status") in ("failed", "partial"):
-                state["condense_debt"] = {
+                _store_condense_debt(work_id, card_id, {
                     "failed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                     "next_retry_ts": time.time() + CONDENSE_FAIL_BACKOFF_SEC,
                     "reason": f"stage={res.get('failure_stage')} {res.get('failure_detail')}",
                     "stage": str(res.get("failure_stage") or ""),
                     "committed_mark": int(res.get("committed_mark") or 0),
                     "batches_committed": int(res.get("batches") or 0),
-                }
-                try:
-                    await save_memory(work_id, card_id, state)
-                except Exception:  # noqa: BLE001 账本写失败不阻断（下轮重记）
-                    pass
+                })
                 logger.warning("[condense_fold] 凝练记账（%s）work=%s card=%s 阶段=%s "
                                "已提交水位=%d 已提交批=%d",
                                res.get("status"), work_id, card_id,
                                res.get("failure_stage"),
                                int(res.get("committed_mark") or 0),
                                int(res.get("batches") or 0))
-            elif state.get("condense_debt"):
+            elif res.get("status") == "ok" and _condense_debt_of(state):
                 # [F14b] 成功清账（重试成功后才清——前批提交不算成功）
-                state.pop("condense_debt", None)
-                await save_memory(work_id, card_id, state)
+                _update_memory_meta(work_id, card_id, lambda extra: extra.pop("condense_debt", None))
         finally:
             _CONDENSING.discard(_key)
             _FLYING.pop(_key, None)
@@ -3282,17 +3306,13 @@ async def condense_turn_end(work_id: str, card_id: str,
             except Exception:  # noqa: BLE001
                 pass
         # [F14b] 失败记账：30min 退避（可 env 调），失败不丢账、到期必重试
-        try:
-            state = load_memory(work_id, card_id)
-            state["condense_debt"] = {
-                "failed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-                "next_retry_ts": time.time() + CONDENSE_FAIL_BACKOFF_SEC,
-                "reason": str(exc),
-                "stage": "exception",
-            }
-            await save_memory(work_id, card_id, state)
-        except Exception:  # noqa: BLE001
-            pass
+        _store_condense_debt(work_id, card_id, {
+            "failed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "next_retry_ts": time.time() + CONDENSE_FAIL_BACKOFF_SEC,
+            "reason": str(exc),
+            "stage": "exception",
+            "committed_mark": int(load_memory(work_id, card_id).get("mark") or 0),
+        })
 
 
 def _card_id_from_session_stem(stem: str) -> str:
@@ -3338,10 +3358,11 @@ async def condense_sweep_once(max_cards: int = 8) -> int:
                 st = load_memory(work_id, card_id)
                 mark = int(st.get("mark", 0) or 0)
                 pending = _read_origin(work_id, card_id, mark)
-                if _context_meter(pending) < trigger_k_tokens():
+                size = _context_meter(pending)
+                if size < trigger_k_tokens() and not _retry_due(st, pending):
                     continue
                 logger.warning("[condense_fold] 后台扫描命中：work=%s card=%s 未凝=%d token "
-                               "（线 %d）", work_id, card_id, _context_meter(pending), trigger_k_tokens())
+                               "（线 %d）", work_id, card_id, size, trigger_k_tokens())
                 await condense_before_send(work_id, card_id)
                 done += 1
             except Exception as exc:  # noqa: BLE001 单卡失败不影响其它卡
@@ -3408,7 +3429,8 @@ async def condense_before_send(work_id: str, card_id: str) -> bool:
         # ~7.5 万），且被当 request_tokens 喂给 turn_end 污染三尺对账。
         # 工具账照常在到线批次里随窗口被凝进记忆——只是不再充当"超线"证据。
         size = _context_meter(pending)
-        if size < trigger_k_tokens():
+        retry_ready = _retry_due(state, pending)
+        if size < trigger_k_tokens() and not retry_ready:
             return False
         # [连跑多批 2026-10-22] 一批只压 30 万；超窗的卡（实测 fn_002 196%）一批压完
         # 仍 > 窗口 ⇒ 请求照样 502 ⇒ 又没人重试 ⇒ 还是死。故：只要还没降到窗口
@@ -3417,7 +3439,7 @@ async def condense_before_send(work_id: str, card_id: str) -> bool:
         _target = int(_WIN * 0.9)
         ran = 0
         cur = size
-        while ran < 8 and cur >= min(trigger_k_tokens(), _target):
+        while ran < 8 and (cur >= min(trigger_k_tokens(), _target) or (ran == 0 and retry_ready)):
             logger.warning("[condense_fold] 后台排水：未凝 %d token（线 %d / 窗口目标 %d）"
                            "—— 第 %d 批 work=%s card=%s",
                            cur, trigger_k_tokens(), _target, ran + 1, work_id, card_id)

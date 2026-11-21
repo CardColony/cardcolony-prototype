@@ -29,6 +29,8 @@ __all__ = [
     "resolve_scope",
     "EXEC_CARD_TYPES",
     "DOMAIN_CARD_TYPES",
+    "BINDING_CARD",
+    "BINDING_JURISDICTION",
 ]
 
 MODE_SINGLE = "single"
@@ -43,6 +45,12 @@ DOMAIN_CARD_TYPES = frozenset({"project", "sub_project", "topic"})
 
 #: 既非领域也非执行（职能/角色/评审/规则/对齐）——不计入管辖范围统计。
 OTHER_CARD_TYPES = frozenset({"function", "role", "review", "rule", "align"})
+
+#: **本轮可信任务绑定**的两种形态（谁在定范围）：
+#: - ``card``：范围＝一张对象卡（单卡专项/委派/验收）；
+#: - ``jurisdiction``：范围＝某张卡的管辖范围（全局统筹）。
+BINDING_CARD = "card"
+BINDING_JURISDICTION = "jurisdiction"
 
 #: 活板判据里的条款号（A2／R10／S9-R01…）——只在本模块内当锚抽出来用。
 _ANCHOR_RE = re.compile(
@@ -110,18 +118,26 @@ def resolve_scope(*, card_id: str, card_type: str,
                   ctx_card: str = "",
                   dispatch_targets: Optional[list[str]] = None,
                   board_criteria: str = "",
-                  readback_available: bool = True) -> TaskScope:
+                  readback_available: bool = True,
+                  task_binding: Optional[dict[str, Any]] = None,
+                  own_task: bool = False) -> TaskScope:
     """判定本轮任务范围。**纯判定**：吃装配层已取好的数据，不再查库。
 
-    判据顺序（先具体后宽泛，先证据后推测）：
+    [返工 2026-11-20 · 复核算二] **范围只能由「本轮可信任务绑定」判出来**：
+    卡型与子树**不再**用于推断档位（那会把「有领域子卡的管理卡的普通聊天」
+    错判成全局统筹），它们只用于确定**已证实范围内有哪些卡**。
 
-    1. **不是普通主对话** → unknown（评审/场授/席位各按自己的批次走）。
-    2. **差事账对象**（qa/pm 验收卡绑定了唯一 target_card）→ single，对象＝该卡。
-    3. **领域子卡存在**（本卡的直接子卡里有自己一片领域的卡）→ global。
-    4. **执行型卡**（worker/ui/qa/pm/tool）→ single，对象＝本卡。
-    5. **管理型卡但子卡全是执行件**（它在派自己的交付件，不统筹子领域）
-       → single，对象＝本卡。
-    6. 其余（无子卡的普通聊天等）→ unknown（完整材料）。
+    绑定三来源（按优先级，先显式后派生）：
+
+    1. **显式绑定**：正式提交的 `source.task` 或回合入口给的 `task_binding`。
+       ``{"kind": "card", "card_id": X}``（对象卡）或
+       ``{"kind": "jurisdiction", "card_id": Y}``（管辖范围）。
+    2. **差事账绑定**（`dispatch_targets`）：本轮在派差事且绑定唯一
+       ``target_card`` ⇒ 对象＝该卡（**任意卡型都算**——不再按 qa/pm 过滤）。
+    3. **本卡正在推进目标**（`own_task`：有目标标识的目标续轮）
+       ⇒ 范围＝本卡的管辖范围。
+
+    **没有绑定 ⇒ unknown（完整材料，逐字同旧）**。
     """
     src = dict(source or {})
     # ① 非普通主对话 ⇒ 不缩量
@@ -135,10 +151,39 @@ def resolve_scope(*, card_id: str, card_type: str,
         return TaskScope(MODE_UNKNOWN, basis="ctx_card",
                          reason="上下文锚≠执行卡（场务/评审语境），本批不缩量")
 
-    ctype = str(card_type or "")
-    domain_kids, exec_kids = _child_types(children or [])
+    b = dict(task_binding or {})
+    task = src.get("task")
+    criteria = board_criteria
+    if isinstance(task, dict) and (task.get("task_id") or task.get("id")):
+        target = str(task.get("target") or "").strip()
+        criteria = str(task.get("accept") or "")
+        if not re.fullmatch(r"card_\d+", target):
+            return TaskScope(MODE_UNKNOWN, basis="unbound_task_target",
+                             reason="已提交任务缺少可定位的目标卡，保留完整材料")
+        kind = (BINDING_JURISDICTION
+                if task.get("scope") == BINDING_JURISDICTION and target == card_id
+                else BINDING_CARD)
+        b = {"kind": kind, "card_id": target}
+    anchors = tuple(_ANCHOR_RE.findall(criteria or ""))[:24]
 
-    # ② 差事账对象：唯一绑定到**验收对象**的结构化字段
+    # ② 显式任务绑定
+    bkind = str(b.get("kind") or "")
+    bcard = str(b.get("card_id") or "")
+    if bcard and (bkind == BINDING_CARD
+                  or (bkind == BINDING_JURISDICTION and bcard == card_id)):
+        if bkind == BINDING_CARD:
+            return TaskScope(MODE_SINGLE, target_card=bcard,
+                             basis="explicit_binding_card",
+                             reason=f"回合显式绑定对象卡 {bcard}",
+                             readback_available=readback_available,
+                             anchors=anchors)
+        return TaskScope(MODE_GLOBAL, target_card=bcard,
+                         basis="explicit_binding_jurisdiction",
+                         reason=f"回合显式绑定管辖范围 {bcard}",
+                         readback_available=readback_available,
+                         anchors=anchors)
+
+    # ③ 差事账绑定：唯一绑定到**验收对象**的结构化字段（任意卡型）
     targets = [str(t) for t in (dispatch_targets or []) if str(t or "")]
     uniq = sorted(set(targets))
     if len(uniq) == 1:
@@ -146,34 +191,19 @@ def resolve_scope(*, card_id: str, card_type: str,
                          basis="dispatch_target",
                          reason=f"差事账绑定唯一验收对象 {uniq[0]}",
                          readback_available=readback_available,
-                         anchors=tuple(_ANCHOR_RE.findall(board_criteria or ""))[:24])
+                         anchors=anchors)
     if len(uniq) > 1:
         return TaskScope(MODE_UNKNOWN, basis="dispatch_ambiguous",
                          reason=f"差事账绑定了多个对象（{len(uniq)} 个），范围不可证明")
 
-    # ③ 领域子卡 ⇒ 本卡是管辖者（全局统筹）
-    if domain_kids:
+    # ④ 目标续轮 ⇒ 本卡管辖范围
+    if own_task:
         return TaskScope(MODE_GLOBAL, target_card=card_id,
-                         basis="jurisdiction_domain_children",
-                         reason=f"直接子卡含 {len(domain_kids)} 张领域子卡 ⇒ 管辖范围可证",
-                         readback_available=readback_available)
-
-    # ④ 执行型卡 ⇒ 自己那一件事（单卡专项）
-    if ctype in EXEC_CARD_TYPES:
-        return TaskScope(MODE_SINGLE, target_card=card_id,
-                         basis="exec_card_type",
-                         reason=f"执行型卡（{ctype}）⇒ 对象＝本卡",
+                         basis="own_task",
+                         reason="本轮从本卡的目标续接，按本卡管辖范围选材",
                          readback_available=readback_available,
-                         anchors=tuple(_ANCHOR_RE.findall(board_criteria or ""))[:24])
+                         anchors=anchors)
 
-    # ⑤ 管理型卡但子卡全是执行件 ⇒ 它在自己那件事里派件，不统筹子领域
-    if ctype in DOMAIN_CARD_TYPES and exec_kids:
-        return TaskScope(MODE_SINGLE, target_card=card_id,
-                         basis="own_delivery_children",
-                         reason=f"直接子卡全为执行件（{len(exec_kids)} 张）⇒ 对象＝本卡",
-                         readback_available=readback_available,
-                         anchors=tuple(_ANCHOR_RE.findall(board_criteria or ""))[:24])
-
-    # ⑥ 证不出来 ⇒ 完整材料
-    return TaskScope(MODE_UNKNOWN, basis="no_provable_scope",
-                     reason="任务范围无法证明（无子卡/无差事账/非执行型）")
+    # ⑤ 没有可信绑定 ⇒ 完整材料（普通聊天等）
+    return TaskScope(MODE_UNKNOWN, basis="no_task_binding",
+                     reason="本轮没有可信任务绑定（普通聊天等）⇒ 保留完整材料")

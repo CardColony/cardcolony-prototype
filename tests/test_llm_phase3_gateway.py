@@ -7,12 +7,13 @@
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 
 import pytest
 
-from src.infra.errors import ModelError
+from src.infra.errors import ErrorCode, ModelError
 from src.model_gateway.gateway import ModelGateway, MockAdapter, build_gateway
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +32,55 @@ def _dead_model(vendor="zhipu", wire="m"):
         "base_url": "http://127.0.0.1:1/v1",
         "retry": {"max_attempts": 1, "backoff_seconds": 0},
     }
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_queued_send_guard_rejection_bypasses_retry_and_fallback(monkeypatch, streaming):
+    monkeypatch.setenv("MOCK_LLM", "1")
+    gateway = build_gateway(_cfg(main=_dead_model(), backup=_dead_model(wire="backup")))
+    queued = asyncio.Event()
+    seats = []
+    sent = []
+    rejected = ModelError(ErrorCode.MODEL_CALL_FAILED, "stale material")
+
+    class Occupied(asyncio.Semaphore):
+        async def __aenter__(self):
+            queued.set()
+            return await super().__aenter__()
+
+    slot = Occupied(0)
+
+    def sem_for(model):
+        seats.append(model)
+        return slot
+
+    async def guard():
+        raise rejected
+
+    async def stream(options):
+        sent.append(options.model)
+        for chunk in ():
+            yield chunk
+
+    monkeypatch.setattr(gateway, "_sem_for", sem_for)
+    monkeypatch.setattr(gateway._runtime, "stream", stream)
+    kwargs = {"before_send": guard, "fallbacks": ["backup"]}
+
+    async def run():
+        if streaming:
+            return [chunk async for chunk in gateway.stream_call("main", "S", "U", **kwargs)]
+        return await gateway.call("main", "S", "U", **kwargs)
+
+    task = asyncio.create_task(run())
+    try:
+        await asyncio.wait_for(queued.wait(), timeout=5)
+        assert not task.done()
+    finally:
+        slot.release()
+    with pytest.raises(ModelError) as exc:
+        await asyncio.wait_for(task, timeout=5)
+    assert exc.value is rejected
+    assert seats == ["main"] and not sent
 
 
 # ---------------- 判据 1：单适配器 ----------------

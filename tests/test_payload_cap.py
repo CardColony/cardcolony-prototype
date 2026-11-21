@@ -108,3 +108,116 @@ def test_c6_single_huge_string_is_truncated():
     content = rec["data"]["result"]["content"]
     assert "已截断" in content, content[-80:]
     assert content.split("\n")[0] == "摘要第一行"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [窄投影 2026-11-21 · 性能批次二] view=brief 的投影层测试
+# ═══════════════════════════════════════════════════════════════════════
+
+def _tr(seq: int, result_chars: int = 20000) -> dict:
+    return {"seq": seq, "type": "tool_result",
+            "data": {"tool": "read_card", "target": "card_x", "ok": True,
+                     "step_id": "s1", "origin": "main",
+                     "result": {"ok": True, "content": "x" * result_chars}}}
+
+
+def test_brief_tool_result_result_stubbed():
+    """tool_result.data.result → {\\"_brief\\":true,ok} 占位；外层标量不动。"""
+    rec = _tr(1)
+    payload_cap.brief_record(rec)
+    assert rec["_brief"] is True
+    assert rec["data"]["result"]["_brief"] is True
+    assert rec["data"]["result"]["ok"] is True
+    assert rec["data"]["result"]["_bytes"] > 2048   # 有界测量：下限账提示体量
+    assert rec["data"]["tool"] == "read_card"      # 摘要字段原样
+    assert rec["data"]["step_id"] == "s1"
+
+
+def test_brief_tool_result_small_result_untouched():
+    """小结果不值得详情往返——不窄化。"""
+    rec = _tr(1, result_chars=500)
+    payload_cap.brief_record(rec)
+    assert "_brief" not in rec
+    assert rec["data"]["result"]["content"] == "x" * 500
+
+
+def test_brief_tool_call_long_args_previewed():
+    """tool_call 的超长参数值 → 预览（类型仍是字符串，摘要行零差异）。"""
+    rec = {"seq": 2, "type": "tool_call",
+           "data": {"tool": "edit_card", "tool_call_id": "c1",
+                    "arguments": {"card_id": "card_x", "path": "/a/b.md",
+                                  "new_string": "y" * 5000, "old_string": "z" * 20}}}
+    payload_cap.brief_record(rec)
+    assert rec["_brief"] is True
+    args = rec["data"]["arguments"]
+    assert args["new_string"].endswith("…") and len(args["new_string"]) < 500
+    assert args["old_string"] == "z" * 20          # 短值原样
+    assert args["path"] == "/a/b.md"
+
+
+def test_brief_reasoning_main_previewed_seat_kept():
+    """主模型思考 → 预览；带 model 的席内思考（常驻可见）不窄化。"""
+    main = {"seq": 3, "type": "reasoning", "data": {"text": "第一行摘要\n" + "t" * 2000}}
+    payload_cap.brief_record(main)
+    assert main["_brief"] is True
+    assert main["data"]["text"].endswith("…")
+    assert main["data"]["text"].startswith("第一行摘要")
+
+    seat = {"seq": 4, "type": "reasoning", "model": "seat-a",
+            "data": {"text": "x" * 2000}}
+    payload_cap.brief_record(seat)
+    assert "_brief" not in seat
+    assert seat["data"]["text"] == "x" * 2000
+
+
+def test_brief_card_block_edited_old_new_previewed():
+    rec = {"seq": 5, "type": "card_block_edited",
+           "data": {"card_type": "sub_project", "block": "现状", "by": "card_007",
+                    "old_len": 5000, "new_len": 5000,
+                    "old": "o" * 5000, "new": "n" * 5000}}
+    payload_cap.brief_record(rec)
+    assert rec["_brief"] is True
+    assert rec["data"]["old"].endswith("…") and len(rec["data"]["old"]) < 500
+    assert rec["data"]["by"] == "card_007" and rec["data"]["old_len"] == 5000
+
+
+def test_brief_visible_content_untouched():
+    """可见正文类型整体豁免——一个字不动。"""
+    for t in ("user_message", "assistant_text", "msg_report", "plan_created",
+              "system_result", "seat_end", "coder_done"):
+        rec = {"seq": 9, "type": t,
+               "data": {"content": "c" * 90000, "text": "c" * 90000,
+                        "steps": ["s" * 90000]}}
+        before = json.dumps(rec, ensure_ascii=False)
+        payload_cap.brief_record(rec)
+        assert json.dumps(rec, ensure_ascii=False) == before, t
+        assert "_brief" not in rec
+
+
+def test_brief_fallback_only_top_level_strings():
+    """通用兜底：>8KB 的记录只预览顶层超长串；容器/短字段一律不碰。"""
+    rec = {"seq": 10, "type": "harness_message",
+           "data": {"to": "card_x", "kind": "task",
+                    "regions": ["a", "b", "c"],            # 数组不动（行首 .join 用）
+                    "text": "w" * 20000}}
+    payload_cap.brief_record(rec)
+    assert rec["_brief"] is True
+    assert rec["data"]["text"].endswith("…")
+    assert rec["data"]["regions"] == ["a", "b", "c"]
+    assert rec["data"]["kind"] == "task"
+
+
+def test_brief_fallback_small_record_untouched():
+    rec = {"seq": 11, "type": "harness_message",
+           "data": {"to": "x", "text": "w" * 1000}}
+    payload_cap.brief_record(rec)
+    assert "_brief" not in rec
+
+
+def test_brief_records_mixed_list():
+    items = [_tr(1), {"seq": 2, "type": "user_message", "data": {"content": "hi"}},
+         {"seq": 3, "type": "reasoning", "data": {"text": "short"}}]
+    out = payload_cap.brief_records(items)
+    assert out is items                                    # 就地
+    assert items[0]["_brief"] is True
+    assert "_brief" not in items[1] and "_brief" not in items[2]

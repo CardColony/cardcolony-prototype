@@ -223,3 +223,78 @@ def test_goal_block_edit_hits_the_notify_policy(tmp_path, monkeypatch):
     store.close()
     fs.reset(fs.FactStore(works_dir=tmp_path))
     ps.reset_set(ps.PolicySet())
+
+
+# ============================================================
+# [补书 §三 · card_648 23:12 实录] handled=runner 排除条件走整链：
+# 事件 data → flatten_parts（catalog 契约）→ trigger_data →
+# 规则求值 → 点火/投递。两次断点都钉住：契约丢字段（catalog 没
+# 声明 handled ⇒ trigger_data 缺席）与运行实例装旧规则。
+# ============================================================
+
+def test_handled_runner_suppresses_reinvoke_via_real_chain(tmp_path, monkeypatch):
+    """pseudo_call_unparsed 带 handled=runner ⇒ pseudo_call_reinvoke 不点火。
+
+    用**真策略文件**＋**真事件目录**走 feed→ingest→dispatch 全链——
+    catalog 若把 handled 拍出零件表，本用例第一断言立即红。
+    """
+    from pathlib import Path
+
+    from src.infra import intervention_runner, policy_config
+
+    monkeypatch.delenv("ECO_POLICY_OFF", raising=False)
+    real_policies = Path(__file__).resolve().parents[1] / "config" / "harness_policies.json"
+    monkeypatch.setenv("ECO_POLICIES_PATH", str(real_policies))
+    store = fs.FactStore(works_dir=tmp_path)
+    fs.reset(store)
+    pset = ps.PolicySet()
+    errs = pset.load(policy_config.load_raw())
+    assert errs == [], "真策略文件必须零错误加载"
+    ps.reset_set(pset)
+    recorded: list = []
+    monkeypatch.setattr(intervention_runner, "record_fired",
+                        lambda w, f: recorded.append(f))
+    try:
+        base = {"seq": 1, "ts": time.time(), "type": "pseudo_call_unparsed",
+                "card_id": "card_648",
+                # card_648 23:12 实录同形态：runner 已接管（handled 标记）
+                "data": {"round": 1, "chars": 975, "origin": "pseudo_compat",
+                         "candidates": 0, "proto_hint": "", "recent": 1,
+                         "head": "<｜begin▁of▁sentence｜>11 条线",
+                         "handled": "runner"}}
+        fired = runner.feed("w", dict(base))
+        assert fired == [], f"handled=runner 不应再点火：{fired}"
+        # 标记必须真到了规则输入——零件表面上看一眼
+        fact = store.query("w")[-1]
+        assert fact.get("handled") == "runner", \
+            f"handled 没进事实零件（catalog 契约丢了它）：{fact}"
+        # 对照：同形态但 runner 未接管 ⇒ 现行提醒仍可触发
+        rec2 = dict(base, seq=2,
+                    data={k: v for k, v in base["data"].items()
+                          if k != "handled"})
+        fired2 = runner.feed("w", rec2)
+        assert any(f["policy"] == "pseudo_call_reinvoke" for f in fired2), \
+            "runner 未接管的裸伪调用事实仍应能叫醒（现行提醒兜底）"
+    finally:
+        store.close()
+        fs.reset(fs.FactStore(works_dir=tmp_path))
+        ps.reset_set(ps.PolicySet())
+
+
+def test_fragment_only_hop_yields_no_unparsed_fact(tmp_path, monkeypatch):
+    """只剩供方残片的跳次不该产出 pseudo_call_unparsed（无未派发调用可纠）。
+
+    判据钉在「什么算疑似」上：ds_safety 块/CDATAEND>/BOS 标记被遮蔽后，
+    extract 的 unresolved 必须为 False——runner 的 pseudo_unparsed 分支
+    由它驱动，False ⇒ 零事实 ⇒ 零提醒。
+    """
+    from src.api import text_tool_rescue
+
+    for sample in (
+        "CDATAEND>\n<ds_safety>[用户未成年]否\n[分类]其他\n[判定]…\n[规则]无</ds_safety>",
+        "<｜begin▁of▁sentence｜>11 条线\n\n## 通信线",
+        "<ds_safety>无边界内嵌</ds_safety>",
+    ):
+        calls, unresolved, stripped = text_tool_rescue.extract_text_tool_calls(sample)
+        assert calls == [] and unresolved is False, \
+            f"残片被当成疑似调用候选了：{sample[:60]}"

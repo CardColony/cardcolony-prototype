@@ -48,7 +48,8 @@ async def redigest(wid: str, cid: str, seqs: list[int]) -> int:
               f"开始分块重凝（{m._msg_meter_tokens({'content': b.get('content')})} tok）", flush=True)
         t0 = time.time()
         window = [b]
-        ok = await m._condense_one_batch(wid, cid, window, int(seq))
+        result = await m._condense_one_batch(wid, cid, window, int(seq))
+        ok = result["ok"]
         st2 = m.load_memory(wid, cid)
         chain = md.load_chain(wid, cid)
         viol = md.check_invariants(chain)

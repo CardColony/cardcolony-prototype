@@ -1733,6 +1733,14 @@ async def update_card(
     if await card_db.run_write(work_id, _fn) is None:
         raise CardNotFoundError(f"卡片不存在: {card_id}")
 
+    if "requirements" in updates:
+        from ..api import task_basis
+        if task_basis.enabled(work_id):
+            try:
+                await asyncio.to_thread(task_basis.realign_check, work_id, card_id)
+            except Exception:
+                logger.exception("[task_basis] 正稿已生效，任务将在请求入口重新对齐")
+
     canvas_store.mark_dirty(work_id)
     # [数据与代码分家 2026-10-03] 运行数据不再 git 提交（曾因分支操作被整体回退），改走独立快照
     await data_snapshot.schedule(f"[snapshot][{work_id}] update: {card_id}", work_id)

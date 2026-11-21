@@ -131,11 +131,13 @@ function _composeSignal(outer, ms) {
       outer.addEventListener("abort", onAbort, { once: true });
     }
   }
-  const cleanup = () => {
-    clearTimeout(t);
+  const cleanupTimeout = () => { clearTimeout(t); };
+  const cleanupAbort = () => {
+    cleanupTimeout();
     if (outer && onAbort) outer.removeEventListener("abort", onAbort);
   };
-  return { signal: ctrl.signal, state, cleanup };
+  const cleanup = cleanupAbort;
+  return { signal: ctrl.signal, state, cleanupTimeout, cleanupAbort, cleanup };
 }
 
 export async function request(method, url, body, opts) {
@@ -154,17 +156,22 @@ export async function request(method, url, body, opts) {
   const attempts = (o.retry === false || method !== "GET") ? 1 : 2;
   let lastErr = null;
   for (let i = 0; i < attempts; i++) {
-    const { signal, state, cleanup } = _composeSignal(o.signal, ms);
+    const { signal, state, cleanupTimeout, cleanupAbort } = _composeSignal(o.signal, ms);
     init.signal = signal;
     try {
       const resp = await fetch(url, init);
-      cleanup();
+      /* ★ 头到即解除 abort 连线 ⇒ **正文还在读的时候，取消已经传不下去了**
+         （返工 2b）：消费者退了、底层正文却还在拉（首屏那条时序是 1.3MB）。
+         ⇒ holdSignal：保留「外部取消 → 派生 signal」的连线，直到**正文读完**。
+         头到之后不再计时（超时对读正文无意义）。 */
+      cleanupTimeout();
+      if (!o.holdSignal) cleanupAbort();
       // [2026-10-25] **通了** ⇒ 恢复（此前不可达则提示一次「服务已恢复」）。
       // 放在这一层：裸 request 的调用方（周期探测）也能把闩解开。
       _noteReachable();
       return resp;
     } catch (e) {
-      cleanup();
+      cleanupAbort();
       lastErr = e;
       // 调用方主动取消：立刻退出（不重试、不报错）
       if (o.signal && o.signal.aborted) throw e;
@@ -187,10 +194,17 @@ export async function call(method, url, body, opts) {
   // [在途合并 2026-11-20] GET 走**共享通道**：同一 URL 的并发请求合成一次。
   // 非 GET（写）永远不共享 —— 写的语义是「立刻生效」，不容合并。
   if (method === "GET" && !o.noShare) return _sharedGet(url, o);
-  // 写 ⇒ 纪元推进：写前发起的 GET 与写后发起的 GET 不再合并
-  // （「提交后重读」必须拿到写后的新值，不能拿写在途的旧响应）。
-  _epoch++;
-  return _callDirect(method, url, body, o);
+  try {
+    return await _callDirect(method, url, body, o);
+  } finally {
+    /* ★ 纪元在**写落定之后**推进，不是之前（2026-11-20 返工）。
+       之前推进 ⇒「写期间发起的 GET」与「提交后的重读」拿到**同一个纪元**
+       ⇒ 重读会并到写期间那条上 ⇒ **保存成功后仍然读到旧值**（实测复现）。
+       写落定后推进 ⇒ 写期间那条（纪元 E）与提交后重读（纪元 E+1）**不合并** ✓
+       （「提交后重读必须拿到写后的新值」这条语义由此守住）。
+       ★ 写失败也推进：写可能部分落地，宁可作废在途读也不给旧值。 */
+    _epoch++;
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -229,12 +243,18 @@ function _sharedGet(url, o) {
   let entry = _getInflight.get(url);
   // 纪元不同（期间有写操作）⇒ 不复用旧条目，另起一条新的。
   if (entry && entry.epoch !== _epoch) entry = null;
+  // ★ 条目已被作废（最后一个消费者退了）⇒ 也不能复用（返工 2a）。
+  //   病根：原来条目只在 promise 的 finally 里摘表，而 finally 是**微任务** ⇒
+  //   「最后一位消费者取消」之后**同步**重开同一 URL，会接到那条**已取消**的
+  //   条目上 ⇒ 新请求直接 AbortError（等于这次读没发生）。
+  if (entry && entry.dropped) entry = null;
   if (!entry) {
     entry = {
       url, epoch: _epoch,
       ctrl: new AbortController(),
       consumers: new Set(),
       promise: null,
+      dropped: false,
     };
     entry.promise = _runSharedGet(entry, o).finally(() => {
       // 只有「我还是那条」才清表（期间可能已有新的同 URL 条目顶上）。
@@ -245,6 +265,16 @@ function _sharedGet(url, o) {
     _getInflight.set(url, entry);
   }
   return _attachConsumer(entry, o);
+}
+
+/** ★ 条目作废（返工 2a）：**立刻**从表里摘掉并取消底层请求。
+    必须在「最后一个消费者退订」那一刻同步做，不能等 promise 的 finally
+    （finally 是微任务 ⇒ 同步重开就会接到这条已取消的条目）。 */
+function _dropEntry(entry) {
+  if (entry.dropped) return;
+  entry.dropped = true;
+  if (_getInflight.get(entry.url) === entry) _getInflight.delete(entry.url);
+  try { entry.ctrl.abort(); } catch (e) { /* 零阻断 */ }
 }
 
 /** 把一个消费者挂到共享条目上：退订只影响自己。 */
@@ -267,10 +297,9 @@ function _attachConsumer(entry, o) {
         entry.consumers.delete(consumer);
         cleanup();
         reject(_abortError());
-        // 没人要了 ⇒ 真取消底层请求（释放浏览器那 6 条连接之一）。
-        if (entry.consumers.size === 0) {
-          try { entry.ctrl.abort(); } catch (e) { /* 零阻断 */ }
-        }
+        // 没人要了 ⇒ **立刻**作废这条条目（摘表 + 取消底层请求，释放浏览器连接）。
+        // ★ 不能只 abort 底层而把条目留在表里（返工 2a）：同步重开会接到它。
+        if (entry.consumers.size === 0) _dropEntry(entry);
       };
       detach = () => sig.removeEventListener("abort", onAbort);
       if (sig.aborted) { onAbort(); return; }
@@ -291,6 +320,10 @@ async function _runSharedGet(entry, o) {
       signal: entry.ctrl.signal,
       timeoutMs: o.timeoutMs,
       retry: o.retry,
+      /* ★ holdSignal（返工 2b）：保留「外部取消 → 派生 signal」的连线直到
+         **正文读完**。否则头一到就解除连线 ⇒ 消费者这时退订，正文还在拉
+         （首屏那条时序 1.3MB ⇒ 白拉一整条）。 */
+      holdSignal: true,
     });
   } catch (e) {
     // 消费者全退订导致的 abort ⇒ 静默（不是「连不上」）。
@@ -300,7 +333,13 @@ async function _runSharedGet(entry, o) {
     throw e;
   }
   let data = null;
-  try { data = await resp.json(); } catch (e) { /* 非 JSON */ }
+  try {
+    // 正文读取仍在 abort 连线之内 ⇒ 消费者此刻退订也能打断它。
+    data = await resp.json();
+  } catch (e) {
+    if (entry.ctrl.signal.aborted) throw _abortError();
+    /* 非 JSON */
+  }
   if (!resp.ok) {
     const msg = (data && data.error) ? data.error : ("HTTP " + resp.status);
     // 有一条消费者要出声（silent=false）才弹 —— 免得周期探活刷屏。
@@ -518,10 +557,23 @@ export const API = {
     if (opts && opts.before > 0) q.push("before=" + opts.before);
     // [席位会话] session=card@N ⇒ 取该会话的时序
     if (opts && opts.session) q.push("session=" + encodeURIComponent(opts.session));
+    /* [窄投影 2026-11-21 · 性能批次二] opts.view="brief" ⇒ 折叠类事件的
+       重字段回预览+_brief 标记（旧后端忽略此参，照常回全文 ⇒ 兼容）。 */
+    if (opts && opts.view) q.push("view=" + encodeURIComponent(opts.view));
     // [取消 2026-11-20] opts 整个透传给 call()（此前只取了三个查询参数，
     // signal 被丢掉 ⇒ 切卡无法取消在途时序拉取）。
     return call("GET", `/api/works/${wid}/cards/${cid}/timeline${q.length ? "?" + q.join("&") : ""}`,
       undefined, opts);
+  },
+  /* [窄投影补详情 2026-11-21 · 性能批次二] 按 seq 取**完整**时序记录。
+     brief 模式下展开折叠详情时按需回取原文；seqs 可以是单个数或数组。
+     返回 {items:[...], revoked:[seq...]}；旧后端 404 ⇒ 调用方静默降级。 */
+  getTimelineEvent: (wid, cid, seqs, opts) => {
+    const list = Array.isArray(seqs) ? seqs.join(",") : String(seqs);
+    const q = ["seqs=" + encodeURIComponent(list)];
+    if (opts && opts.session) q.push("session=" + encodeURIComponent(opts.session));
+    return call("GET", `/api/works/${wid}/cards/${cid}/timeline/event?${q.join("&")}`,
+      undefined, Object.assign({ silent: true }, opts || {}));
   },
   // [更新现状按钮改造 2026-10-16] op 缺省不带到请求体 ⇒ 普通发送与改前逐字等价；
   // 传 op（如 "update_status"）⇒ 本轮走专用通道（后端认它注入专用任务 + 追加专用工具）。

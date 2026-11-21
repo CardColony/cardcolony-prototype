@@ -4,11 +4,8 @@
 `{rid}-{旧批次}` 保留，不是删了。
 
 在途旧轮可能正拿着写光标跑——守卫做两件事：
-1. `open_batch` 侧：跨协程路径先取消在途回合（best-effort）再归档开新场。
-   同协程路径（正卡 turn 里调 open_review）cancel_turn 停不掉自己，
-   归档照旧，残块交给回合收尾处理；
-2. 回合收尾侧：席位回合发现批次已换 ⇒ 清场 + 撤掉误落的新票 +
-   不发任何死批次事件。
+1. `open_batch` 在场卡属主归档旧会话，并与新批次一起发布空白活跃会话。
+2. 新批发布后取消在途旧回合。同协程留下的旧残块按回合身份归档。
 """
 
 from __future__ import annotations
@@ -99,3 +96,39 @@ async def test_new_batch_archives_old_session_and_restarts_seq(sandbox):
     assert len(blocks2) == 1
     assert blocks2[0]["seq"] == 0, "新会话从头编号"
     assert "新批次第一句" in blocks2[0]["content"]
+
+
+async def test_new_batch_is_published_on_review_owner(sandbox, monkeypatch):
+    import httpx
+    from fastapi import FastAPI
+    from src.api import routes
+    from src.infra import procs
+
+    wid, cid, fids, rid = await _setup(2)
+    old_batch = (await review_store.state_of(wid, rid))["batch"]
+    await session_facade.append(wid, rid, {"role": "user", "content": "old owner session"})
+    runner = [0]
+    monkeypatch.setattr(procs, "is_web", lambda: False)
+    monkeypatch.setattr(procs, "is_runner", lambda: True)
+    monkeypatch.setattr(procs, "runner_index", lambda: runner[0])
+    monkeypatch.setattr(procs, "owner_index_of", lambda w, c: 1)
+    app = FastAPI()
+    app.include_router(routes.router)
+    asgi = httpx.ASGITransport(app=app)
+
+    class Owner(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            assert request.url.path == "/api/ctl/review_open_batch"
+            runner[0] = 1
+            try:
+                return await asgi.handle_async_request(request)
+            finally:
+                runner[0] = 0
+
+    async with httpx.AsyncClient(transport=Owner()) as client:
+        monkeypatch.setattr(procs, "_loop_clients", lambda: {"ctl": client})
+        new = await review_store.open_batch(
+            wid, rid, "owner", members=fids, target=cid, expect_batch=old_batch)
+    assert new["batch"] != old_batch
+    assert await session_facade.read(wid, rid) == []
+    assert "old owner session" in str(await session_facade.read(wid, _sid(rid, old_batch)))

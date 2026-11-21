@@ -172,6 +172,10 @@ class BlockAssembler:
         return self._finish if self._finish is not None else StopReason()
 
     @property
+    def has_finish(self) -> bool:
+        return self._finish is not None
+
+    @property
     def replay_state(self) -> object:
         """终帧携带的适配器私有重放状态（如有）。原版 assembler.ts:152-154。"""
         return self._replay_state

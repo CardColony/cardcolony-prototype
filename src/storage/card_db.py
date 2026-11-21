@@ -1411,10 +1411,11 @@ def _write_sync(work_id: str, fn: Callable[[sqlite3.Connection], Any]) -> Any:
         conn.execute("BEGIN IMMEDIATE")
         try:
             result = fn(conn)
+            conn.execute("COMMIT")
         except BaseException:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
             raise
-        conn.execute("COMMIT")
         return result
 
 

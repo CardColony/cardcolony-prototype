@@ -47,19 +47,34 @@ from src.infra import procs as _procs
 
 
 _listener_ready: asyncio.Event | None = None
+_resume_tail: "asyncio.Task | None" = None
 
 
 def _start_after_listen(fn) -> None:
-    """在调用方事件循环安排恢复任务，等服务端开始监听再扫库。"""
-    async def _run() -> None:
+    """在调用方事件循环安排恢复任务，等服务端开始监听再扫库。
+
+    〔2026-11-21〕启动风暴收敛：恢复任务从「listen 后齐发」改为**串行链**——
+    每条等上一条跑完才起步、起步前再让一轮循环，把全库扫描的 IO/CPU 尖峰
+    摊平到数秒，服务循环不再被恢复期的同步段饿死（重启后探活连败的主因）。
+    """
+    global _resume_tail
+    prev = _resume_tail
+
+    async def _run(prev_task) -> None:
+        if prev_task is not None:
+            try:
+                await prev_task
+            except Exception:  # noqa: BLE001 上一条的失败不连坐
+                pass
         if _listener_ready is not None:
             await _listener_ready.wait()
+        await asyncio.sleep(0)
         try:
             await fn()
         except Exception:
             logger.exception("[startup] 后台恢复失败: %s", fn.__qualname__)
 
-    asyncio.create_task(_run())
+    _resume_tail = asyncio.create_task(_run(prev))
 
 
 def init_directories() -> None:
@@ -278,6 +293,21 @@ async def _start_idle_sweeper() -> None:
     async def _install() -> None:
         from src.infra import idle_sweeper
         idle_sweeper.install()
+
+    _start_after_listen(_install)
+
+
+@app.on_event("startup")
+@on_main
+async def _start_coordination_tick() -> None:
+    """[项目统筹 2026-11-21 · 任务三] 装载统筹调度循环（tick）。
+
+    只在 primary runner（all 单进程 / runner-0）装载：事件批次补派、
+    到期回看认领排轮（强模型轮后台起在计划卡专属会话）。
+    """
+    async def _install() -> None:
+        from src.infra import coordination_watcher
+        coordination_watcher.install()
 
     _start_after_listen(_install)
 

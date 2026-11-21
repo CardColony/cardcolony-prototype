@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -290,6 +291,10 @@ def read_file(path: str, para_start: int | None = None, para_end: int | None = N
         "total_lines": total,
         "read_lines": f"{start}-{end}",
         "content": body,
+        # [批四返修 2026-11-21] 整份文件字节的版本指纹——读取已取得的
+        # raw 就地哈希，不另读盘。handler 把它抬到信封层（不进 data，
+        # 渲染/台账/会话块零变化），轮槽引用键用它判「文件换版」。
+        "_file_sha256": hashlib.sha256(raw).hexdigest(),
     }
 
 

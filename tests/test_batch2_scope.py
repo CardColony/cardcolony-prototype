@@ -32,40 +32,51 @@ def _child(cid: str, ctype: str) -> dict:
 
 
 def test_scope_matrix():
-    """三档判据：差事账对象／领域子卡／执行型卡／证不出来。"""
-    # ① 差事账绑定唯一验收对象 ⇒ single，对象＝该卡
+    """三档判据：**只由本轮可信任务绑定判出来**（卡型/子树不再推断档位）。"""
+    # ① 差事账绑定唯一验收对象 ⇒ single，对象＝该卡（**任意卡型**都算）
     s = ts.resolve_scope(card_id="card_010", card_type="qa_card",
                          children=[], dispatch_targets=["card_020"])
     assert s.mode == ts.MODE_SINGLE and s.target_card == "card_020"
     assert s.basis == "dispatch_target"
+    # 同一张差事账绑定，管理卡也是 single（**不再被结构推断盖掉**）
+    s = ts.resolve_scope(card_id="card_002", card_type="sub_project",
+                         children=[_child("card_004", "sub_project")],
+                         dispatch_targets=["card_020"])
+    assert s.mode == ts.MODE_SINGLE and s.target_card == "card_020"
 
     # ② 差事账绑了多个对象 ⇒ 证不出来 ⇒ unknown（完整材料）
     s = ts.resolve_scope(card_id="card_010", card_type="qa_card", children=[],
                          dispatch_targets=["card_020", "card_021"])
     assert s.mode == ts.MODE_UNKNOWN and s.basis == "dispatch_ambiguous"
 
-    # ③ 管理型卡 ＋ 领域子卡 ⇒ global（管辖范围可证）
+    # ③ **显式绑定**优先于一切：card⇒single，jurisdiction⇒global
+    s = ts.resolve_scope(card_id="card_002", card_type="sub_project",
+                         children=[_child("card_004", "sub_project")],
+                         task_binding={"kind": "card", "card_id": "card_020"})
+    assert s.mode == ts.MODE_SINGLE and s.target_card == "card_020"
+    assert s.basis == "explicit_binding_card"
+    s = ts.resolve_scope(card_id="card_002", card_type="sub_project",
+                         children=[_child("card_004", "sub_project")],
+                         task_binding={"kind": "jurisdiction",
+                                       "card_id": "card_002"})
+    assert s.mode == ts.MODE_GLOBAL and s.basis == "explicit_binding_jurisdiction"
+
+    # ④ 本卡在执行自己的任务（板步/目标续轮/自动模式）⇒ 管辖范围
+    s = ts.resolve_scope(card_id="card_002", card_type="sub_project",
+                         children=[_child("card_004", "sub_project")],
+                         own_task=True)
+    assert s.mode == ts.MODE_GLOBAL and s.basis == "own_task"
+
+    # ⑤ **没有绑定 ⇒ 完整材料**（普通聊天；管理卡有领域子卡也不算数）
     s = ts.resolve_scope(card_id="card_002", card_type="sub_project",
                          children=[_child("card_004", "sub_project"),
                                    _child("card_006", "worker")])
-    assert s.mode == ts.MODE_GLOBAL and s.basis == "jurisdiction_domain_children"
+    assert s.mode == ts.MODE_UNKNOWN and s.basis == "no_task_binding"
+    # 执行型卡**无绑定**也一样（卡型不用于推断档位）
+    s = ts.resolve_scope(card_id="card_921", card_type="worker", children=[])
+    assert s.mode == ts.MODE_UNKNOWN
 
-    # ④ 执行型卡 ⇒ single，对象＝本卡
-    s = ts.resolve_scope(card_id="card_921", card_type="worker",
-                         children=[])
-    assert s.mode == ts.MODE_SINGLE and s.target_card == "card_921"
-
-    # ⑤ 管理型卡但子卡全是执行件 ⇒ 它在自己那件事里派件 ⇒ single
-    s = ts.resolve_scope(card_id="card_057", card_type="sub_project",
-                         children=[_child("card_921", "worker")])
-    assert s.mode == ts.MODE_SINGLE and s.target_card == "card_057"
-    assert s.basis == "own_delivery_children"
-
-    # ⑥ 无子卡的普通聊天 ⇒ 证不出来 ⇒ unknown
-    s = ts.resolve_scope(card_id="card_001", card_type="project", children=[])
-    assert s.mode == ts.MODE_UNKNOWN and s.basis == "no_provable_scope"
-
-    # ⑦ 评审／场授回合不在本批范围 ⇒ unknown（不缩量）
+    # ⑥ 评审／场授／席位回合不在本批范围 ⇒ unknown（不缩量）
     s = ts.resolve_scope(card_id="card_002", card_type="sub_project",
                          children=[_child("card_004", "sub_project")],
                          source={"kind": "review_step"})
@@ -79,6 +90,25 @@ def test_scope_matrix():
 # ============================================================
 # 渲染：缩量 vs 完整
 # ============================================================
+
+def test_scope_default_and_formal_task_source(monkeypatch):
+    meta = {"card_type": "sub_project", "auto_mode": 1}
+    task = {"task_id": "task-7", "rev": 2, "target": "card_020", "accept": "A2"}
+    human = {"source_kind": "human"}
+    monkeypatch.setattr(ca, "_load_board_criteria", lambda *_: "A9")
+    monkeypatch.delenv("CONTEXT_SCOPE", raising=False)
+
+    def resolve(hint):
+        return ca._resolve_task_scope("w", "card_002", meta, [], hint)
+
+    assert resolve({**human, "source": {"task": task}}).basis == "switch_off"
+    monkeypatch.setenv("CONTEXT_SCOPE", "1")
+    assert resolve(human).basis == "no_task_binding"
+    scoped = resolve({**human, "source": {"task": task}})
+    assert (scoped.mode, scoped.target_card, scoped.anchors) == ("single", "card_020", ("A2",))
+    scoped = resolve({"source": {"kind": "goal", "goalId": "goal-7"}})
+    assert (scoped.mode, scoped.anchors) == ("global", ("A9",))
+
 
 def _ctx(scope, *, cards=None, children=None, dep_out=None, dep_in=None,
          cur_body=None):
@@ -142,6 +172,90 @@ def test_child_status_narrowed_is_brief_table():
     out3 = cr.render_direct_child_status_region(
         _ctx(None).direct_child_status, scope=None)
     assert "甲的现状" in out3 and "甲的使命" in out3
+
+
+def test_single_target_body_in_first_hop():
+    """single 档且**对象≠本卡** ⇒ 对象卡的使命与现状进首跳（任务书要求）。"""
+    scope = ts.TaskScope(ts.MODE_SINGLE, target_card="card_020")
+    ctx = _ctx(scope)
+    ctx.scope_target_body = {"card_id": "card_020", "title": "目标卡",
+                              "mission": "对象的使命。", "status_block": "对象的现状。"}
+    out = cr.render_card_list_region(
+        ctx.cards, "card_001", "card_002", [], scope=scope,
+        target_body=ctx.scope_target_body)
+    assert "## 本轮对象卡（card_020 · 目标卡）" in out
+    assert "对象的使命" in out and "对象的现状" in out
+    # 对象＝本卡时**不重复给**（本卡三块已在 150 区）
+    scope2 = ts.TaskScope(ts.MODE_SINGLE, target_card="card_002")
+    out2 = cr.render_card_list_region(
+        ctx.cards, "card_001", "card_002", [], scope=scope2,
+        target_body={"card_id": "card_002", "title": "管理卡",
+                     "mission": "本卡的使命。", "status_block": "本卡的现状。"})
+    assert "本轮对象卡" not in out2
+
+
+def test_dep_doc_no_readback_gives_full_text():
+    """返工③a：**没有 read_card 工具**时，定位成功也要给完整正稿。
+
+    （只给坐标＝模型读不到＝白给；复核复现过「长条款定位成功却只给坐标」。）
+    """
+    doc = ("# 正稿 v1\n\n## A1 负责范围\n"
+           + ("条款正文。" * 900) + "\n\n## A2 验收判据\n正文二\n")
+    dep = [{"target": "card_020", "kind": "依赖",
+            "detail": "消费正稿 A1 条目。", "requirements": doc}]
+    meta = {"card_020": {"title": "目标卡", "requirements": doc}}
+    scope = ts.TaskScope(ts.MODE_GLOBAL, target_card="card_002",
+                         readback_available=False)
+    out = cr.render_dep_relations_region(dep, [], scope=scope, doc_meta=meta)
+    assert "条款正文。" in out, "没有 read_card 就必须给完整正稿"
+    assert "para_start" not in out, "不能只给坐标"
+
+
+def test_dep_doc_coordinates_use_stored_text():
+    """返工③b：坐标按**存档原文**算（前导空行也算行号）。
+
+    复核复现过：正稿有两个前导空行时，生成的坐标读回两行空白——
+    根因是坐标按 **strip 过的**正文算，而 read_card 回读的是原样正文。
+    """
+    doc = "\n\n# 正稿 v1\n\n## A1 负责范围\n第一段。\n第二段。\n"
+    dep = [{"target": "card_020", "kind": "依赖",
+            "detail": "消费正稿 A1 条目。", "requirements": doc}]
+    meta = {"card_020": {"title": "目标卡", "requirements": doc}}
+    scope = ts.TaskScope(ts.MODE_SINGLE, target_card="card_002")
+    out = cr.render_dep_relations_region(dep, [], scope=scope, doc_meta=meta)
+    # 原样正文的行号：1="" 2="" 3="# 正稿 v1" 4="" 5="## A1 负责范围" …
+    assert "para_start=5" in out and "para_end=8" in out, out[:400]
+    # 按同一份原文回读 ⇒ 逐字一致
+    lines = doc.split("\n")
+    assert lines[4:8] == ["## A1 负责范围", "第一段。", "第二段。", ""]
+    assert "第一段。" in out, "定位到的正文应当内联"
+
+
+def test_dep_doc_fallback_keeps_batch1_dedup():
+    """返工③c：缩量档**回退全文**时沿用批一去重（同目标同正文只展开一次）。"""
+    doc = "# 正稿 v1\n\n## A1 负责范围\n正文甲\n"
+    dep = [{"target": "card_020", "kind": "依赖", "detail": "无关说明甲",
+            "requirements": doc},
+           {"target": "card_020", "kind": "影响", "detail": "无关说明乙",
+            "requirements": doc}]
+    meta = {"card_020": {"title": "目标卡", "requirements": doc}}
+    scope = ts.TaskScope(ts.MODE_SINGLE, target_card="card_002")
+    out = cr.render_dep_relations_region(dep, [], scope=scope, doc_meta=meta)
+    assert out.count("正文甲") == 1, "同一份正稿只展开一次"
+    assert "不重复展开" in out
+    # 两条边都在
+    assert "无关说明甲" in out and "无关说明乙" in out
+
+
+def test_dep_doc_dedup_preserves_distinct_clause_ranges():
+    doc = "## A1 第一条\n独有甲\n\n## A2 第二条\n独有乙\n\n## A3 第三条\n独有丙"
+    scope = ts.TaskScope(ts.MODE_SINGLE, target_card="card_020", anchors=("A3",))
+    dep = [{"target": "card_020", "kind": "依赖", "detail": clause,
+            "requirements": doc} for clause in ("A1", "A2", "A1")]
+    out = cr.render_dep_relations_region(dep, [], scope=scope)
+    assert out.count("- 我依赖/关联：") == 3
+    assert out.count("read_card(") == 3
+    assert all(out.count(text) == 1 for text in ("独有甲", "独有乙", "独有丙"))
 
 
 def test_dep_doc_narrowed_locates_and_falls_back():
@@ -280,6 +394,64 @@ async def test_located_range_matches_read_card_tool(sandbox):
 # ============================================================
 # 空场景与回退
 # ============================================================
+
+@pytest.mark.asyncio
+async def test_target_body_follows_read_permission(sandbox, monkeypatch):
+    """返工②：**对象卡正文按现有读权限逐块取材**（与 read_card 同一道闸）。
+
+    复核复现过：一条**未授予 read_card** 的差事，工具回 denied，目标卡的现状
+    却进了模型上下文 ⇒ 绕过读权限的暗门。现在：父子线才给使命/现状；关系线
+    只给对外信息（需求文档）；无线且无差事授面 ⇒ 一概不给。
+    """
+    from src.api import card_tools
+    from src.storage import card_store, work_store
+
+    w = await work_store.create_work("对象卡权限对照")
+    wid = w["work_id"]
+    root = w["work_card_id"]
+    actor = await card_store.create_card(
+        wid, "执行方", "用户直接创建", card_type="sub_project", parent=root,
+        skip_kick=True)
+    aid = str((actor.get("meta") or {}).get("card_id") or "")
+    target = await card_store.create_card(
+        wid, "对象卡", "用户直接创建", card_type="sub_project", parent=root,
+        skip_kick=True)
+    tid = str((target.get("meta") or {}).get("card_id") or "")
+    await card_store.update_card(
+        wid, tid, {"mission": "对象的使命。", "status_block": "对象的现状。"},
+        "写对象卡")
+
+    monkeypatch.setenv("CONTEXT_SCOPE", "1")
+    hint = {"source": None, "source_kind": "human", "act_as": "", "ctx_card": "",
+            "readback_available": True,
+            "task_binding": {"kind": "card", "card_id": tid}}
+
+    # ① 无线（对象卡不是执行方的子卡）⇒ 不给正文
+    ctx = ca.build_ctx(wid, aid, scope_hint=hint)
+    assert ctx.task_scope.mode == ts.MODE_SINGLE
+    assert not ctx.scope_target_body, "没读权却把对象卡正文投进了上下文"
+    # 工具侧同样是 denied（既有闸不变）
+    cards = card_tools._collect_card_meta(wid)
+    den = await card_tools._h_read_card(wid, aid, {"card_id": tid}, cards)
+    assert den.get("ok") is False and den.get("error", {}).get("code") == "denied"
+
+    # ② 父子线（对象卡挪到执行方下面）⇒ 可读全卡面 ⇒ 使命/现状都给
+    await card_store.update_card(wid, tid, {"parent": aid}, "换父")
+    ctx = ca.build_ctx(wid, aid, scope_hint=hint)
+    assert ctx.scope_target_body.get("mission") == "对象的使命。"
+    assert ctx.scope_target_body.get("status_block") == "对象的现状。"
+    cards = card_tools._collect_card_meta(wid)   # 换父后重新取卡面
+    ok = await card_tools._h_read_card(wid, aid, {"card_id": tid}, cards)
+    assert ok.get("ok") is not False, ok
+
+    # ③ 关系线（只有依赖线）⇒ 只可读需求文档 ⇒ 使命/现状**不给**
+    await card_store.update_card(wid, tid, {"parent": root}, "退回根下")
+    await card_store.update_card(
+        wid, aid, {"relations": [{"target": tid, "kind": "依赖",
+                                  "detail": "消费对象卡正稿。"}]}, "立依赖")
+    ctx = ca.build_ctx(wid, aid, scope_hint=hint)
+    assert not ctx.scope_target_body, "关系线只读对外信息：使命/现状不该给"
+
 
 @pytest.mark.asyncio
 async def test_viewpoint_and_draft_keep_full_materials(sandbox):

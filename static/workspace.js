@@ -119,22 +119,24 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
      每张卡一个 InputMachine ＋ 一份前端权威队列；DOM 仍是单实例（dsh「一次建好」），
      切卡只**换绑**。此前是「全页一个 machine/queue」⇒ 切卡时草稿、排队消息、
      运行态全部跟着走（用户报的「输入框文字被带走」）。 */
-  const composerSessions = new Map();   // sessionKey -> { machine, queue }
-  let activeComposer = null;            // { key, session }
+  const composerSessions = new Map();   // work/sessionKey -> { machine, queue }
+  let activeComposer = null;            // { wid, key, session }
 
   /* [席位会话 2026-11-18 · 一卡多会话] 每张卡当前选中的会话：
      主会话＝card_id，附加会话＝card@N（人格＝职能，权力＝卡本身）。
      画板/事件流/回合锁全按会话键分账；HTTP 路径用真卡号＋session 参数。 */
-  const sessionSel = new Map();         // cardId -> sessionKey
-  const sessionRegistry = new Map();    // cardId -> [{session_id, persona, label, main}]
+  const sessionSel = new Map();         // work/cardId -> sessionKey
+  const sessionRegistry = new Map();    // work/cardId -> [{session_id, persona, label, main}]
+  const workKey = (id, wid = WORK_ID) => wid + "/" + id;
   /** 当前选中会话键（EventFlow 一切调用都用它——它就是"这张卡正在看的对话"）。 */
   function sessionKeyOf(cardId) {
-    return sessionSel.get(String(cardId || "")) || String(cardId || "");
+    const cid = String(cardId || "");
+    return sessionSel.get(workKey(cid)) || cid;
   }
   /** POST 体里的 session 参数：主会话＝空（后端缺省即主会话）。 */
   function sessionParamOf(cardId) {
-    const k = sessionSel.get(String(cardId || ""));
-    return (k && k !== String(cardId || "")) ? k : "";
+    const k = sessionKeyOf(cardId);
+    return k !== String(cardId || "") ? k : "";
   }
 
   /* ── 会话切换栏（对话顶部 tab ＋「+」职能选择器）────────────────── */
@@ -154,29 +156,31 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
      会话 tab 栏是**共享元素**（只有一个 #sessionTabs）⇒ A 卡的迟到回包会把
      A 的会话画到当前显示的 B 卡上。⇒ 发起时记下会话序号，回来核对。
      openSeq：切卡序号（单调递增）；对不上 ⇒ 这次回包已经过期，直接丢。 */
-  async function refreshSessions(cardId, openSeq) {
+  async function refreshSessions(cardId, openSeq = _openSeq) {
     if (!sessionTabsEl) return;
     if (!cardId || cardId === "draft") { sessionTabsEl.hidden = true; return; }
+    const wid = WORK_ID;
+    const key = workKey(cardId, wid);
     let list = null;
     try {
-      const r = await API.getSessions(WORK_ID, cardId);
+      const r = await API.getSessions(wid, cardId);
       list = (r && r.sessions) || [];
     } catch (e) {
       list = [{ session_id: cardId, persona: "", label: "主会话", main: true }];
     }
-    if (openSeq != null && openSeq !== _openSeq) return;   // 已切到别的卡 ⇒ 丢
-    sessionRegistry.set(cardId, list);
+    if (wid !== WORK_ID || openSeq !== _openSeq) return;
+    sessionRegistry.set(key, list);
     // 选中键失效（会话没了）⇒ 回落主会话
-    const sel = sessionSel.get(cardId);
+    const sel = sessionSel.get(key);
     if (sel && sel !== cardId && !list.some(s => s.session_id === sel)) {
-      sessionSel.delete(cardId);
+      sessionSel.delete(key);
     }
     paintSessionTabs(cardId);
   }
 
   function paintSessionTabs(cardId) {
     if (!sessionTabsEl) return;
-    const list = sessionRegistry.get(cardId) || [];
+    const list = sessionRegistry.get(workKey(cardId)) || [];
     // 只有主会话时栏可显可隐——「+」入口需要常显，只有一条也显示（入口在右上）
     sessionTabsEl.hidden = false;
     sessionTabsEl.innerHTML = "";
@@ -208,22 +212,27 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
 
   /** 切会话：换选中键 → 挂板 → 换输入会话 → 按需拉时序 → 接运行态。 */
   async function selectSession(cardId, sk) {
+    const wid = WORK_ID;
+    const openSeq = _openSeq;
     closeSessionMenu();
-    sessionSel.set(cardId, sk);
+    sessionSel.set(workKey(cardId, wid), sk);
     paintSessionTabs(cardId);
-    bindBoard(WORK_ID, cardId);          // 内部按 sessionKeyOf → 挂会话板
+    bindBoard(wid, cardId);             // 内部按 sessionKeyOf → 挂会话板
     switchComposer(sk);
     try {
-      const loaded = EventFlow.isLoaded(WORK_ID, sk);
-      if (!loaded) await EventFlow.replayTrace(WORK_ID, sk);
-      else try { EventFlow.activate(WORK_ID, sk); } catch (e) { /* 零阻断 */ }
+      const loaded = EventFlow.isLoaded(wid, sk);
+      if (!loaded) await EventFlow.replayTrace(wid, sk);
+      else try { EventFlow.activate(wid, sk); } catch (e) { /* 零阻断 */ }
     } catch (e) { /* 拉取失败空屏即可 */ }
-    attachRunningState(sk).catch(() => {});
+    if (WORK_ID === wid && openSeq === _openSeq) attachRunningState(sk).catch(() => {});
   }
 
   /** 「+」：职能选择器（GET /functions → 点职能 → POST 建会话 → 选中）。 */
   async function openSessionPicker(cardId, anchorBtn) {
     if (_sessionMenuEl) { closeSessionMenu(); return; }
+    const wid = WORK_ID;
+    const openSeq = _openSeq;
+    const stillSelected = () => WORK_ID === wid && openSeq === _openSeq;
     const menu = document.createElement("div");
     menu.className = "session-menu";
     menu.innerHTML = '<div class="sm-empty">加载职能…</div>';
@@ -238,9 +247,10 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     document.addEventListener("click", _sessionMenuAway, true);
     let fns = [];
     try {
-      const r = await API.listFunctions(WORK_ID);
+      const r = await API.listFunctions(wid);
       fns = (r && r.functions) || [];
     } catch (e) { /* 拉不到按空处理 */ }
+    if (_sessionMenuEl !== menu || !stillSelected()) return;
     menu.innerHTML = "";
     if (!fns.length) {
       menu.innerHTML = '<div class="sm-empty">还没有职能卡</div>';
@@ -257,11 +267,13 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       id.textContent = f.function_id;
       it.appendChild(name); it.appendChild(id);
       it.onclick = async () => {
+        if (!stillSelected()) return;
         closeSessionMenu();
         try {
-          const r = await API.createSession(WORK_ID, cardId, f.function_id);
-          await refreshSessions(cardId);
-          if (r && r.session_id) selectSession(cardId, r.session_id).catch(() => {});
+          const r = await API.createSession(wid, cardId, f.function_id);
+          if (!stillSelected()) return;
+          await refreshSessions(cardId, openSeq);
+          if (stillSelected() && r?.session_id) selectSession(cardId, r.session_id).catch(() => {});
         } catch (e2) { notify("建会话失败：" + String((e2 && e2.message) || e2), "error"); }
       };
       menu.appendChild(it);
@@ -269,7 +281,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
   }
 
   function composerOf(cardId) {
-    const key = String(cardId || "draft");
+    const key = workKey(String(cardId || "draft"));
     let s = composerSessions.get(key);
     if (!s) {
       s = { machine: new InputMachine({ now: () => Date.now() }), queue: createQueueStore() };
@@ -282,9 +294,9 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
   function switchComposer(cardId) {
     if (!inputBar) return;
     const key = String(cardId || "draft");
-    if (activeComposer && activeComposer.key === key) return;
+    if (activeComposer && activeComposer.wid === WORK_ID && activeComposer.key === key) return;
     const session = composerOf(key);
-    activeComposer = { key, session };
+    activeComposer = { wid: WORK_ID, key, session };
     queueStore = session.queue;                    // 既有路径（enqueue/hasQueued/drain）随之切换
     inputBar.bindSession(session.machine);
     if (queueDock) queueDock.setStore(session.queue);
@@ -294,6 +306,10 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
   }
 
   let currentCard = null;     // 完整 card 数据 {meta, body}
+  /* [版本兼容 2026-11-20 返工] 卡面 body 的**键集**（与后端 card_store.CARD_BODY_KEYS
+     同值）。窄投影读口在**老后端**上没有 body_keys 字段 ⇒ 用这份兜底，
+     保证「第三块在不在」的判据不受后端版本影响（起草按钮文案不错）。 */
+  const DEFAULT_CARD_BODY_KEYS = ["mission", "status_block", "requirements", "goal", "history"];
   let lastSentContent = "";   // 用于失败重发（不重复追加用户消息）
   // [I2 主界面优化] 结论区只读优先：编辑态与草稿挂模块级——renderInspector 重渲
   // （如加删关系触发）时恢复编辑态，不丢未保存内容
@@ -413,10 +429,28 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     try { EventFlow.activate(wid, sessionKeyOf(cid)); } catch (e) { /* 零阻断 */ }
   }
 
+  /* [开卡失败整体回滚 · 返工 2026-11-20] 「上一次成功打开的卡」。
+     取卡失败时**整套状态**都要退回来：WORK_ID（项目上下文）、对话画板、
+     输入框（Composer）、左栏选中态、地址栏。
+     ★ 为什么不能只退地址栏（改前只有地址栏退）：跨项目取卡失败时，
+       WORK_ID 已经换成了失败目标、画板已经切过去、输入框已经绑到失败目标
+       ⇒ 用户停在一个「打不开的卡」上：看见的是它的对话、输入框也是它的，
+       但地址栏又回到了原卡 ⇒ **界面与地址不一致**，而且在原卡上**没法继续输入**。
+     ★ 判据不能用「路径里的上一张」（冷开时路径里就是这张失败卡本身），
+       只能用「**上一次成功打开**的卡」。 */
+  let _lastGood = null;   // { wid, cid, card }
+
   async function open(cardId, switchWid) {
     if (cardId === "draft") return;   // [惰性新建] 草稿卡无真身：不走 getCard（否则 404）
+    closeSessionMenu();
     const mySeq = ++_openSeq;
     const stale = () => mySeq !== _openSeq;
+    // 用户可能刚读完详情或保存了卡面。离开已打开的卡时记住最新卡对象，
+    // 正在加载的中间卡仍由自己的 open() 确认。
+    if (_lastGood?.wid === WORK_ID && currentCard?.meta?.card_id === _lastGood.cid) {
+      _lastGood.card = currentCard;
+    }
+    currentCard = null;
     /* [5715 · 治「切卡卡死」] **跨项目切卡**：切项目上下文，**不整页跳**。
        内存态（装配器 / 画板 / 事件流会话表）本来就是**跟卡走**的
        （EventFlow.sessions 键＝(work_id, card_id)）⇒ 跨项目切到一张**加载过**的卡
@@ -438,10 +472,12 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     // 且快速连点时后到的 await 会把旧卡写进新卡（P4 串卡的界面侧表现）。
     bindBoard(WORK_ID, cardId);
     switchComposer(sessionKeyOf(cardId));   // [5702] 输入会话按**会话键**换绑（草稿/运行态各会话独立）
+    if (inputBar) inputBar.refresh();
     /* [当前卡单源 2026-10-21] 身份在「点下去」这一刻就写进路径——它是 select.is()
        的唯一来源。原来拖到 open 末尾才写，中途任何判断（早退/高亮/徽标）看到的
-       都还是上一张卡。取卡失败要把身份**回滚**（否则地址栏指着打不开的卡）。 */
-    const prevSel = (() => { try { return navStore.select.get(); } catch (e) { return null; } })();
+       都还是上一张卡。取卡失败要把身份**回滚**（否则地址栏指着打不开的卡）。
+       [返工 2026-11-20] 回滚目标改成「上一次**成功打开**的卡」（_lastGood）：
+       路径里的「上一张」在冷开时就是这张失败卡自己，拿它回滚＝把坏地址写回去。 */
     try { navStore.select.set(WORK_ID, cardId); } catch (e) { /* 零阻断 */ }
     // [5715 · 切卡跟手] 页面级的卡号全局也要跟着换：模型徽标等读点读的是
     // window.__CARD_ID__（card.html 注入一次）⇒ 切卡/切项目后它还指着**上一张卡**
@@ -497,6 +533,10 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         inspector.classList.add("open");
       }
       if (inputBar) inputBar.refresh();   // 会话面到场 ⇒ 输入卡解除 inert
+      /* [右栏懒加载 2026-11-20] 底边栏「自动/手动」按钮原先靠 renderInspector
+         顺带刷新——现在右栏**收起时不再渲染** ⇒ 切卡后这个按钮会停在上一张卡的
+         状态。它只读 meta.auto_mode（窄读就有）⇒ 这里直接刷。 */
+      try { renderAutoToggle(); } catch (e) { /* 零阻断 */ }
       applyEmptyState(currentCard);
       // [席位会话] 会话 tab 栏：登记处拉取＋画 tab（不 await，与浮窗同口径）。
       // [晚回包归属 2026-11-20] 这三个读口写的是**共享元素**（#sessionTabs /
@@ -520,6 +560,11 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       // [首屏链路 2026-11-20] 时序那条已经在上面**并发**开跑了，这里只等它落地。
       await tlP;
       if (stale()) return;
+      /* [开卡失败整体回滚 · 返工 2026-11-20] 记下「这一次成功打开了哪张卡」
+         —— 失败时整套状态要退回到这里（项目 ＋ 画板 ＋ 输入框 ＋ 选中态 ＋ 地址栏）。
+         ★ 记的是**成功**的那次：失败的这次绝不能成为回滚目标。 */
+      _lastGood = { wid: WORK_ID, cid: cardId, card: currentCard };
+      subscribeWorkEvents();
       /* [右栏懒加载 2026-11-20] 右栏「卡详情」默认收起 ⇒ 收起时渲染它＝白读
          520KB 正文 ＋ 白建一大坨看不见的 DOM。现在：**展开时才读**。
          展开入口全都在 inspector 的 class 上 ⇒ 由 watchInspectorOpen() 统一接管
@@ -561,15 +606,72 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       autoGrowAll();
     } catch (e) {
       /* [当前卡单源 2026-10-21] 取卡失败 ⇒ 身份回滚到上一张：身份写早了不能留个
-         "地址栏指向打不开的卡"的状态（原实现只在末尾写，天然没有这个问题）。 */
-      if (prevSel && prevSel.cid && !stale()) {
-        try { navStore.select.set(prevSel.wid, prevSel.cid); } catch (e0) { /* 零阻断 */ }
-        try { window.dispatchEvent(new CustomEvent("ui:card-changed", { detail: { cardId: prevSel.cid } })); } catch (e0) { /* 零阻断 */ }
+         "地址栏指向打不开的卡"的状态（原实现只在末尾写，天然没有这个问题）。
+         [路径回滚 2026-11-20 · 性能批次一] 原来只回滚了**左栏选中态**，
+         **地址栏仍留在打不开的卡上**——打开一条失效的旧链接会得到一个
+         「刷新还是这个错卡」的死地址（且刷新会再错一次）。
+         ⇒ 这里把路径也退回到上一张卡；没有上一张就退到项目根。
+         ★ bootRestore 的 catch 里也有同一段回滚，但它**永远等不到**
+         （open() 自己把异常吃掉了）⇒ 这里修好之后，那段就成了双保险。 */
+      if (!stale()) {
+        ctrl.abort();
+        /* ★ 回滚目标＝「上一次成功打开的卡」（_lastGood），不是路径里的上一张。
+           冷开（刷新一条失效链接）时路径里**就是**这张打不开的卡 ⇒
+           拿路径当回滚目标＝把同一个坏地址再写回去（实测：地址栏纹丝不动）。
+           ★ 跨项目失败时更关键：WORK_ID 已经换成失败目标、画板切过去了、
+           输入框也绑过去了 ⇒ 只退地址栏会留下「界面停在失败目标、地址却在原卡」
+           的不一致状态，而且用户在原卡上**没法继续输入**。
+           ⇒ 整套退回去：项目上下文 ＋ 画板 ＋ 输入框 ＋ 选中态 ＋ 地址栏。 */
+        const back = _lastGood;
+        if (back && back.cid) {
+          // ① 项目和真正用于发送的卡数据必须一起恢复。
+          WORK_ID = back.wid;
+          currentCard = back.card;
+          window.__WORK_ID__ = back.wid;
+          window.__CARD_ID__ = back.cid;
+          // ② 对话画板
+          try { bindBoard(back.wid, back.cid); } catch (e0) { /* 零阻断 */ }
+          // ③ 输入框（会话键）
+          try { switchComposer(sessionKeyOf(back.cid)); } catch (e0) { /* 零阻断 */ }
+          // ④ 左栏选中态 ＋ 地址栏
+          try { navStore.select.set(back.wid, back.cid); } catch (e0) { /* 零阻断 */ }
+          try {
+            history.replaceState(null, "",
+              `/work/${back.wid}/card/${encodeURIComponent(back.cid)}`);
+          } catch (e0) { /* 零阻断 */ }
+          subscribeWorkEvents();
+          if (inputBar) inputBar.refresh();
+          applyEmptyState(currentCard);
+          renderAutoToggle();
+          renderChatCrumb(back.cid);
+          paintSessionTabs(back.cid);
+          refreshSessions(back.cid, mySeq).catch(() => {});
+          rvRefresh(back.cid, mySeq);
+          alRefresh(back.cid, mySeq);
+          if (inspector.classList.contains("open")) renderInspector().catch(() => {});
+          attachRunningState(sessionKeyOf(back.cid)).catch(() => {});
+          try {
+            window.dispatchEvent(new CustomEvent("ui:card-changed", { detail: { cardId: back.cid } }));
+          } catch (e0) { /* 零阻断 */ }
+        } else {
+          /* 没有「上一次成功打开」⇒ 退到项目根（首屏就是这条坏链接的场景）。 */
+          currentCard = null;
+          window.__CARD_ID__ = "";
+          if (inputBar) inputBar.refresh();
+          try { history.replaceState(null, "", `/work/${WORK_ID}`); } catch (e0) { /* 零阻断 */ }
+        }
       }
       /* toast 已处理 */
     }
   }
   export const Workspace = { open };
+  /* [联调口 2026-11-20] 开卡入口挂到 window。
+     验收脚本要能**直接**复现「跨项目取卡失败」这类路径 —— 导航有快照守卫
+     （cardInSnapshot ⇒ 不在快照里的卡点不动、走灰态），从界面点不到一张
+     不存在的卡 ⇒ 失败分支只能靠这个口触发。
+     与既有的 window.__checkRulePending / window.__maybeOpenStatusModal /
+     window.__draftEnsurePersisted 同一性质：**只读调试口，非功能依赖**。 */
+  try { window.__openCard = (cid, wid) => open(cid, wid); } catch (e) { /* 零阻断 */ }
 
   // ==================== [惰性新建 2026-10-17] 落库序列 ====================
   // **先出画面，数据后到**：UI 绝不等待这里的 POST。
@@ -1042,26 +1144,42 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
      同一张卡只补一次（_cardFullP 复用同一个在途 promise）。
      ★ 语义不变：正文仍来自同一个 /cards/{cid} 读口，契约逐字未动。 */
   let _cardFullP = null;
+  let _cardFullKey = null;      // "wid|cid"：在途条目的归属
   async function ensureCardFull() {
     if (!currentCard) return null;
     if (currentCard.body) return currentCard;          // 已有整卡
-    if (_cardFullP) return _cardFullP;                   // 正在补 ⇒ 复用
     const cid = (currentCard.meta || {}).card_id;
+    const wid = WORK_ID;                               // ★ 冻结发起时的项目
     if (!cid || cid === "draft") return currentCard;
+    const key = wid + "|" + cid;
+    if (_cardFullP && _cardFullKey === key) return _cardFullP;
+    _cardFullKey = key;
     _cardFullP = (async () => {
       try {
-        const full = await API.getCard(WORK_ID, cid);
-        // 迟到的整卡不能盖掉已经切走的卡
-        if (currentCard && (currentCard.meta || {}).card_id === cid) currentCard = full;
+        const full = await API.getCard(wid, cid);
+        /* ★ 归属校验（跨 work 返工 2026-11-20）：**项目 + 卡号**都要对得上。
+           卡号只在项目内唯一 ⇒ 「A 的 card_007」与「B 的 card_007」同号；
+           只比 card_id 会让 A 的详情晚到时**盖掉 B 的当前卡**。 */
+        const curCid = currentCard ? (currentCard.meta || {}).card_id : "";
+        if (currentCard && WORK_ID === wid && curCid === cid) currentCard = full;
         return currentCard;
-      } finally { _cardFullP = null; }
+      } finally {
+        if (_cardFullKey === key) { _cardFullP = null; _cardFullKey = null; }
+      }
     })();
     return _cardFullP;
   }
 
   async function renderInspector() {
+    /* ★ 渲染前冻结「要渲染的是哪个项目的哪张卡」（跨 work 返工 2026-11-20）：
+       补读正文是异步的，期间可能已经切卡/切项目 ⇒ 回来必须核对，
+       否则会把别的项目的正文画到当前右栏里。 */
+    const wantWid = WORK_ID;
+    const wantCid = currentCard ? (currentCard.meta || {}).card_id : "";
     await ensureCardFull();
     if (!currentCard) return;
+    const curCid = (currentCard.meta || {}).card_id;
+    if (wantCid && (WORK_ID !== wantWid || curCid !== wantCid)) return;  // 已切走 ⇒ 不画
     const m = currentCard.meta;
     const b = currentCard.body || {};
     const isRoleCard = m.card_type === "role";
@@ -1261,6 +1379,11 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         <button class="btn" id="deleteCardBtn" style="color:#d05656;border-color:#d05656;">删除此卡</button>
         <span style="font-size:11px;color:var(--dimmer);">连同会话删除；有子卡时系统拒绝；剧本卡无此操作</span>
       </div>` : ""}
+
+      <!-- [项目统筹 2026-11-21 任务一] 卡面「统筹计划」区域：任命表单/状态/
+           计划编辑。内容由 static/esm/coordination.js renderCardRegion 异步
+           填充（fetch 正式入口，GET 面板不唤醒模型）；普通卡才渲染。 -->
+      ${m.card_type !== "project" && !isRoleCard && !String(m.card_id || "").startsWith("fn_") ? `<div id="coordRegion" data-card-id="${escapeHtml(m.card_id || "")}"></div>` : ""}
     `;
 
     bindInspectorEvents();
@@ -1272,6 +1395,20 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     applyConclusionState();
     // [phase8.6-C] 面板已可见时（如保存后重渲染）立即撑高；首次 open 由 active 后统一触发
     autoGrowAll();
+    // [项目统筹 2026-11-21 任务一] 卡详情里的「统筹计划」区域（独立模块，
+    // 动态 import 不进 main 模块图——加载失败不影响卡详情其余部分）。
+    mountCoordRegion();
+  }
+
+  async function mountCoordRegion() {
+    const mount = document.getElementById("coordRegion");
+    if (!mount) return;
+    try {
+      const mod = await import("/static/esm/coordination.js");
+      await mod.renderCardRegion(mount);
+    } catch (e) {
+      mount.innerHTML = `<div class="coord-err">统筹面板加载失败：${escapeHtml(String(e && e.message || e))}</div>`;
+    }
   }
 
   /* [phase8.6-C] 文本区高度自适应：内容多高就多高，上限由 CSS max-height 兜底。
@@ -1848,12 +1985,13 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       _workEs = es;
       _workEsWid = wid;
       es.onopen = () => {
+        if (_workEs !== es) return;
         _workEsHealthy = true;
         // [推送优先 2026-10-25] 长连接恢复 ⇒ 可达性闩解开（提示一次「服务已恢复」）
         if (typeof API.markReachable === "function") API.markReachable();
         // [画布 5711 · P1 修] **重连即补齐**：工作级通道只推「连上之后新发生的事」
         // （不重放）⇒ 断线窗口里的变化会被丢掉 ⇒ 重连成功那一刻静默补一次。
-        if (_workEsDropped) {
+        if (_workEsDropped && WORK_ID === wid) {
           _workEsDropped = false;
           try {
             navSystem.probeVersion();
@@ -1864,6 +2002,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         }
       };
       es.onerror = () => {
+        if (_workEs !== es) return;
         _workEsHealthy = false;   /* 断线 ⇒ 兜底轮询接管 */
         _workEsDropped = true;    /* 记住「断过」⇒ 重连时补齐 */
         // 〔P23 · 2026-10-25 修正〕**这里不按可达性闩**。
@@ -1876,6 +2015,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         //   服务恢复时：EventSource 会自己重连 ⇒ onopen ⇒ markReachable 解闩。
       };
       es.onmessage = (m) => {
+        if (_workEs !== es || WORK_ID !== wid) return;
         _workEsHealthy = true;
         let evt = null;
         try { evt = JSON.parse(m.data); } catch (e) { return; }
@@ -1918,7 +2058,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     inspector,
     /* [5715 · 治「切卡卡死」] 跨项目切卡**页面内切**（不整页跳 ⇒ 内存态留着）——
        内存态跟卡走（EventFlow.sessions 键＝(work_id, card_id)）⇒ 切回加载过的卡秒切。 */
-    onSwitchProject: (wid, cid) => { open(cid, wid); subscribeWorkEvents(); },
+    onSwitchProject: (wid, cid) => open(cid, wid),
     /* [推送优先 2026-10-25] 把「SSE 健康吗」告诉导航系统 ⇒ 它据此决定
        **要不要做周期探测**（健康时不做＝推送负责实时性；不健康时兜底）。 */
     onSseHealth: () => _workEsHealthy,
@@ -2180,12 +2320,14 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
 const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", "streaming"];
   async function attachRunningState(cardId) {
     if (!cardId) return false;
+    const wid = WORK_ID;
+    const openSeq = _openSeq;
     try {
       // [席位会话] 入参是会话键（card 或 card@N）：进度按会话键问，
       // 事件流也接会话键——seat 的运行态只认它自己那一轮。
       const real = String(cardId).split("@")[0];
-      const st = await API.getProgress(WORK_ID, real, { session: cardId });
-      if (!st) return false;
+      const st = await API.getProgress(wid, real, { session: cardId });
+      if (!st || wid !== WORK_ID || openSeq !== _openSeq || cardId !== sessionKeyOf(real)) return false;
       const alive = (typeof st.active === "boolean")
         ? st.active
         : ACTIVE_STAGES.includes(st.stage);
@@ -2198,7 +2340,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       setRunState(true, cardId);
       // [对话流照抄 dsh v3] 刷新恢复只做两件事：置运行态（主键变停止键）＋ 接上事件流。
       // 等待气泡已退役——运行条由 chat-view 出（"Deep diving..."，15s 后显时钟）。
-      if (EventFlow) EventFlow.start(WORK_ID, cardId, null, { replayTokens: true });
+      if (EventFlow) EventFlow.start(wid, cardId, null, { replayTokens: true });
       return true;
     } catch (e) {
       return false;   // 查询失败静默：不影响页面其余功能
@@ -2750,10 +2892,18 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     function isRdCard() {
       if (!currentCard) return false;
       /* [窄投影 2026-11-20] 首屏只有 meta（没有 body）⇒ 用 body_keys 判
-         「第三块在不在」。窄读给的 body_keys 与整卡的 body 键集同源
-         （card_store.CARD_BODY_KEYS）⇒ 按钮文案与改前逐字一致。 */
+         「第三块在不在」。
+         [版本兼容 2026-11-20 返工] ★ 老后端的窄投影**没有 body_keys**
+         （实测现网 5700：只有 {meta}）⇒ 直接判 false 会让「需求确定」按钮
+         变成「定论确认」（文案错）。
+         ⇒ 兜底用**后端契约里的 body 键集**（card_store.CARD_BODY_KEYS 同值）：
+         body 恒含 requirements（read_card 恒写、_apply_block_set 也恒保留）
+         ⇒ 兜底与整卡读口一致 ⇒ **按钮文案不受后端版本影响**。 */
       if (currentCard.body) return ("requirements" in currentCard.body);
-      return (currentCard.bodyKeys || []).includes("requirements");
+      if (Array.isArray(currentCard.bodyKeys) && currentCard.bodyKeys.length) {
+        return currentCard.bodyKeys.includes("requirements");
+      }
+      return DEFAULT_CARD_BODY_KEYS.includes("requirements");
     }
 
     // 按钮文案随块集判据切换（研发卡「需求确定」/ 其他卡「定论确认」）
@@ -2901,9 +3051,16 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       await _origRenderInspector();
       updateDraftButtons();
     };
+    /* [返工 2026-11-20 · 起草按钮文案] ★ 右栏懒加载（第一批）之后，
+       renderInspector **不再每次开卡都跑** ⇒ 按钮文案失去了刷新触发点，
+       永远停在初始化时的「定论确认」（实测：卡片明明有第三块，按钮却写「定论确认」）。
+       ⇒ 另接一个触发点：开卡/切卡都会派发 `ui:card-changed` ⇒ 这里跟着刷新。
+       （不改 open() 的调用顺序，也不把块内的函数暴露出去。） */
+    window.addEventListener("ui:card-changed", () => { updateDraftButtons(); });
 
-    // 初始化一次（无卡时保持缺省文案）
-    updateDraftButtons();
+    // 初始化：**没有卡时不改文案**（HTML 缺省是「需求确定」；
+    // 无脑改成「定论确认」会让加载期的按钮文案是错的）。
+    if (currentCard) updateDraftButtons();
   }
 
   // ==================== [更新现状按钮改造 2026-10-16] 现状对比窗状态机 ====================

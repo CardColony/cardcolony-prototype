@@ -150,8 +150,29 @@ async def instance_marker() -> dict:
 
 
 if __name__ == "__main__":
+    import asyncio
+
     import uvicorn
+
+    # [Windows 事件循环 2026-11-20 · 性能批次一]
+    # 性能基准会连着起 20 个浏览器（连接churn 很猛）⇒ 默认的 Proactor 事件循环
+    # 在 Windows 上偶发 ``Accept failed on a socket: [WinError 64]``，
+    # accept 协程一挂，**进程还活着但不再监听**（后续请求全 connection refused）。
+    # ⇒ 显式给 Selector 环（uvicorn 0.36+ 的 loop_factory 会绕开 policy，
+    #    只能从 loop= 传自定义工厂 —— 见 scripts/loop_factory.py）。
+    # 只影响本开发实例；生产 5700 的策略不动（那是重启项，按项目规则请示）。
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 5707
     print(f"[5707] base={BASE_DIR}  data={_DATA}  static={STATIC_DIR}  tpl={TEMPLATES_DIR}  port={port}", flush=True)
-    uvicorn.run(app, host="127.0.0.1", port=port)
+    # uvicorn ≥0.36 才接受 ``loop=<module>:<factory>`` 自定义导入串；
+    # 本机 0.34 的 LOOP_SETUPS 是固定表 ⇒ 退回 "asyncio"——其 setup 不建环，
+    # Server.run 走 asyncio.new_event_loop()，上面设的 Selector policy 仍生效。
+    _loop = "loop_factory:selector_loop_factory"
+    try:
+        if int(uvicorn.__version__.split(".")[1]) < 36:
+            _loop = "asyncio"
+    except Exception:  # noqa: BLE001 版本解析失败按旧口径
+        _loop = "asyncio"
+    uvicorn.run(app, host="127.0.0.1", port=port, loop=_loop)

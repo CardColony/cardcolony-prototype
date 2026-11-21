@@ -747,3 +747,386 @@ def test_g_reportshell_with_invoke_not_swallowed():
     calls, _, _ = text_tool_rescue.extract_text_tool_calls(raw)
     assert [c["name"] for c in calls] == ["read_file"], \
         "含调用元素的壳交给形态C，不得按结果壳吞掉"
+
+
+# ============================================================
+# [异常正文跨度 2026-11-20 · 补书 §二] 供方协议残片：ds_safety 块／
+# CDATAEND> 残片／begin▁of▁sentence 起始标记——同一跨度同时用于
+# 调用识别遮蔽与历史隔离；只剩残片 ⇒ 正文异常、零候选、零重发提醒。
+# ============================================================
+
+_007_DS_SAFETY = (
+    "CDATAEND>\n<ds_safety>[用户未成年]否\n[分类]其他\n"
+    "[判定]内容为CardColony多智能体系统的卡片调度与任务回复，"
+    "纯技术管理，不涉及政治或色情内容。\n[规则]无</ds_safety>")
+_648_BOS = ("<｜begin▁of▁sentence｜>11 条线\n\n"
+            "## 与连线卡的通信线（11 条）\n### 我发出 11 条")
+
+
+def test_ds_safety_block_is_anomaly_not_unparsed_call():
+    """card_007 23:07 实录：ds_safety 块曾被 _e_unknown_pair 误报成
+    伪调用未解析（引来 pseudo_call_reinvoke 重发提醒）。现在它是
+    可证异常跨度——零候选、零 unresolved、整段出 stripped。"""
+    calls, unresolved, stripped = text_tool_rescue.extract_text_tool_calls(
+        _007_DS_SAFETY)
+    assert calls == [] and unresolved is False
+    assert stripped == ""
+    spans = text_tool_rescue.anomaly_fragments(_007_DS_SAFETY)
+    assert len(spans) == 2          # CDATAEND> 残片＋ds_safety 块各一
+    v = text_tool_rescue.quarantine_view(_007_DS_SAFETY, fragment=True)
+    assert "供方协议残片" in v
+    assert "调用格式" not in v      # 残片不是调用，不用调用的罪名
+    assert "ds_safety" not in v and "用户未成年" not in v
+
+
+def test_ds_safety_masks_inner_call_shaped_text():
+    """块内形似调用的文本不出候选——同一跨度兼作调用识别遮蔽。"""
+    raw = ('<ds_safety><invoke name="edit_status">'
+           '<parameter name="x">1</parameter></invoke></ds_safety>后接正文')
+    calls, unresolved, stripped = text_tool_rescue.extract_text_tool_calls(raw)
+    assert calls == [] and unresolved is False
+    assert stripped == "后接正文"
+
+
+def test_begin_of_sentence_marker_stripped_body_kept():
+    """card_648 23:11 实录：BOS 标记出投影，其后正文保留。"""
+    calls, unresolved, stripped = text_tool_rescue.extract_text_tool_calls(_648_BOS)
+    assert calls == [] and unresolved is False
+    assert "begin" not in stripped and "11 条线" in stripped
+    v = text_tool_rescue.quarantine_view(_648_BOS, fragment=True)
+    assert "11 条线" in v and "begin" not in v and "供方协议残片" in v
+
+
+def test_begin_of_sentence_coexists_with_real_text_call():
+    """BOS 与正文调用同跳：调用照解析、BOS 出剥离产物。"""
+    raw = (_648_BOS + '\n<invoke><tool>read_card</tool>'
+           '<param name="card_id">card_001</param></invoke>')
+    calls, unresolved, stripped = text_tool_rescue.extract_text_tool_calls(
+        raw, protocols=frozenset({"invoke"}))
+    assert [c["name"] for c in calls] == ["read_card"]
+    assert "begin" not in stripped and "11 条线" in stripped
+
+
+def test_anomaly_inside_fence_is_reference_not_anomaly():
+    """围栏/引用里的同形文本是引用身份——自动清理只限可证明的跨度。"""
+    raw = ("看这段样例：\n```xml\n<ds_safety>x</ds_safety> CDATAEND>\n"
+           "｜begin▁of▁sentence｜\n```\n以上。")
+    calls, unresolved, stripped = text_tool_rescue.extract_text_tool_calls(raw)
+    assert text_tool_rescue.anomaly_fragments(raw) == []
+    assert "<ds_safety>" in stripped     # 引用原样保留
+    # 无异常时 fragment 标记不得由其他异常误触
+    v = text_tool_rescue.quarantine_view(raw, fragment=True)
+    assert "<ds_safety>" in v            # 残部里仍是完整引用
+
+
+def test_ds_safety_unclosed_strips_tag_only_body_kept():
+    """[验收反例1] <ds_safety> 无真闭标签：只剥开标签 token，正文不吞到文末。"""
+    c = "<ds_safety>\n[判定]被吞过的正文A\n更多正文B。"
+    calls, unres, stripped = text_tool_rescue.extract_text_tool_calls(c)
+    assert calls == [] and unres is False
+    assert "ds_safety" not in stripped
+    assert "被吞过的正文A" in stripped and "更多正文B" in stripped
+    # 无闭合 ⇒ 不是「有边界的区块」，只有开标签本体这一个残片跨度
+    assert text_tool_rescue.anomaly_fragments(c) == [(0, len("<ds_safety>"))]
+
+
+def test_ds_safety_close_inside_fence_is_not_a_boundary():
+    """[验收反例2] 闭标签只在围栏代码里 ⇒ 不能当边界：开标签按 token 剥，
+    围栏（含示例闭合）与正文原样保留。"""
+    c = "<ds_safety>\n正文A\n```\n</ds_safety>\n```\n正文B"
+    calls, unres, stripped = text_tool_rescue.extract_text_tool_calls(c)
+    assert calls == [] and unres is False
+    assert "正文A" in stripped and "正文B" in stripped
+    assert "```\n</ds_safety>\n```" in stripped   # 引用身份保留
+    assert text_tool_rescue.anomaly_fragments(c) == [(0, len("<ds_safety>"))]
+
+
+def test_ds_safety_real_close_after_fence_still_whole_block():
+    """围栏先出现、真闭合在其后 ⇒ 块体（含围栏）仍是完整异常区块。"""
+    c = "前导\n<ds_safety>体A\n```\nx\n```\n体B</ds_safety>\n后随"
+    assert text_tool_rescue.anomaly_fragments(c) == [
+        (c.index("<ds_safety>"), c.index("</ds_safety>") + len("</ds_safety>"))]
+
+
+def test_ds_safety_unclosed_does_not_borrow_next_blocks_close():
+    opening = "<ds_safety>"
+    body = "残留正文\n中间的交付正文必须保留。"
+    block = "<ds_safety>[规则]无</ds_safety>"
+    raw = f"{opening}{body}\n{block}\n尾句。"
+    start = raw.index(block)
+    assert text_tool_rescue.anomaly_fragments(raw) == [
+        (0, len(opening)), (start, start + len(block))]
+    assert text_tool_rescue.extract_text_tool_calls(raw) == (
+        [], False, f"{body}\n\n尾句。")
+    assert body in text_tool_rescue.quarantine_view(raw, fragment=True)
+
+
+def test_ds_safety_quoted_edges_do_not_bound_a_block():
+    opening = "<ds_safety>"
+    for quote in ('"</ds_safety>"', "'</ds_safety>'", "「</ds_safety>」"):
+        quoted_close = f"正文在讨论字符串{quote}，应原样保留。"
+        raw = f"{opening}\n{quoted_close}"
+        assert text_tool_rescue.anomaly_fragments(raw) == [(0, len(opening))]
+        assert text_tool_rescue.extract_text_tool_calls(raw) == ([], False, quoted_close)
+        assert quoted_close in text_tool_rescue.quarantine_view(raw, fragment=True)
+
+    block = f"{opening}内部引用 ‘<ds_safety>’ 和「</ds_safety>」</ds_safety>"
+    assert text_tool_rescue.anomaly_fragments(f"{block}\n尾句") == [(0, len(block))]
+
+
+def test_cdataend_embedded_in_string_not_stripped():
+    """CDATAEND> 在普通字串或讨论里原样保留，包括贴着行首或行尾。"""
+    for c in ("字段值是 abcCDATAEND>def 这样的",
+              "残片形如 CDATAEND> 不应出现",
+              "前缀CDATAEND>后缀",
+              "字段的逐字值是 alphaCDATAEND>",
+              "CDATAEND>beta 是字段的逐字值",
+              "看这里 CDATAEND>\n完"):
+        assert text_tool_rescue.anomaly_fragments(c) == [], c
+        assert text_tool_rescue.extract_text_tool_calls(c) == ([], False, c)
+        assert text_tool_rescue.quarantine_view(c, fragment=True).startswith(c)
+
+
+def test_anomaly_token_line_boundary_still_isolated():
+    """CDATAEND> 独占一行时退出，行缩进不影响识别。"""
+    for c, kept in (("上文\nCDATAEND>\n下文", "下文"),
+                    ("上文\r\n  CDATAEND> \r\n下文", "下文"),
+                    ("CDATAEND>", "")):
+        frags = text_tool_rescue.anomaly_fragments(c)
+        assert len(frags) == 1, c
+        _, _, stripped = text_tool_rescue.extract_text_tool_calls(c)
+        assert "CDATAEND>" not in stripped
+        if kept:
+            assert kept in stripped
+
+
+def test_ds_safety_and_adjacent_cdataend_use_the_original_spans():
+    block = "<ds_safety>[规则]无</ds_safety>"
+    for fragment in (f"CDATAEND>{block}", f"CDATAEND> \t{block}",
+                     f"{block}CDATAEND>"):
+        raw = f"{fragment}\n尾句。"
+        assert text_tool_rescue.anomaly_fragments(raw) == [(0, len(fragment))]
+        assert text_tool_rescue.extract_text_tool_calls(raw) == ([], False, "尾句。")
+
+    raw = f"{block}CDATAEND>beta 是字段值。"
+    assert text_tool_rescue.extract_text_tool_calls(raw) == (
+        [], False, "CDATAEND>beta 是字段值。")
+
+
+def test_quarantine_does_not_create_new_fragment_at_a_stripped_call_boundary():
+    raw = ("<invoke><tool>read_card</tool></invoke>"
+           "<ds_safety>行内原文</ds_safety>")
+    assert text_tool_rescue.anomaly_fragments(raw) == []
+    assert "<ds_safety>行内原文</ds_safety>" in text_tool_rescue.quarantine_view(raw)
+
+
+def test_ds_safety_midline_not_isolated_region():
+    """行内开标签（含闭合）不产异常区——按普通文本走既有疑似判定。"""
+    c = "他举例 <ds_safety>x</ds_safety> 是安全标签。"
+    assert text_tool_rescue.anomaly_fragments(c) == []
+
+
+def test_fragment_view_note_for_mixed_hop():
+    """混跳（真调用＋残片）：残片退出投影，状态行用残片口径。"""
+    v = text_tool_rescue.quarantine_view(
+        _648_BOS, has_dispatch=True, fragment=True)
+    assert "供方协议残片" in v
+    assert "未经执行确认" not in v and "未派发执行" not in v  # 不是调用罪名
+    # 对照：同跳有真调用且非残片异常 ⇒ 仍是混跳口径
+    v2 = text_tool_rescue.quarantine_view(_648_BOS, has_dispatch=True)
+    assert "未经执行确认" in v2
+
+
+# ============================================================
+# [补书 §四] 真实链路回放：007 纯残片跳 → 零 unparsed 事实、投影干净；
+# 648 混跳 → 真调用各执行一次、回执全留、零提醒。
+# ============================================================
+
+@pytest.mark.parametrize("raw", [_007_DS_SAFETY, _007_DS_SAFETY.replace("\n", "", 1)],
+                         ids=["recorded", "adjacent-on-one-line"])
+async def test_007_fragment_hop_no_unparsed_event_and_clean_history(
+        work, monkeypatch, raw):
+    """回放 card_007 23:07 原文：整跳只剩供方残片 ⇒
+    零 pseudo_call_unparsed（零提醒）、块打 provider_fragment 标、
+    下一轮请求的先验消息无 ds_safety/CDATAEND 分类正文。"""
+    from src.api import message_runner, model_service, routes
+    from src.storage import session_facade
+
+    wid, cid = work["work_id"], "card_001"
+    requests, events = [], []
+
+    class Gateway:
+        config = {"models": {}}
+
+        async def stream_call(self, *args, prior_messages=None, **kwargs):
+            requests.append(prior_messages or [])
+            yield {"content": raw if len(requests) == 1
+                   else "收到，继续。",
+                   "tool_calls": [], "model_used": "audit_opted",
+                   "protocol_meta": {"endpoint_protocol": "native"}}
+
+    monkeypatch.setenv("MOCK_LLM", "1")
+    monkeypatch.delenv("TOOL_CALL_STRICT", raising=False)
+    monkeypatch.setattr(model_service, "get_gateway", Gateway)
+    monkeypatch.setattr(message_runner, "_pick_step_model",
+                        lambda state: "audit_opted")
+    monkeypatch.setattr(message_runner.event_stream, "emit",
+                        lambda w, s, kind, data: events.append((kind, data)))
+
+    r1 = await routes._run_message(wid, cid, "在吗", source_kind="human")
+    assert "error" not in r1 and r1["tool_events"] == []
+
+    # 零提醒：残片不是未派发调用，pseudo_call_unparsed 一条都不许发
+    assert not any(k == "pseudo_call_unparsed" for k, _ in events), \
+        f"纯残片跳误报了伪调用事实：{[k for k, _ in events]}"
+    # 正文异常照记：hop_accounting 的 anomaly 字段是这件事的账本位
+    acc = [d for k, d in events if k == "hop_accounting"]
+    assert acc and acc[-1].get("anomaly") == "provider_fragment"
+
+    # 回复块：原文留档案、ctx_content 只剩残片口径状态行
+    blocks = await session_facade.read(wid, cid)
+    reply = next(b for b in reversed(blocks) if b.get("role") == "assistant")
+    # 收口保留原文，允许既有归档格式追加一个行末换行。
+    assert reply.get("content", "").removesuffix("\n") == raw
+    assert reply.get("quarantine") == "provider_fragment"
+    assert "ds_safety" not in (reply.get("ctx_content") or "")
+    assert "供方协议残片" in (reply.get("ctx_content") or "")
+
+    # 下一轮真实请求：供模型使用的历史里没有分类正文/残片
+    r2 = await routes._run_message(wid, cid, "继续", source_kind="human")
+    assert "error" not in r2 and len(requests) == 2
+    prior_json = json.dumps(requests[1], ensure_ascii=False)
+    for tok in ("ds_safety", "CDATAEND", "用户未成年"):
+        assert tok not in prior_json, f"残片漏进下一轮请求：{tok}"
+
+
+async def test_648_bos_mixed_hop_real_calls_once_zero_reminder(
+        work, monkeypatch):
+    """回放 card_648 23:11 混跳：BOS 残片＋两条原生调用——
+    各执行一次、失败(denied)与成功回执各自保留、零 unparsed 提醒。"""
+    from src.api import message_runner, model_service, routes
+    from src.storage import card_store, session_facade
+
+    wid, cid = work["work_id"], "card_001"
+    # card_002：无线孤儿 ⇒ card_001 读它得 denied（648 实录同形态）
+    await card_store.create_card(wid, "孤儿卡", "test", parent=None)
+    requests, events = [], []
+
+    class Gateway:
+        config = {"models": {}}
+
+        async def stream_call(self, *args, prior_messages=None, **kwargs):
+            requests.append(prior_messages or [])
+            if len(requests) == 1:
+                yield {"content": _648_BOS,
+                       "tool_calls": [
+                           {"name": "read_card",
+                            "arguments": {"card_id": "card_002"}},
+                           {"name": "read_card",
+                            "arguments": {"card_id": cid}}],
+                       "model_used": "audit_opted",
+                       "protocol_meta": {"endpoint_protocol": "native"}}
+            else:
+                yield {"content": "核对完毕。", "tool_calls": [],
+                       "model_used": "audit_opted",
+                       "protocol_meta": {"endpoint_protocol": "native"}}
+
+    monkeypatch.setenv("MOCK_LLM", "1")
+    monkeypatch.delenv("TOOL_CALL_STRICT", raising=False)
+    monkeypatch.setattr(model_service, "get_gateway", Gateway)
+    monkeypatch.setattr(message_runner, "_pick_step_model",
+                        lambda state: "audit_opted")
+    monkeypatch.setattr(message_runner.event_stream, "emit",
+                        lambda w, s, kind, data: events.append((kind, data)))
+
+    r = await routes._run_message(wid, cid, "看下连线", source_kind="human")
+    assert "error" not in r
+    evs = r["tool_events"]
+    assert len(evs) == 2 and all(e["tool"] == "read_card" for e in evs)
+    # denied 与成功各一——回执各自保留
+    assert sum(1 for e in evs if e["ok"]) == 1
+    assert sum(1 for e in evs if not e["ok"]) == 1
+
+    # 零提醒：残片不等于未派发调用
+    assert not any(k == "pseudo_call_unparsed" for k, _ in events), \
+        f"混跳残片误报了伪调用事实：{[k for k, _ in events]}"
+
+    # 续跳请求：BOS 残片出投影，真调用配对完整（assistant↔tool 回执）
+    assert len(requests) == 2
+    prior = json.dumps(requests[1], ensure_ascii=False)
+    assert "begin▁of▁sentence" not in prior, \
+        "BOS 残片漏进出站请求体"
+    assistant_ids = [tc["id"] for m in requests[1]
+                     for tc in m.get("tool_calls", [])]
+    result_ids = [m["tool_call_id"] for m in requests[1]
+                  if m.get("role") == "tool"]
+    assert assistant_ids == result_ids and len(assistant_ids) == 2
+
+
+# ============================================================
+# [补书 §四返工 · 三路投影] 同一份混合正文（异常块＋正常文＋围栏引用
+# ＋行内残片讨论）过缓存板、回退投影、凝练送检三路——逐路确认
+# 异常退出、正常正文和引用保留。
+# ============================================================
+_MIXED_007 = (
+    "先说一句正常话。\n"
+    "<ds_safety>[判定]内容为CardColony测试\n[规则]无</ds_safety>\n"
+    "中间还有一句正常话。\n"
+    "示例引用：\n```\nx = \"</ds_safety>\"\n```\n"
+    "残片形如 CDATAEND> 的讨论保留。\n"
+    "CDATAEND>\n"
+    "末尾正常收尾。")
+
+
+def _assert_mixed_projection(blob: str) -> None:
+    # 异常退出：区块正文与独立残片行消失；只剩围栏引用里的同形标签
+    assert "[判定]" not in blob and "[规则]" not in blob
+    assert blob.count("ds_safety") == 1, blob   # 唯一剩的是围栏内示例
+    assert blob.count("CDATAEND>") == 1, blob   # 唯一剩的是行内讨论
+    # 正常正文与围栏引用保留
+    for keep in ("先说一句正常话", "中间还有一句正常话",
+                 "示例引用", 'x = "</ds_safety>"',
+                 "残片形如 CDATAEND> 的讨论保留", "末尾正常收尾"):
+        assert keep in blob, keep
+
+
+async def test_007_three_projections_mixed_content(sandbox, work):
+    """隔离块在缓存板/回退投影/凝练送检三路同口径：异常退出、正文与
+    引用保留、原文仍在档案面。"""
+    wid, cid = work["work_id"], "card_001"
+    view = text_tool_rescue.quarantine_view(_MIXED_007, fragment=True)
+    _assert_mixed_projection(view)                    # 视图本身先达标
+    await _append(wid, cid, [
+        {"role": "user", "content": "问"},
+        {"role": "assistant", "content": _MIXED_007,
+         "quarantine": "provider_fragment", "ctx_content": view},
+        {"role": "assistant", "content": "正常答"},
+    ])
+    raw = origin_store.read_blocks(wid, cid, 0)
+
+    # 缓存板：物化行＝ctx_content
+    rows = context_board.read_board(wid, cid)
+    _assert_mixed_projection(rows[1]["content"])
+    assert rows[1]["content"] == view
+
+    # 回退投影（旧四层筛路）：同一块投出同一视图
+    old = context_regions.project_history_messages(
+        review_scope.drop_stale_review(wid, cid, raw), 0)
+    blob = "\n".join(str(m.get("content")) for m in old)
+    _assert_mixed_projection(blob)
+    assert view in blob
+
+    # 板重建后投影不漂（标记重算同口径）
+    context_board.rebuild_board(wid, cid)
+    rows2 = context_board.read_board(wid, cid)
+    assert rows2[1]["content"] == view
+
+    # 凝练送检：送检文本同口径
+    from src.storage import memory_store
+    pending = [dict(b) for b in raw]
+    prompt = memory_store._build_condense_user_prompt(pending)
+    _assert_mixed_projection(prompt)
+    assert "正常答" in prompt
+
+    # 原文档案面逐字保留
+    assert any(b.get("content") == _MIXED_007 for b in raw)

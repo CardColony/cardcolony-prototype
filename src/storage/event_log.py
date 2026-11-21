@@ -249,6 +249,9 @@ def _notify_harness(work_id: str, card_id: str, rec: dict[str, Any]) -> None:
     [2026-10-31 · 两代并轨] 第一代「规则表 + ``harness.fire``」退役，
     ``ECO_HARNESS_LEGACY`` 回退开关一并拆除——条件集是**唯一**接线。
 
+    [任务三 2026-11-21] 同一接线点加**统筹链**：``coordination_watcher.feed``
+    ——类型过滤/授权过滤/坐标去重/合批，窗口到派弱模型观察。零阻断同款。
+
     零阻断：接线失败绝不影响事件本身。
     """
     try:
@@ -256,6 +259,11 @@ def _notify_harness(work_id: str, card_id: str, rec: dict[str, Any]) -> None:
         policy_runner.feed(work_id, rec)
     except Exception as exc:  # noqa: BLE001 接线失败不影响事件
         logger.warning("[event_log] 条件集接线失败（不阻断）: %s", exc)
+    try:
+        from ..infra import coordination_watcher
+        coordination_watcher.feed(work_id, card_id, rec)
+    except Exception as exc:  # noqa: BLE001 接线失败不影响事件
+        logger.warning("[event_log] 统筹链接线失败（不阻断）: %s", exc)
 
 
 # ---------------------------------------------------------------- 写
@@ -1027,6 +1035,64 @@ def timeline(work_id: str, card_id: str, from_seq: int = 0,
     if want_tail > 0:
         items = items[-want_tail:]
     return items
+
+
+def timeline_events(work_id: str, card_id: str,
+                    seqs: list[int]) -> tuple[list[dict[str, Any]], set[int]]:
+    """[窄投影补详情 2026-11-21 · 性能批次二] 按 seq 精确取**完整**记录。
+
+    ``timeline?view=brief`` 把重字段投影成预览 + ``_brief`` 标记；前端展开
+    折叠详情时按 seq 回取原文——本函数就是那条按需读取的取数路。
+
+    返回 ``(items, revoked_seqs)``：
+      - items：命中的完整记录（与 timeline() 同形态，含 revoke 软删检查——
+        被撤记录**不回**，其 seq 进 revoked_seqs）；
+      - revoked_seqs：请求里已进撤销区间的 seq（前端据此显示「已撤销」
+        而不是「加载失败」）。
+    找不到的 seq 两边都不进（前端按缺失处理）。
+
+    取数走 ``_scan_state`` 行索引（seq→字节偏移定点读），索引不可用
+    （超行数上限/极端文件）时退回全量 ``read()`` 逐条比对——语义等价、
+    只是慢，属少数路径。
+    """
+    want: dict[int, int] = {}
+    for s in seqs:
+        try:
+            want[int(s)] = 0
+        except (TypeError, ValueError):
+            continue
+    if not want:
+        return [], set()
+    path = event_path(work_id, card_id)
+    spans, index = _scan_state(path, want_index=True)
+    revoked = {s for s in want if _in_revoked(s, spans)}
+    items: list[dict[str, Any]] = []
+    if index is not None:
+        offs = [(s, off, end) for (_ts, s, off, end, _c) in index
+                if s in want and s not in revoked]
+        if offs:
+            raw = _mmap_ro(path)
+            if raw is not None:
+                try:
+                    for s, off, end in offs:
+                        try:
+                            rec = _loads(raw[off:end].decode(
+                                "utf-8", errors="replace"))
+                        except (ValueError, TypeError):
+                            continue
+                        if isinstance(rec, dict):
+                            rec["seq"] = s
+                            items.append(rec)
+                finally:
+                    raw.close()
+        return items, revoked
+
+    # ── 兜底：索引不可用 ⇒ 全量比对（与 timeline() 兜底同语义）──────
+    for rec in read(work_id, card_id):
+        s = int(rec.get("seq") or 0)
+        if s in want and s not in revoked:
+            items.append(rec)
+    return items, revoked
 
 
 # ---------------------------------------------------------------- 软删

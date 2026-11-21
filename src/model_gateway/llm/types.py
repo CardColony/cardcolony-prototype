@@ -221,6 +221,8 @@ class GenerateOptions:
     #   deepseek 适配器忽略此位（它只有流式一条路）；litellm 薄壳据此决定
     #   ``acompletion(stream=...)``。
     stream: bool = True
+    # 宿主侧观测。适配器拿到请求发送证据后调用，序列化器不使用。
+    on_dispatch: Any = None
 
 
 # ---------------------------------------------------------------------------

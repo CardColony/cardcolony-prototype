@@ -39,6 +39,7 @@
 """
 from __future__ import annotations
 
+import json
 import math
 from typing import Any
 
@@ -83,8 +84,11 @@ MAX_NODES = 5000
 MAX_CHARS = 256 * 1024
 
 
-def _measure(o: Any, nodes: int = 0, chars: int = 0) -> tuple[int, int]:
-    """数结构规模：(节点数, 字符串总长)。**一次遍历，不序列化**（巨型记录也能算）。"""
+def _measure(o: Any, nodes: int = 0, chars: int = 0,
+             max_nodes: int = 0, max_chars: int = 0) -> tuple[int, int]:
+    """数结构规模：(节点数, 字符串总长)。**一次遍历，不序列化**（巨型记录也能算）。
+    ``max_nodes``/``max_chars`` >0 时**超界即提前返回**（下限账）——投影层
+    只需知道「大不大」，不为测体量把 MB 级结构全量走一遍。"""
     stack = [o]
     while stack:
         cur = stack.pop()
@@ -96,6 +100,8 @@ def _measure(o: Any, nodes: int = 0, chars: int = 0) -> tuple[int, int]:
                 stack.append(v)
         elif isinstance(cur, list):
             stack.extend(cur)
+        if (max_nodes and nodes > max_nodes) or (max_chars and chars > max_chars):
+            return nodes, chars
     return nodes, chars
 
 
@@ -167,4 +173,154 @@ def cap_records(items: list[dict], cap: int = DEFAULT_CAP) -> list[dict]:
     for rec in items:
         if isinstance(rec, dict):
             cap_record(rec, cap)
+    return items
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [窄投影 2026-11-21 · 性能批次二] ``timeline?view=brief`` 的投影层
+#
+# 实测（work_073/card_007 tail=400 · 876KB items）：
+#   tool_result.data.result …… 310KB  ── 折叠态只用 tool/ok/step_id 等标量，
+#      展开体才要全文 ⇒ result → ``{"_brief": true, "ok": …}`` 占位；
+#   card_block_edited.old/new …… 210KB ── 行首只用 block/by/cause/*_len；
+#   reasoning.data.text …… 208KB ── 折叠摘要只要首行（**带 model 的席内思考
+#      是常驻可见内容，不窄化**）；
+#   tool_call.arguments …… 54KB ── 摘要行 clip(76)，展开体不展示参数。
+#
+# 口径：
+#   · **只见于详情面的字段才窄化**——行首可见字段（标量/短串/数组）原样保留；
+#   · 预览串＝前缀＋``"…"``，记录级 ``_brief: true`` 是「有完整版可取」的
+#     契约位——前端据此在展开时走 ``timeline/event?seqs=`` 补全文；
+#   · 可见正文类型（消息/席卡/计划步骤/系统结果行）**整体豁免**，一个字不动；
+#   · 通用兜底只碰「顶层超长字符串」（>512 → 预览）——容器一律不动，
+#     防止把行首 `.join()` 的数组换成对象而出错；
+#   · 只裁响应，不动落盘（审计/回放原文不变）。
+# ═══════════════════════════════════════════════════════════════════════
+
+#: 预览串保留的前缀长度
+_BRIEF_KEEP = 160
+
+#: 可见正文类型：这些事件的 data 是**直接可读内容**，绝不窄化
+_BRIEF_KEEP_WHOLE = {
+    "user_message", "assistant_text", "cardmsg",
+    "msg_ask", "msg_answer", "msg_notify", "msg_sync", "msg_report",
+    "msg_directive", "coder_done", "worker_done", "card_message",
+    "seat_start", "seat_end", "seats_enter", "seats",
+    "plan_created", "system_result",
+    "content_chunk", "reasoning_chunk",
+    # revoke 是控制位（from_seq 软删），不是内容——不窄化也不进渲染面
+    "revoke",
+}
+
+#: tool_call 参数单值超此长 → 预览（摘要行本来就 clip 76，视觉零差异）
+_BRIEF_ARG_CHARS = 640
+#: reasoning 正文超此长 → 预览（折叠摘要只要首行）
+_BRIEF_REASON_CHARS = 320
+#: card_block_edited old/new 超此长 → 预览
+_BRIEF_BLOCK_CHARS = 240
+#: 通用兜底：data 序列化超此体积才动顶层超长字符串
+_BRIEF_FALLBACK_BYTES = 8 * 1024
+_BRIEF_FALLBACK_STR = 512
+
+
+def _preview(s: str, keep: int = _BRIEF_KEEP) -> str:
+    return s[:keep] + "…"
+
+
+def _brief_tool_call(data: dict) -> bool:
+    """arguments 的超长值 → 预览（保留小值原样——摘要行要它们）。"""
+    args = data.get("arguments")
+    if not isinstance(args, dict):
+        return False
+    changed = False
+    for k, v in list(args.items()):
+        if isinstance(v, str):
+            s = v
+        else:
+            try:
+                s = json.dumps(v, ensure_ascii=False)
+            except (TypeError, ValueError):
+                continue
+        if len(s) > _BRIEF_ARG_CHARS:
+            args[k] = _preview(s)
+            changed = True
+    return changed
+
+
+def _brief_tool_result(data: dict) -> bool:
+    """``data.result`` → 占位：折叠态只读 data 外层标量，展开时按 seq 补全文。"""
+    res = data.get("result")
+    if not isinstance(res, dict):
+        return False
+    # 有界测量：到 4KB 字符 / 1k 节点就停（_bytes 此时是下限账——只作体量提示）
+    nodes, chars = _measure(res, max_nodes=1024, max_chars=4096)
+    if chars <= 2048 and nodes <= 512:
+        return False                       # 小结果不值得一次详情往返
+    data["result"] = {"_brief": True, "ok": res.get("ok"), "_bytes": chars}
+    return True
+
+
+def _brief_reasoning(rec: dict, data: dict) -> bool:
+    """主模型思考 → 预览；**带 model 的席内思考是常驻可见内容，不窄化**。"""
+    if rec.get("model") or data.get("model"):
+        return False
+    txt = data.get("text")
+    if isinstance(txt, str) and len(txt) > _BRIEF_REASON_CHARS:
+        data["text"] = _preview(txt, _BRIEF_REASON_CHARS)
+        return True
+    return False
+
+
+def _brief_block_edited(data: dict) -> bool:
+    changed = False
+    for k in ("old", "new"):
+        v = data.get(k)
+        if isinstance(v, str) and len(v) > _BRIEF_BLOCK_CHARS:
+            data[k] = _preview(v, _BRIEF_BLOCK_CHARS)
+            changed = True
+    return changed
+
+
+def _brief_fallback(data: dict) -> bool:
+    """其他类型：顶层**超长字符串** → 预览（容器一律不碰，防行首 .join 出错）。
+    只在整包超阈值时动手——小记录原样返回（零新建对象）。
+    体量判定用**有界** _measure（不序列化）：超阈值即停，不为量体量遍历全结构。"""
+    _nodes, chars = _measure(data, max_chars=_BRIEF_FALLBACK_BYTES + 1)
+    if chars <= _BRIEF_FALLBACK_BYTES:
+        return False
+    changed = False
+    for k, v in list(data.items()):
+        if isinstance(v, str) and len(v) > _BRIEF_FALLBACK_STR:
+            data[k] = _preview(v)
+            changed = True
+    return changed
+
+
+def brief_record(rec: dict) -> dict:
+    """单条记录的窄投影（原地改）。动了字段 ⇒ ``rec["_brief"] = True``。"""
+    t = rec.get("type")
+    data = rec.get("data")
+    if not isinstance(data, dict) or t in _BRIEF_KEEP_WHOLE:
+        return rec
+    brief = False
+    if t == "tool_result":
+        brief = _brief_tool_result(data)
+    elif t == "tool_call":
+        brief = _brief_tool_call(data)
+    elif t == "reasoning":
+        brief = _brief_reasoning(rec, data)
+    elif t == "card_block_edited":
+        brief = _brief_block_edited(data)
+    else:
+        brief = _brief_fallback(data)
+    if brief:
+        rec["_brief"] = True
+    return rec
+
+
+def brief_records(items: list[dict]) -> list[dict]:
+    """窄化一批记录（响应层投影）。无重字段的记录**原样不动**。"""
+    for rec in items:
+        if isinstance(rec, dict):
+            brief_record(rec)
     return items

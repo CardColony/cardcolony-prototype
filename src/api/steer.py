@@ -52,6 +52,7 @@ STEER_MARK = "用户插话："
 class SteerEntry:
     text: str
     report_targets: tuple[str, ...] = ()
+    review_source: dict[str, Any] | None = None
 
 
 #: 待投递插话：(work_id, card_id) → [插话条目, ...]（进程内；回合收口清扫）
@@ -61,7 +62,8 @@ _pending: dict[tuple[str, str], list[SteerEntry]] = {}
 async def request_steer(work_id: str, card_id: str, text: str, *,
                         mark: str = STEER_MARK,
                         emit_event: bool = True,
-                        report_targets: tuple[str, ...] = ()) -> dict[str, Any]:
+                        report_targets: tuple[str, ...] = (),
+                        review_source: dict[str, Any] | None = None) -> dict[str, Any]:
     """投递一条插话（HTTP 端点唯一入口）。
 
     无在途回合 ⇒ **不投递**（``not_applied``）：宁可让前端回退成普通发送，
@@ -82,7 +84,8 @@ async def request_steer(work_id: str, card_id: str, text: str, *,
                 "idempotent": True, "holder": ""}
     key = (work_id, card_id)
     item = str(mark or "") + body
-    _pending.setdefault(key, []).append(SteerEntry(item, report_targets))
+    _pending.setdefault(key, []).append(SteerEntry(
+        item, report_targets, dict(review_source) if review_source else None))
     # 界面可见：插话落一条 user_message **事件**（不写会话块 ⇒ 不重复喂给模型、
     # 不污染会话历史；事件流是前端唯一数据源 ⇒ 刷新后也看得见这条插话）。
     # 落点＝用户按下的那一刻（不是被消费时）⇒ 事件时序与用户操作顺序一致。

@@ -215,6 +215,11 @@ async def maybe_delegate(state: Any) -> Optional[Any]:
     # 存量卡默认留在系统自己的模型上，逐张接管（开闸零冲击）。
     if cfg.scope.mode == "opt_in" and raw is None:
         return None
+    if getattr(state, "task_contract", None):
+        from ..message_runner import StepOutcome
+
+        state.error = "任务核证试点需要系统工具执行链。请选择系统执行体后按原派工接续。"
+        return StepOutcome("error", "task_basis_backend_unavailable")
     try:
         outcome = await run_delegated(state, cfg, backend)
     except Exception as exc:  # noqa: BLE001 委派失败绝不拖垮主链路

@@ -75,41 +75,51 @@
   `〔直接子卡现状〕`），首跳随用户消息之后下发、工具续跳每跳仍在。
   ⇒ 稳定前缀不再随卡面变化分叉（实测：可缓存前缀 79% → 100%）。
 - **按可信任务范围缩量**（新增两模块）：
-  - `src/api/task_scope.py`：只用**结构化字段**（回合来源／身份锚／卡型／
-    子卡卡型／差事账对象／活板当前步）判 `single`/`global`/`unknown`；
-    **判不出来一律 unknown＝完整材料**（正文里的卡号只供查漏，不用于选材）。
+  - `src/api/task_scope.py`：范围**只由「本轮可信任务绑定」判出来**——
+    ① 显式绑定（回合入口给的 `task_binding={"kind":"card"|"jurisdiction",
+    "card_id":…}`）；② **差事账绑定**（在派差事的唯一 `target_card`，**任意
+    卡型**都算）；③ 本卡在执行自己的任务（活板当前步／目标续轮／自动模式）。
+    **卡型与子树不再用于推断档位**（那会把「有领域子卡的管理卡的普通聊天」
+    错判成全局统筹），它们只用于确定**已证实范围内有哪些卡**。
+    **没有绑定 ⇒ unknown ＝ 完整材料**（正文里的卡号只供查漏，不用于选材）。
   - `src/api/doc_locator.py`：依赖正稿**条款定位**（条款号锚／标题短语锚）⇒
     给「条目标题＋行段坐标＋版本指纹＋`read_card` 行段回读命令」；
     条款号必须是正文自己标出来的（加粗/标题首词/表格首列），散文同形词不认；
-    定位不到 ⇒ single 回退全文、global 只给坐标、**无 `read_card` 一律回退全文**。
+    **坐标按存档原文算**（不 strip——前导空行也算行号，否则读回两行空白）；
+    定位不到 ⇒ single 回退全文、global 只给坐标、**无 `read_card` 一律回退全文**；
+    回退全文时**沿用批一去重**（同目标同正文只展开一次）。
+- **主动投影按现有读权限逐块取材**：对象卡正文（`scope_target_body`）与
+  `read_card` 同一道闸——父子线才给使命/现状，关系线只给对外信息，无线且无
+  差事授面（实发面含 read_card）⇒ 一概不给（不许绕过读权限的暗门）。
 - 缩量**只对 main 档**生效；三席（viewpoint）与起草（draft）保持原有材料；
   评审/场授/席位回合（`source.kind=review_step|align_turn`、`act_as`≠本卡）
   本批明确不缩量。
 - **同回合当轮事实要刷新**：工具续跳前 `context_assembler.refresh_tail_facts()`
-  刷新清单/子卡现状的数据源（system 通道不动）——回合里建的新卡、跑过一步的
-  子卡，下一跳看得见。
+  刷新清单/子卡现状/**对象卡正文**的数据源（system 通道不动）——回合里建的
+  新卡、跑过一步的子卡、改过现状的对象卡，下一跳看得见。
 - 开关：**`CONTEXT_SCOPE=0`** ⇒ 范围一律 unknown ⇒ 三处材料逐字同旧
   （与 `CONTEXT_BOARD=0` 同族口径；回退不用回滚代码）。
 - 回报与证据：`docs/模型调用成本优化-第二批施工回报-20261120.md`
   （三组读数、前缀分歧、验收矩阵对照、完整回退场景与放行条件）；
   用例 `tests/test_batch2_outbound.py`（实际出站）＋`tests/test_batch2_scope.py`
-  （缩量语义）；回放脚本 `scripts/perf_batch2_outbound_replay.py`（只读生产样本）。
+  （缩量语义）；回放脚本 `scripts/perf_batch2_outbound_replay.py`
+  （**先做固定副本再跑**——`build_ctx` 会取走并清空待注入队列，回放绝不能碰
+  生产库；读数一律取**适配器实际出站**）。
 
 ## 水位结算与一致发布（修复方案 §三，2026-11-20）
 
 - **水位只按连续消耗前缀推进**：`_condense_one_batch` 返回结构化
-  `{ok,status,committed_mark(mark),consumed,covered_seqs,failure_stage,
-  failure_detail,batch_no}`；分片覆盖在「送凝块号」空间做不动点结算——
+  `{ok,mark,stage,consumed,detail}`。送凝按窗口位置定界——
   大块（seq≥2e9 分片）须**全片**被候选覆盖才算消耗，缺任一分片原块
-  保持可见、越界候选不提交；`consumed`＝窗口位前缀（空块/工具块随批销账）。
+  保持可见、越界候选不提交；部分消费后从剩余分片继续送凝。
+  `consumed`＝窗口位前缀（空块/工具块随批销账）。发布事务复核旧水位、
+  链和待提交原文，范围外追加仍可提交。
   `orig_seq=0` 合法（判空用 `is not None`，勿用 `or`）。
-- **失败留账**：S2a/截断/超时/模型调用/产出解析/commit 任一阶段失败 ⇒
-  mark 不动＋`condense_debt{stage,detail,committed_mark,batches_committed,
-  next_retry_ts}` 落 `batch_starts` 列；`condense_turn_end` 记
-  failed/partial 账、退避到期重试成功才清。`_run_condense_pipeline` 每批
-  成功后**从已提交水位 `_read_origin` 重定位**（DB 真相优先；合成
-  pending 直喂时 `_read_origin` 为空 ⇒ 窗口前缀切片兜底，window 恒为
-  pending 前缀、consumed 是窗口位）。
+- **失败留账**：失败批守住旧水位，已提交前批保留。
+  `condense_debt` 通过独立元数据更新落 `batch_starts`，索引或裁板写失败
+  时仍可记录。退避到期后从已提交水位续跑，低于触发线也能重试，成功才清账。
+  `_run_condense_pipeline` 每批成功后**从已提交水位 `_read_origin` 重定位**，
+  显式合成窗口测试用 `verify_source=False` 沿输入前缀位消费。
 - **一致发布**：`save_memory`/`_save_to_db` 统一走 `_publish_memory`——
   memory 行（链+condense_mark+batch_starts 簿记）＋ `_sync_nodes_tx`
   （编号分配在同事务连接上读旧索引）＋ `trim_below_tx`，一个
@@ -117,17 +127,16 @@
   entries 原样**（load_memory 下游依赖原始字段形态；归一化只在
   memory_nodes 派生侧 `_plan_node_rows`）。
 - **同版本读**：`read_snapshot` 在单读事务（显式 BEGIN）取
-  {state,nodes,board_rows}；板不新鲜先 `rebuild_board`（带水位版本闸：
-  事务内 mark 变了整建作废）最多两轮，仍不新鲜 `board_rows=None` 走
-  懒重建。`build_ctx`/装配消费快照，不再分三次读跨版本。
+  会话自己的水位、记忆节点和缓存板；板不新鲜或关闭时使用同事务读出的
+  原文。卡身份、权限、模型来源沿用卡锚。`rebuild_board` 在一个写事务内
+  读取当前水位和原文，并替换板行。
 - **CAS/局部复活**：`memory_domain.save_chain(expected_chain=)` 事务内
-  比对当前链，不一致整链不写（migrate/reclaim 用）；`revive_sunk`＝
+  比对当前链，不一致整链不写。归拢、迁移、回收的整链发布同样核对读入版本；
+  `revive_sunk`＝
   读-改-写同事务的局部生命周期更新（sunk→False＋lastUsedAt，连带
   memory_nodes.sunk 同事务翻位），`memory_expand` 复活走它——旧整链
-  快照覆盖不了新记忆。`context_board.rebuild_board` 提交前复核水位。
-- 验收：`tests/test_section3_watermark_publish.py`（10 例：分片全/缺覆盖、
-  S2a/截断/部分批留账、节点索引/裁板注入失败整体回滚、并发读旧或新整版、
-  CAS 拒旧链、快照三件套同版本）。
+  快照覆盖不了新记忆。
+- 验收：`tests/test_section3_watermark_publish.py`。
 
 ## 异常正文隔离（quarantine/ctx_content，2026-11-20）
 

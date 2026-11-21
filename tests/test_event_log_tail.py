@@ -185,3 +185,46 @@ def test_tail_reads_last_line_without_trailing_newline(tmp_path, monkeypatch):
     monkeypatch.setattr(event_log, "event_path", lambda w, c: p)
     got = event_log.timeline("w", "c", tail=3)
     assert [int(x["seq"]) for x in got] == [8, 9, 10], got
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# [窄投影补详情 2026-11-21 · 性能批次二] timeline_events 按 seq 精确取
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_timeline_events_returns_full_records(tmp_path, monkeypatch):
+    """按 seq 取完整记录：命中回原文，缺失的两边都不进。"""
+    records = [{"seq": i, "type": "tool_result",
+                "data": {"tool": "t", "result": {"content": "x" * (i * 100)}}}
+               for i in range(1, 9)]
+    _install(tmp_path, monkeypatch, records)
+    items, revoked = event_log.timeline_events("w", "c", [3, 7, 999])
+    seqs = sorted(int(x["seq"]) for x in items)
+    assert seqs == [3, 7]
+    assert revoked == set()
+    big = next(x for x in items if x["seq"] == 7)
+    assert len(big["data"]["result"]["content"]) == 700   # 完整原文
+
+
+def test_timeline_events_marks_revoked(tmp_path, monkeypatch):
+    """被 revoke 覆盖的 seq：不进 items、进 revoked——前端据此显示「已撤销」。"""
+    records = [
+        {"seq": 1, "type": "user_message", "data": {"content": "a"}},
+        {"seq": 2, "type": "assistant_text", "data": {"content": "b"}},
+        {"seq": 3, "type": "revoke", "data": {"from_seq": 1}},
+        {"seq": 4, "type": "user_message", "data": {"content": "c"}},
+    ]
+    _install(tmp_path, monkeypatch, records)
+    items, revoked = event_log.timeline_events("w", "c", [1, 2, 4])
+    assert sorted(int(x["seq"]) for x in items) == [4]
+    assert revoked == {1, 2}
+
+
+def test_timeline_events_bad_seqs_ignored(tmp_path, monkeypatch):
+    """脏输入（非数字/空列表）不炸、只忽略。"""
+    records = [{"seq": 1, "type": "user_message", "data": {"content": "a"}}]
+    _install(tmp_path, monkeypatch, records)
+    items, revoked = event_log.timeline_events("w", "c", ["x", "", 1])
+    assert len(items) == 1 and int(items[0]["seq"]) == 1
+    assert revoked == set()
+    items2, revoked2 = event_log.timeline_events("w", "c", [])
+    assert items2 == [] and revoked2 == set()

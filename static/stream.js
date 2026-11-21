@@ -46,10 +46,38 @@ import { createAssembler } from "./esm/assembler.js?v=42";
 import { createChatView } from "./esm/flow/chat-view.js?v=8";
 import { createMessageItem } from "./esm/flow/message-item.js?v=1";
 // [5715 · 性能] 思考块的增量渲染（直播路径 O(N²) → O(N)）
-import { createThinkRenderer, createTextUpdater } from "./esm/flow/think-stream.js?v=1";
+import { createThinkRenderer, createTextUpdater, rebuildReasoningText } from "./esm/flow/think-stream.js?v=1";
 // [5715 · 性能] 同一节点的重渲染最小间隔（正文流 O(N²) ⇒ 节流）
 import { createRenderGate } from "./esm/flow/render-gate.js?v=1";
 import { createCopyButton, createResendButton } from "./esm/flow/message-actions.js?v=1";
+
+/* [详情 64 上限补齐 · 任务二] 详情回取按 60/批并发合流（可单测的纯函数）：
+   getEvent(chunk) → Promise<{items, revoked}>；部分批失败 ⇒ 该批 seq 入
+   ``failed`` 由调用方留 brief 标记供单独重试；全灭 ⇒ 按原语义拒绝。 */
+export async function fetchTimelineBatched(getEvent, seqs) {
+  const list = [];
+  for (const s of seqs || []) {
+    const n = Number(s);
+    if (Number.isFinite(n) && list.indexOf(n) < 0) list.push(n);
+  }
+  if (!list.length) return { items: [], revoked: [] };
+  if (list.length <= 64) return getEvent(list);
+  const chunks = [];
+  for (let i = 0; i < list.length; i += 60) chunks.push(list.slice(i, i + 60));
+  const items = [], revoked = [], failed = [];
+  await Promise.all(chunks.map((c) =>
+    Promise.resolve(getEvent(c)).then((r) => {
+      for (const it of (r && r.items) || []) items.push(it);
+      for (const rv of (r && r.revoked) || []) revoked.push(rv);
+    }).catch(() => { for (const s of c) failed.push(s); })
+  ));
+  if (!items.length && !revoked.length && failed.length === list.length) {
+    const err = new Error("timeline/event: all batches failed");
+    err.failed = failed;
+    throw err;
+  }
+  return { items, revoked, failed };
+}
 
 /* [画板四机制 T1 2026-10-16] 会话表：一块画板＝**一张卡**＋它的全部状态。
    键 `${wid}/${cid}`；字段即原 `current` 单例的原样搬运（asm/view/liveSlot/
@@ -94,7 +122,11 @@ const BOARD_CFG = Object.assign(
     /* [运行态单一真相源 2026-10-21] 收口去抖：done/error/turn_end 到达后先等这么久。
        为什么去抖：自动续轮的下一轮 run_start 可能紧跟在上一轮收口之后（毫秒级），
        不去抖的话主键/运行条会「收 → 起」闪一下。窗口内来了 run_start 就取消收口。 */
-    settleDebounceMs: 400 },
+    settleDebounceMs: 400,
+    /* [性能批次二·任务二 · A/B 对照旗标] 两例同码、B 侧注入
+       ``__FLOW_BOARD__ = {boundedMount:0, prependIncr:0}`` 即回到改前
+       行为（全量挂载＋前插整窗重放）。 */
+    boundedMount: 1, prependIncr: 1 },
   (typeof window !== "undefined" && window.__FLOW_BOARD__) || {}
 );
 
@@ -751,7 +783,7 @@ const BOARD_CFG = Object.assign(
         恒一行 ＝ 前导槽（工具图标／运行中扫光／错误红点） ＋ 工具名 ＋
         参数摘要 ＋ 状态（运行中动画／✓ 耗时／✗ 错误）；下一行是结果首段摘要；
         点整行展开完整内容（IN/OUT 卡，max-height 内滚）。默认折叠。 */
-  function renderTool(node) {
+  function renderTool(node, st) {
     const call = node.call || {};
     const res = node.result || {};
     const hasResult = !!node.result;
@@ -791,13 +823,56 @@ const BOARD_CFG = Object.assign(
     let bodyBuilt = false;
     row.appendChild(body);
     row.classList.add("has-detail");
+    /* [窄投影 2026-11-21] brief 结果（result 字段只回了占位）展开时先按
+       _resultSeq 回取完整记录、合并进 node.result 再渲染——首屏不再随
+       tail=400 下载 310KB 不渲染的内容（实测占大卡载荷 38%）。 */
+    function fillBody() {
+      body.textContent = "";
+      const cur = node.result || {};
+      const parts = renderResultContent(cur.result || cur);
+      for (const p of parts) body.appendChild(p);
+    }
+    function buildBody() {
+      if (node._resultBrief && st) {
+        body.textContent = "加载完整结果…";
+        _fetchTimelineItems(st, [node._resultSeq]).then((resp) => {
+          const items = (resp && resp.items) || [];
+          const rec = items.find((i) => i.seq === node._resultSeq);
+          if (rec && rec.data) {
+            node.result = rec.data;
+            node._resultBrief = false;
+            fillBody();
+            return;
+          }
+          node._resultBrief = false;
+          bodyBuilt = false;
+          body.textContent = ((resp && resp.revoked) || []).length
+            ? "（该结果记录已被撤销）"
+            : "（完整结果不可得）";
+        }).catch(() => {
+          node._resultBrief = true;      // 保持可取：下次展开重试
+          bodyBuilt = false;
+          body.textContent = "完整结果加载失败（再点开一次重试）";
+        });
+        return;
+      }
+      fillBody();
+    }
+    /* [有界挂载·任务二] 展开态随节点恢复：行被释放重挂后依旧展开，
+       已取回的全文在 node.result 上（fetch 时已合并进节点）。 */
+    if (node._detOpen) {
+      bodyBuilt = true;
+      buildBody();
+      row.classList.add("open");
+    }
     row.onclick = (e) => {
       if (e.target.closest(".tool-body")) return;
       if (!bodyBuilt) {
         bodyBuilt = true;
-        for (const p of renderResultContent(res.result || res)) body.appendChild(p);
+        buildBody();
       }
       row.classList.toggle("open");
+      node._detOpen = row.classList.contains("open");
     };
     return [row];
   }
@@ -827,7 +902,12 @@ const BOARD_CFG = Object.assign(
         (node.pending ? " pending" : "");
       el.dataset.seq = node.seq;
       const text = d.content == null ? "" : String(d.content);
-      if (kind === "assistant") el.innerHTML = '<div class="md">' + renderMarkdown(text) + "</div>";
+      if (kind === "assistant") {
+        const _t0 = (typeof performance !== "undefined") ? performance.now() : 0;
+        el.innerHTML = '<div class="md">' + renderMarkdown(text) + "</div>";
+        if (typeof window !== "undefined" && window.__PERF_SEG)
+          window.__PERF_SEG.md += performance.now() - _t0;
+      }
       else el.textContent = text;
       return el;
     };
@@ -840,11 +920,30 @@ const BOARD_CFG = Object.assign(
   };
   let _msgRenderers = FALLBACK_MSG_RENDERERS;
 
+  /* [性能批次二 · 探针] 首屏分段账：md＝消息行构建（含 Markdown 格式化）、
+     mount＝座位落位、scroll＝滚动测量/校正（后两者在 chat-view.js 记）。
+     performance.now() 每调用 ~微秒级，埋点成本可忽略。 */
+  const _SEG = (typeof window !== "undefined")
+    ? (window.__PERF_SEG = window.__PERF_SEG || { md: 0, mount: 0, scroll: 0 })
+    : { md: 0, mount: 0, scroll: 0 };
+  function _timed(fn) {
+    return (a) => {
+      const t0 = performance.now();
+      try { return fn(a); } finally { _SEG.md += performance.now() - t0; }
+    };
+  }
+
   /** workspace 注入富消息渲染器（md 渲染 / 卡间信头剥离 / 元信息行）。
       [对话流照抄 dsh v3] user 口改成 `userHtml(text)`：气泡**外壳**归
       flow/message-item（dsh MessageItem 的几何原值），正文 HTML 仍由本项目格式化。 */
   function setMessageRenderers(m) {
-    if (m && m.userHtml && m.assistant && m.cardmsg) _msgRenderers = m;
+    if (m && m.userHtml && m.assistant && m.cardmsg) {
+      _msgRenderers = {
+        userHtml: _timed(m.userHtml),
+        assistant: _timed(m.assistant),
+        cardmsg: _timed(m.cardmsg),
+      };
+    }
   }
 
   /** 用户气泡＝flow/message-item（dsh MessageItem 移植件）。 */
@@ -899,7 +998,7 @@ const BOARD_CFG = Object.assign(
     const pad = (n) => String(n).padStart(2, "0");
     return pad(d.getHours()) + ":" + pad(d.getMinutes());
   }
-  function renderAssistant(node) {
+  function renderAssistant(node, st) {
     const el = _msgRenderers.assistant(node);
     if (!el) return null;  // 占位串-only 泡剥完为空 → 整泡不渲染
     // 思考块插在正文之前（位置＝数据的函数：思考属本轮 assistant）
@@ -911,11 +1010,60 @@ const BOARD_CFG = Object.assign(
         .split("(系统注入的消息，无模型思考记录)").join("");
       // [5715 · 性能] 走增量渲染器：直播时每帧只**追加**新增部分（不重写整块）。
       if (reasoning) {
-        const think = _thinkRenderer.row(node.key, reasoning, { done: true });
+        const opts = { done: true };
+        /* [窄投影 2026-11-21] 思考含 brief 段 ⇒ 展开时按贡献 seqs 取回原文、
+           **按段序重拼**全文（折叠摘要＝首行，预览已满足）。 */
+        if (_hasBriefSegs(node) && st) {
+          opts.briefLoad = () => _loadFullReasoning(node, st);
+        }
+        /* [有界挂载·任务二] 展开态记在节点上：行移出窗口被释放后重挂，
+           节点仍带着 _thinkOpen ⇒ 恢复成展开（全文在 node.reasoning 上）。 */
+        opts.open = !!node._thinkOpen;
+        opts.onToggle = (o) => { node._thinkOpen = !!o; };
+        const think = _thinkRenderer.row(node.key, reasoning, opts);
         if (md) el.insertBefore(think, md); else el.appendChild(think);
       }
     }
     return withDate(node, el);
+  }
+
+  /** [窄投影] 思考是否含 brief 贡献段（含 brief ⇒ 展开要回取原文）。 */
+  function _hasBriefSegs(node) {
+    const segs = node._reasoningSegs || [];
+    for (const s of segs) if (s && s.brief) return true;
+    return false;
+  }
+
+  /* [窄投影·修 2026-11-21] 思考全文补取——**按贡献段序重拼**，不做子串替换：
+     · 两段预览文本相同 ⇒ 段序拼接不会错位（旧实现 .replace 撞首个匹配）；
+     · 详情回包 ``revoked`` 列出的 seq ⇒ 该段换占位标记，**旧预览不再冒充全文**；
+     · 找不到的 seq（既未命中也未列撤销）⇒ 保留预览文本（缺段如实留预览）；
+     · 取回失败 ⇒ promise 拒绝，由 think-stream 复位 _fullLoaded 允许重试；
+     · 请求用发起时的会话 st.cid——切走后到达的详情仍归属发起会话与节点。 */
+  function _loadFullReasoning(node, st) {
+    const segs = node._reasoningSegs || [];
+    const seqs = [];
+    for (const s of segs) {
+      if (s && s.brief && seqs.indexOf(s.seq) < 0) seqs.push(s.seq);
+    }
+    if (!seqs.length) return Promise.resolve(String(node.reasoning || ""));
+    return _fetchTimelineItems(st, seqs).then((resp) => {
+      node.reasoning = rebuildReasoningText(
+        segs, (resp && resp.items) || [], (resp && resp.revoked) || []);
+      /* [64 上限补齐] 已确认段把全文/撤销标记**写回 seg.text 并清 brief**——
+         未确认段（分批失败/缺段）仍带 brief：下次展开只重试它们，段序不变、
+         已确认全文不丢；全部确认 ⇒ 簿记清空、不再懒取。 */
+      const bySeq = new Map(((resp && resp.items) || []).map((i) => [Number(i.seq), i]));
+      const rvset = new Set(((resp && resp.revoked) || []).map(Number));
+      for (const s of segs) {
+        if (!s || !s.brief) continue;
+        const it = bySeq.get(Number(s.seq));
+        if (rvset.has(Number(s.seq))) { s.text = "〔该段思考已撤销〕"; s.brief = false; }
+        else if (it && it.data && it.data.text != null) { s.text = String(it.data.text); s.brief = false; }
+      }
+      node._reasoningSegs = segs.some((s) => s && s.brief) ? segs : null;
+      return node.reasoning;
+    });
   }
   function renderCardMsg(node) { return _msgRenderers.cardmsg(node); }
 
@@ -931,15 +1079,116 @@ const BOARD_CFG = Object.assign(
     injection: renderInjection,
   };
 
-  function renderNode(node) {
+  function renderNode(node, st) {
     const fn = KIND_RENDER[node.kind] || renderSys;
-    const out = fn(node) || [];
+    /* [性能批次二 · 探针] 按节点类型记行构建耗时——mount 段的归因子表。
+       _SEG.nodes = {kind: ms}（µs 级埋点，探针直读）。 */
+    const _t0 = (typeof performance !== "undefined") ? performance.now() : 0;
+    const out = fn(node, st) || [];
+    if (typeof window !== "undefined" && window.__PERF_SEG) {
+      const ns = (window.__PERF_SEG.nodes = window.__PERF_SEG.nodes || {});
+      ns[node.kind] = (ns[node.kind] || 0) + performance.now() - _t0;
+    }
     const els = Array.isArray(out) ? out : [out];
     for (const el of els) {
       if (!el) continue;
       if (el.dataset && el.dataset.seq === undefined) el.dataset.seq = node.seq;
     }
-    return els.filter(Boolean);
+    const keep = els.filter(Boolean);
+    /* [窄投影] brief 节点的 step-detail 只装了预览 fmtData——把「点开详情」
+       接到按需取回：首次展开时 fetch 完整记录替换 pre 文本。
+       孤儿思考节点不走 base（无 _brief）但带 _reasoningSegs，同样接入。 */
+    if ((node._brief || _hasBriefSegs(node)) && st) {
+      _attachLazyDetail(keep, node, st);
+    }
+    return keep;
+  }
+
+  /* ── 窄投影详情补取（2026-11-21 · 性能批次二）──────────────────
+     brief 节点展开时按 seq 回取完整记录（GET timeline/event）。
+     失败给「加载失败」并可重试；revoked 如实显示「已撤销」。
+     [详情 64 上限补齐 · 性能批次二·任务二] 服务端单次上限 64 个 seq：
+     超过就按批并发、按贡献段序合流。部分批次失败 ⇒ 已确认的批次内容
+     保留、失败批次的 seq 记入 ``failed``（调用方留其 brief 标记，
+     下次展开单独重试）；全灭 ⇒ 按原语义拒绝（允许整体重试）。 */
+  const DETAIL_BATCH = 60;                 // 服务端上限 64，留 4 格余量
+  function _fetchTimelineItems(st, seqs) {
+    const real = String(st.cid).split("@")[0];
+    return fetchTimelineBatched(
+      (chunk) => API.getTimelineEvent(st.wid, real, chunk, { session: st.cid }),
+      seqs);
+  }
+
+  /** 补回一条完整记录（sys/injection 类节点：详情＝fmtData(整条 data)）。 */
+  function _loadSysDetail(det, node, st) {
+    det.textContent = "加载详情…";
+    /* 孤儿思考节点的正文来自多条 reasoning 合流——按贡献段序取回重拼
+       （与 _loadFullReasoning 同口径：段序拼接、撤销段换标记、缺段留预览）。 */
+    const segs = node._reasoningSegs || [];
+    const seqs = [];
+    if (segs.length) {
+      for (const s of segs) {
+        if (s && seqs.indexOf(s.seq) < 0) seqs.push(s.seq);
+      }
+    } else {
+      seqs.push(node.seq);
+    }
+    _fetchTimelineItems(st, seqs).then((resp) => {
+      if (!det.isConnected) return;   // 切走/重建后到达：不往孤儿元素写
+      const items = (resp && resp.items) || [];
+      const revoked = new Set((resp && resp.revoked) || []);
+      if (segs.length) {
+        const bySeq = new Map(items.map((i) => [i.seq, i]));
+        const parts = [];
+        for (const s of segs) {
+          if (!s) continue;
+          const it = bySeq.get(s.seq);
+          if (it && it.data && it.data.text != null) parts.push(String(it.data.text));
+          else if (revoked.has(Number(s.seq))) parts.push("（该段思考已被撤销）");
+          else parts.push(String(s.text || ""));
+        }
+        det.textContent = parts.length ? parts.join("") : "（完整内容已被撤销或不可得）";
+        node._detFull = det.textContent;   // [有界挂载] 随节点恢复展开
+        return;
+      }
+      const rec = items.find((i) => i.seq === node.seq);
+      if (rec) { det.textContent = fmtData(rec.data); node._detFull = det.textContent; return; }
+      det.textContent = revoked.size
+        ? "（该记录已被撤销）"
+        : "（完整内容不可得）";
+      node._detFull = det.textContent;
+    }).catch(() => {
+      if (!det.isConnected) return;
+      det._fullLoaded = false;            // 允许下次展开重试
+      det.textContent = "详情加载失败（再点开一次重试）";
+    });
+  }
+
+  /** brief 节点的 step-detail 改懒加载：首次展开才取完整记录。
+      [有界挂载·任务二] 展开态/已取回文本随节点恢复（行释放重挂不丢）。 */
+  function _attachLazyDetail(els, node, st) {
+    for (const el of els) {
+      if (!el || !el.querySelector) continue;
+      const det = el.querySelector(".step-detail");
+      if (!det) continue;
+      if (node._detOpen) {
+        det.style.display = "block";
+        det._fullLoaded = true;
+        if (node._detFull != null) det.textContent = node._detFull;
+        else { det._fullLoaded = true; _loadSysDetail(det, node, st); }
+      }
+      const orig = el.onclick;
+      el.onclick = (e) => {
+        if (e.target.tagName === "PRE") return;
+        const opening = det.style.display !== "block";
+        node._detOpen = opening;
+        if (opening && !det._fullLoaded) {
+          det._fullLoaded = true;
+          _loadSysDetail(det, node, st);
+        }
+        if (orig) orig(e);
+      };
+    }
   }
 
   /* ==================================================================
@@ -961,7 +1210,7 @@ const BOARD_CFG = Object.assign(
       mount: holder,
       renderRow: (key) => {
         const node = st.asm.snapshot().nodes.get(key);
-        return node ? renderNode(node) : [];
+        return node ? renderNode(node, st) : [];
       },
       onLoadOlder: () => { loadEarlier(st); },
       runningStart: () => st.turnStart,
@@ -974,6 +1223,9 @@ const BOARD_CFG = Object.assign(
       const node = st.asm.snapshot().nodes.get(key);
       return !!node && node.kind === "user";
     });
+    /* [有界挂载·任务二] 行移出窗口 ⇒ 宿主侧渲染缓存同步释放
+       （思考渲染器按键持有元素，不放＝DOM 白释放）。 */
+    st.view.setOnUnmount((key) => { _thinkRenderer.drop(key); });
     return st.view;
   }
 
@@ -994,34 +1246,84 @@ const BOARD_CFG = Object.assign(
       renderSnapshot(st, st.asm.snapshot());
       return true;
     }
-    /* ② 窗口已到顶，但后端还有更早的 ⇒ 拉一段更早的，合并后重建。
+    /* ② 窗口已到顶，但后端还有更早的 ⇒ 拉一段更早的**前插增量装配**。
        [对话流分页 2026-10-20] 这就是「首次只拉尾部」的配套：不补这一段，
-       往上翻就翻不到历史了（功能退化）。 */
+       往上翻就翻不到历史了（功能退化）。
+       [性能批次二·任务二 2026-11-22] 改前 ``asm.rebuild(merged)`` 每次翻页
+       都重放**全部**已装记录 ⇒ 翻到第 N 页成本 ∝ N²。现在 ``asm.prepend``：
+       只装配本页记录＋受影响既有节点（跨页工具配对/同轮思考归位由装配器
+       内部按前插语义处理），DOM 侧照旧整窗交给 render() 复用座位——
+       有界挂载落地后新行也只进窗口区。 */
     if (!st.hasEarlier || st.loadingOlder) return false;
     st.loadingOlder = true;
     (async () => {
+      /* [任务二收尾] 两道闸：
+         ① 世代闸——等待期间会话可能重建（resync/replayTrace 整窗重装）或换绑；
+            回包先验「同会话同世代」再碰游标/装配，迟到旧页直接弃（游标写在
+            fetchTimeline 内同闸，见 _epoch）。
+         ② 失败≠到头——HTTP 错误 fetchTimeline 返 null：保内容/游标/
+            hasEarlier（按钮仍可用＝重试入口）；**空数组**才是真到头。 */
+      const epoch = (st.asmEpoch = (st.asmEpoch || 0) + 1);
+      const stAsm = st.asm;
+      const fresh = () => sessions.get(skey(st.wid, st.cid)) === st
+        && st.asm === stAsm && (st.asmEpoch || 0) === epoch;
       try {
         const before = st.firstSeq || 0;
         if (!before) { st.hasEarlier = false; return; }
         const older = await fetchTimeline(st, st.wid, st.cid, undefined,
-          { tail: BOARD_CFG.initialEvents, before: before });
-        if (!older || !older.length) { st.hasEarlier = false; return; }
-        const prevItems = st.loadedItems || [];
-        const seen = new Set(prevItems.map((x) => x.seq));
-        const merged = older.filter((x) => !seen.has(x.seq)).concat(prevItems);
-        const totalBefore = st.asm.snapshot().order.length;
-        st.loadedItems = merged;
-        st.asm.rebuild(merged);
-        const totalAfter = st.asm.snapshot().order.length;
-        const addedNodes = Math.max(0, totalAfter - totalBefore);
-        // 视野不跳：把窗口起点后移到「新增段的尾部」，用户看到的是接缝处
-        st.winStart = Math.max(0, addedNodes - BOARD_CFG.pageNodes);
+          { tail: BOARD_CFG.initialEvents, before: before, _epoch: epoch });
+        if (!fresh()) return;                    // 迟到：弃（游标未写，见 _epoch 闸）
+        if (older === null) return;              // 失败：全留，可再翻重试
+        if (!older.length) { st.hasEarlier = false; return; }
+        /* 对照旗标 ``prependIncr === false`` ⇒ 走改前整窗重放（A/B 对照臂）；
+           缺省走前插增量装配。 */
+        if (!BOARD_CFG.prependIncr) {
+          const prevItems = st.loadedItems || [];
+          const seen = new Set(prevItems.map((x) => x.seq));
+          const merged = older.filter((x) => !seen.has(x.seq)).concat(prevItems);
+          st.loadedItems = merged;
+          const totalBefore = st.asm.snapshot().order.length;
+          st.asm.rebuild(merged);
+          st.asmEpoch = (st.asmEpoch || 0) + 1;
+          const addedNodes = Math.max(0, st.asm.snapshot().order.length - totalBefore);
+          st.winStart = Math.max(0, addedNodes - BOARD_CFG.pageNodes);
+        } else {
+          /* [热路径·任务二收尾] 不再外去重不拷贝 loadedItems：asm.prepend
+             内部 seen 去重；loadedItems 只有整窗重放臂与快照恢复用，前插臂
+             不背 O(已装) 账。 */
+          const res = st.asm.prepend(older);
+          if (typeof window !== "undefined" && window.__PERF_SEG) {
+            const acc = (window.__PERF_SEG.prepend = window.__PERF_SEG.prepend
+              || { records: 0, added: 0, touched: 0, scanned: 0, ms: 0, pages: 0 });
+            acc.records += res.records || 0;
+            acc.added += res.added.length;
+            acc.touched += res.touched.length;
+            acc.scanned += res.scanned || 0;
+            acc.copied = (acc.copied || 0) + (res.copied || 0);
+            acc.ms += res.ms || 0;
+            acc.pages += 1;
+            (acc.perPage = acc.perPage || []).push(
+              { records: res.records, added: res.added.length,
+                touched: res.touched.length, scanned: res.scanned,
+                copied: res.copied || 0,
+                ms: Math.round((res.ms || 0) * 10) / 10 });
+          }
+          // 视野不跳：窗口起点对齐「新增段的尾部」，锚点保位由视图完成
+          st.winStart = Math.max(0, res.added.length - BOARD_CFG.pageNodes);
+        }
         renderSnapshot(st, st.asm.snapshot());
       } catch (e) {
         /* 拉不到就保持现状（不静默清空） */
       } finally {
         st.loadingOlder = false;
-        try { if (st.view) st.view.paintStatus(); } catch (e) { /* 零阻断 */ }
+        /* [任务二收尾] paintOlder 也要刷：失败/弃包路径不经 renderSnapshot，
+           按钮停在「载入历史…」且 disabled ⇒ 重试入口实际死掉。 */
+        try {
+          if (st.view) {
+            if (typeof st.view.paintOlder === "function") st.view.paintOlder();
+            if (typeof st.view.paintStatus === "function") st.view.paintStatus();
+          }
+        } catch (e) { /* 零阻断 */ }
       }
     })();
     return true;
@@ -1065,7 +1367,11 @@ const BOARD_CFG = Object.assign(
       const n = snap.nodes.get(k);
       if (!n) continue;
       const d = dayKey(n.ts);
-      n.__showDate = !!d && d !== prev;
+      const show = !!d && d !== prev;
+      /* [任务二·前插] 接缝节点的日期旗可能翻转（旧页同日记录插到它前面）——
+         变了要 rev++，否则那行不重渲染、分隔线就错挂/漏挂。 */
+      if (show !== !!n.__showDate) n.rev = (n.rev || 0) + 1;
+      n.__showDate = show;
       if (d) prev = d;
     }
   }
@@ -1089,7 +1395,11 @@ const BOARD_CFG = Object.assign(
     v.paintOlder();
     v.paintStatus();
     // [5715 · 性能] 思考渲染器的缓存只留**当前还挂着的节点**（防持有旧元素）
-    _thinkRenderer.prune(new Set(snap.order));
+    // [有界挂载·任务二] 「还挂着」＝挂载区间内（窗口外的随行释放一起放）
+    const _m = (typeof v._mounted === "function") ? v._mounted() : null;
+    _thinkRenderer.prune(_m
+      ? new Set(snap.order.slice(_m.lo, _m.hi))
+      : new Set(snap.order));
     st.renderedOrder = snap.order;
     logInfo("[flow-render] snapshot(" + win.length + "/" + total + " nodes)");
   }
@@ -1457,6 +1767,7 @@ const BOARD_CFG = Object.assign(
         st.hasEarlier = !!saved.has_earlier;
         st.loadedItems = saved.items;
         st.loadedOnce = true;
+        st.asmEpoch = (st.asmEpoch || 0) + 1;
         renderSnapshot(st, st.asm.rebuild(saved.items));
         if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
       }
@@ -1477,7 +1788,7 @@ const BOARD_CFG = Object.assign(
         const a = saved.items[saved.items.length - 1], b = items[items.length - 1];
         sameView = (a && a.seq) === (b && b.seq);
       }
-      if (!saved || !sameView) renderSnapshot(st, st.asm.rebuild(items));
+      if (!saved || !sameView) { st.asmEpoch = (st.asmEpoch || 0) + 1; renderSnapshot(st, st.asm.rebuild(items)); }
       _snapSave(st, wid, cid, items);
     } finally {
       if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
@@ -1515,6 +1826,7 @@ const BOARD_CFG = Object.assign(
     if (!liveComplete) {
       // 实时没送全 ⇒ 去落盘取**尾部窗口**（与打开卡同款），不拉全量。
       items = await fetchTimeline(st, wid, cid, undefined, { tail: BOARD_CFG.initialEvents });
+      st.asmEpoch = (st.asmEpoch || 0) + 1;
       snap = st.asm.rebuild(items || []);
       if (items && items.length) _snapSave(st, wid, cid, items);
     }
@@ -1539,10 +1851,21 @@ const BOARD_CFG = Object.assign(
       /* [席位会话] cid＝会话键（card 或 card@N）：URL 路径取真卡号、
          时序按 session 参数分账。 */
       const real = String(cid).split("@")[0];
-      const o = Object.assign({}, opts || {}, { session: cid });
+      /* [窄投影 2026-11-21 · 性能批次二] view=brief：折叠类事件的重字段
+         只回预览（折叠渲染零可见变化），展开时按 seq 走 timeline/event
+         按需补全文。旧后端忽略此参照常回全文 ⇒ 前端无 _brief 标记、
+         沿旧路径出图（兼容语义不变）。 */
+      /* [任务二收尾·迟到回包] ``opts._epoch``＝发起时的装配世代；响应落地时
+         世代已变（会话重建/换绑）⇒ **游标也不许写**（旧页 first_seq 会盖掉
+         新世代的游标）。省略 _epoch 的调用方按原语义直写。 */
+      const epoch = opts && opts._epoch;
+      const o = Object.assign({}, opts || {}, { session: cid, view: "brief" });
+      delete o._epoch;
       const resp = await API.getTimeline(wid, real, from, o);
+      const epochOk = epoch === undefined
+        || (st && (st.asmEpoch || 0) === epoch);
       const items = (resp && resp.items) || [];
-      if (st && items.length) {
+      if (st && items.length && epochOk) {
         /* [2026-11-07 · 写乱序] items 现按 (ts,seq) 时间序排——末条是「最新」
            但未必是最大 seq（晚写的事件拿大号）。游标语义＝「已见最大落盘号」，
            取全表最大值，否则增量拉取会漏掉刚乱序落盘的高号记录。 */
@@ -1553,7 +1876,7 @@ const BOARD_CFG = Object.assign(
       /* [对话流分页 2026-10-20] 窗口边界记在会话状态上：
            hasEarlier — 后端是否还有更早的（决定「加载更早」是否可用）
            firstSeq   — 已加载的最早 seq（下次 before 的锚点） */
-      if (st && resp) {
+      if (st && resp && epochOk) {
         st.hasEarlier = !!resp.has_earlier;
         if (typeof resp.first_seq === "number" && resp.first_seq > 0) st.firstSeq = resp.first_seq;
       }
@@ -1765,7 +2088,7 @@ const BOARD_CFG = Object.assign(
     try {
       const items = await fetchTimeline(st, st.wid, st.cid,
         undefined, { tail: BOARD_CFG.initialEvents });
-      if (items) renderSnapshot(st, st.asm.rebuild(items));
+      if (items) { st.asmEpoch = (st.asmEpoch || 0) + 1; renderSnapshot(st, st.asm.rebuild(items)); }
     } finally {
       st._epochSync = false;
       st.settled = prevSettled; // 回合原本已结算 ⇒ 保持结算（迟到帧仍不收）

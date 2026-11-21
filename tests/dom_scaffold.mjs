@@ -94,6 +94,7 @@ export function setupDom({ html = CHAT_HTML, url = "http://localhost/" } = {}) {
   globalThis.ResizeObserver = class {
     constructor(cb) { this.cb = cb; observers.push(this); }
     observe(el) { this.el = el; }
+    unobserve(el) {}
     disconnect() {}
   };
 

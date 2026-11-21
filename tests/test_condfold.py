@@ -258,7 +258,7 @@ async def test_batch_loop_multi_batch_and_fail_stop(sandbox, work, monkeypatch):
         return ""
 
     monkeypatch.setattr(memory_store, "_condense_call", fake)
-    await memory_store._run_condense_pipeline(wid, cid, pending, 0)
+    await memory_store._run_condense_pipeline(wid, cid, pending, 0, verify_source=False)
     st = memory_store.load_memory(wid, cid)
     assert st["mark"] == 30 and st["batch_count"] == 5          # 批循环推进到清空
     assert len(st["entries"]) == 5                              # 每批产出一个 L1 结论
@@ -284,7 +284,7 @@ async def test_batch_loop_multi_batch_and_fail_stop(sandbox, work, monkeypatch):
         return ""
 
     monkeypatch.setattr(memory_store, "_condense_call", fake2)
-    await memory_store._run_condense_pipeline(wid, cid, pending, 0)
+    await memory_store._run_condense_pipeline(wid, cid, pending, 0, verify_source=False)
     st2 = memory_store.load_memory(wid, cid)
     assert st2["mark"] == 6 and st2["batch_count"] == 1         # 单批失败即停、水位留在批 1 尾
     assert len(st2["entries"]) == 1
@@ -309,7 +309,7 @@ async def test_one_trigger_condenses_only_one_batch(sandbox, work, monkeypatch):
 
     monkeypatch.setattr(memory_store, "_condense_call",
                         three_stage_stub(gist="只压一批", record=calls))
-    await memory_store._run_condense_pipeline(wid, cid, pending, 0)
+    await memory_store._run_condense_pipeline(wid, cid, pending, 0, verify_source=False)
     st = memory_store.load_memory(wid, cid)
     print("mark=", st["mark"], "batch_count=", st["batch_count"], "entries=", len(st["entries"]))
     assert st["mark"] == 6, "只推一批（6 条），不许一路压到 30"
@@ -361,7 +361,7 @@ async def test_recondense_same_window_no_duplicate(sandbox, work, monkeypatch):
 
     monkeypatch.setattr(memory_store, "_condense_call",
                         three_stage_stub(gist="新结论"))
-    await memory_store._run_condense_pipeline(wid, cid, pending, 0)
+    await memory_store._run_condense_pipeline(wid, cid, pending, 0, verify_source=False)
     st = memory_store.load_memory(wid, cid)
     # [2026-10-27] 条目字段名是 `gist`（旧结构叫 `conclusion`），两者都认。
     cons = [e.get("conclusion") or e.get("gist") for e in st["entries"]]

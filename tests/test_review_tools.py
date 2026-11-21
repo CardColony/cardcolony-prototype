@@ -496,7 +496,8 @@ async def test_step_stops_when_seat_turn_fails(sandbox, monkeypatch):
     monkeypatch.delenv(review_runner.ENV_NO_AUTO, raising=False)
     r = await review_runner.run_once(wid, rid)
 
-    assert r["reason"] == "seat_done" and r["continued"] is False, r
+    assert r["reason"] == "seat_failed" and r["continued"] is False, r
+    assert r["accepted"] is False
     assert r.get("error"), "失败要如实上报"
     assert dispatched == [], "席位回合挂了不该派活给子卡"
 
@@ -1260,3 +1261,397 @@ async def test_step_dispatches_promote_when_all_passed(sandbox, monkeypatch):
     assert delivered == [cid] and r["reason"] == "dispatch_promote", r
     st2 = await review_store.state_of(wid, rid)
     assert st2.get("promote_asked"), "已请过定稿要落成机械事实"
+
+
+# ================================================================ 被评正卡操作
+# [原型评审恢复与正卡操作 · 2026-11-25 任务书] read_review_status / resume_review
+# 两工具以调用卡为被评正卡，经伴生关系解析评审卡；台账登记＋属主兑现＋
+# 共享去重身份；点名席位按该席自己的阶段判据定步（不借自动挑席）。
+
+async def _open_main_batch(wid: str, cid: str, fids: list,
+                         cards: dict) -> str:
+    """开评审并快进过对齐闸 ⇒ 第二轮三席批，返回评审卡 id。"""
+    out = await card_tools._h_open_review(
+        wid, cid, {"card_id": cid, "brief": "背景/现状/评审"}, cards)
+    rid = out["data"]["review_card_id"]
+    await _advance_to_main_round(wid, rid)
+    return rid
+
+
+async def test_read_review_status_reports_facts(sandbox):
+    """查卡点：批次/稿次/逐席票态/下一步/等待方/身份自检——只读不起轮。"""
+    wid, cid, fids = await _make_work_with_functions(2)
+    cards = card_store.iter_card_metas(wid)
+    rid = await _open_main_batch(wid, cid, fids, cards)
+
+    out = await card_tools._h_read_review_status(wid, cid, {}, cards)
+    assert out.get("ok"), out
+    d = out["data"]
+    assert d["review_card"] == rid and d["batch"].startswith("rv_")
+    assert d["type"] == "requirements" and d["stage"] == "迭代区"
+    assert d["draft"] == 1 and d["is_target"] is True
+    assert {r["seat"] for r in d["members"]} == set(fids)
+    assert all(r["verdict"] == "未表态" and r["draft_ver"] is None
+               for r in d["members"])
+    assert d["next"]["tag"] == f"seat:{fids[0]}:speak"
+    assert d["waiting"]["party"] == "runner"
+    # 非被评卡（根卡）：无伴生评审卡 ⇒ 拒
+    root = str(work_store.work_card_id_of(wid) or "")
+    bad = await card_tools._h_read_review_status(wid, root, {}, cards)
+    assert not bad.get("ok")
+
+
+async def test_read_review_status_separates_old_vote_from_pending(sandbox):
+    """[v7/v10 分账 · card_982 实案] 旧稿票与当前稿缺票是两个可查事实：
+
+    席位批了 v1、草稿到 v2 ⇒ 该席 verdict=approve 但 draft_ver=1、
+    covered=False、stale=True——「v2 仍缺这一席的结果」如实显示，
+    绝不被旧票糊成「已表态」。"""
+    wid, cid, fids = await _make_work_with_functions(2)
+    cards = card_store.iter_card_metas(wid)
+    rid = await _open_main_batch(wid, cid, fids, cards)
+    await _seated(wid, rid, *fids)
+    for f in fids:
+        await review_store.approve(wid, rid, f)
+    await card_store.update_card(
+        wid, cid, {"requirements_draft": "v2 改稿"}, "漂移")
+    await review_runner.report_target_turn_end(wid, cid, "ok")
+
+    out = await card_tools._h_read_review_status(wid, cid, {}, cards)
+    d = out["data"]
+    assert d["draft"] == 2
+    rows = {r["seat"]: r for r in d["members"]}
+    assert rows[fids[0]]["verdict"] == "approve"
+    assert rows[fids[0]]["draft_ver"] == 1          # 票属 v1
+    assert rows[fids[0]]["covered"] is False        # 不覆盖 v2 ⇒ v2 缺票
+    assert rows[fids[0]]["stale"] is True
+
+
+async def test_resume_review_registers_and_shares_dedup(sandbox, monkeypatch):
+    """续跑：台账登记＋受理回执＋同一步重复请求共享同一 action_id。"""
+    from src.infra import intervention_store as _ist
+
+    wid, cid, fids = await _make_work_with_functions(2)
+    cards = card_store.iter_card_metas(wid)
+    rid = await _open_main_batch(wid, cid, fids, cards)
+
+    r1 = await review_runner.request_resume(wid, cid, spawn=False)
+    assert r1["ok"] and r1["outcome"] == "queued", r1
+    aid = r1["action_id"]
+    assert r1["step"]["batch"].startswith("rv_")
+    assert r1["step"]["next"] == f"seat:{fids[0]}:speak"
+    # 台账：policy/scope/target/biz 与自动续跑同一身份空间
+    row = _ist.store().get_action(wid, aid)
+    assert row["policy_id"] == "review_step_not_finished"
+    assert row["target"] == rid and row["mode"] == "continue"
+    assert row["biz_key"] == r1["biz_key"]
+    # 重复请求同一实际步 ⇒ 同一个 action_id（dedup）
+    r2 = await review_runner.request_resume(wid, cid, spawn=False)
+    assert r2["action_id"] == aid and r2["dedup"] is True
+
+
+async def test_resume_review_delivery_runs_step_once(sandbox, monkeypatch):
+    """登记→兑现链：deliver_registered_action 把 expect 送到属主复核执行。"""
+    from src.infra import intervention_runner as _ir
+
+    wid, cid, fids = await _make_work_with_functions(2)
+    cards = card_store.iter_card_metas(wid)
+    rid = await _open_main_batch(wid, cid, fids, cards)
+
+    seen: list[dict] = []
+
+    async def fake_seat(work_id, review_id, seat, st, *, kind, hint=""):
+        seen.append({"seat": seat, "kind": kind})
+        return {"seat": seat, "kind": kind, "voted": False, "vote": "",
+                "error": ""}
+
+    monkeypatch.setattr(review_runner, "_seat_turn", fake_seat)
+    monkeypatch.delenv(review_runner.ENV_NO_AUTO, raising=False)
+    r = await review_runner.request_resume(wid, cid, spawn=False)
+    assert r["outcome"] == "queued"
+    res = await _ir.deliver_registered_action(wid, r["action_id"])
+    assert res == "continue:1", res
+    assert seen == [{"seat": fids[0], "kind": "speak"}], seen
+
+
+async def test_resume_review_busy_keeps_action_for_redelivery(
+        sandbox, monkeypatch):
+    """忙冲突：评审场在跑 ⇒ continue:0、动作记 failed（恢复链可重投），
+    忙因留台账可查——不吞义务不谎报。"""
+    from src.infra import intervention_runner as _ir
+    from src.infra import intervention_store as _ist
+
+    wid, cid, fids = await _make_work_with_functions(2)
+    cards = card_store.iter_card_metas(wid)
+    rid = await _open_main_batch(wid, cid, fids, cards)
+
+    monkeypatch.delenv(review_runner.ENV_NO_AUTO, raising=False)
+    review_runner._RUNNING.add(f"{wid}/{rid}")       # 场被占着
+    try:
+        r = await review_runner.request_resume(wid, cid, spawn=False)
+        res = await _ir.deliver_registered_action(wid, r["action_id"])
+        assert res == "continue:0", res
+        row = _ist.store().get_action(wid, r["action_id"])
+        assert row["state"] == "failed"            # 可重投，不是 delivered
+    finally:
+        review_runner._RUNNING.discard(f"{wid}/{rid}")
+    # 释放后同一安排兑现一次
+    async def fake_seat(work_id, review_id, seat, st, *, kind, hint=""):
+        return {"seat": seat, "kind": kind, "voted": False,
+                "vote": "", "error": ""}
+    monkeypatch.setattr(review_runner, "_seat_turn", fake_seat)
+    res = await _ir.deliver_registered_action(wid, r["action_id"])
+    assert res == "continue:1", res
+    row = _ist.store().get_action(wid, r["action_id"])
+    assert row["state"] == "delivered"
+
+
+async def test_resume_review_named_seat_skips_member_order(
+        sandbox, monkeypatch):
+    """点名：members[1] 缺票时点名它——只为该席起步，不先跑 members[0]。"""
+    from src.infra import intervention_runner as _ir
+
+    wid, cid, fids = await _make_work_with_functions(3)
+    cards = card_store.iter_card_metas(wid)
+    rid = await _open_main_batch(wid, cid, fids, cards)
+    # members[0] 已发言未表态（其补投依据也已登记），members[1] 未发言：
+    # 自动序会先叫 members[0] 补投；点名 members[1] 应直接对它 speak。
+    await _seated(wid, rid, fids[0])
+    st = await review_store.state_of(wid, rid)
+    st_now = await review_store.status(wid, rid)
+    basis = review_runner._vote_nudge_basis(st, st_now)
+    await review_store.mark_seen(wid, rid, fids[0],
+                                 vote_nudge_basis=basis)
+
+    seen: list[tuple] = []
+
+    async def fake_seat(work_id, review_id, seat, st2, *, kind, hint=""):
+        seen.append((seat, kind))
+        return {"seat": seat, "kind": kind, "voted": False,
+                "vote": "", "error": ""}
+
+    monkeypatch.setattr(review_runner, "_seat_turn", fake_seat)
+    monkeypatch.delenv(review_runner.ENV_NO_AUTO, raising=False)
+    r = await review_runner.request_resume(wid, cid, seat=fids[1],
+                                           spawn=False)
+    assert r["ok"] and r["step"]["pin"]["seat"] == fids[1], r
+    assert r["step"]["next"] == f"seat:{fids[1]}:speak"
+    res = await _ir.deliver_registered_action(wid, r["action_id"])
+    assert res == "continue:1", res
+    assert seen == [(fids[1], "speak")], seen
+
+
+async def test_resume_review_named_seat_states(sandbox):
+    """点名各席真实状态：已投票/否决待回应/否决有新回应/补投已请未回——
+    各回各的事实，不乱起步。"""
+    wid, cid, fids = await _make_work_with_functions(3)
+    cards = card_store.iter_card_metas(wid)
+    rid = await _open_main_batch(wid, cid, fids, cards)
+    await _seated(wid, rid, *fids)
+
+    # f0 已投 approve ⇒ 已有当前票，回票和稿次不起步
+    await review_store.approve(wid, rid, fids[0])
+    r = await review_runner.request_resume(wid, cid, seat=fids[0],
+                                           spawn=False)
+    assert r["ok"] and r["outcome"] == "seat_no_step", r
+    assert r["reason"] == "seat_voted"
+    assert r["vote"]["verdict"] == "approve" and r["vote"]["draft_ver"] == 1
+
+    # f1 否决、正卡未回应 ⇒ awaiting_target_response（回应缺口，不起步）
+    await review_store.reject(wid, rid, fids[1])
+    r = await review_runner.request_resume(wid, cid, seat=fids[1],
+                                           spawn=False)
+    assert r["reason"] == "awaiting_target_response", r
+
+    # f1 否决后正卡交回了 ⇒ re_eval 是合法步
+    await review_store.mark_responded(wid, rid)
+    r = await review_runner.request_resume(wid, cid, seat=fids[1],
+                                           spawn=False)
+    assert r["ok"] and r["step"]["pin"]["kind"] == "re_eval", r
+
+    # f2 已发言未表态且补投依据未登记 ⇒ vote_nudge
+    r = await review_runner.request_resume(wid, cid, seat=fids[2],
+                                           spawn=False)
+    assert r["step"]["pin"]["kind"] == "vote_nudge", r
+
+    # 非成员 ⇒ 拒
+    r = await review_runner.request_resume(wid, cid, seat="fn_999",
+                                           spawn=False)
+    assert r["reason"] == "seat_not_member", r
+
+
+async def test_resume_review_stale_step_not_executed(sandbox, monkeypatch):
+    """在途换批：登记的步骤身份与属主现状不符 ⇒ stale_step 销账不执行。"""
+    from src.infra import intervention_runner as _ir
+    from src.infra import intervention_store as _ist
+
+    wid, cid, fids = await _make_work_with_functions(2)
+    cards = card_store.iter_card_metas(wid)
+    rid = await _open_main_batch(wid, cid, fids, cards)
+
+    r = await review_runner.request_resume(wid, cid, spawn=False)
+    aid = r["action_id"]
+
+    async def boom(*a, **k):
+        raise AssertionError("步骤过期绝不能再叫席")
+
+    # 批次换走（close_batch 清 batch）——登记的 batch/next 全过期
+    await review_store.close_batch(wid, rid, "人工收口")
+    monkeypatch.setattr(review_runner, "_seat_turn", boom)
+    monkeypatch.delenv(review_runner.ENV_NO_AUTO, raising=False)
+    res = await _ir.deliver_registered_action(wid, aid)
+    assert res == "continue:stale", res
+    row = _ist.store().get_action(wid, aid)
+    assert row["state"] == "stale"
+
+
+async def test_resume_review_old_batch_action_cannot_hit_new_batch(
+        sandbox, monkeypatch):
+    """旧批证据可读、旧请求不作用新批：close→重开，旧 action 销账。"""
+    from src.infra import intervention_runner as _ir
+    from src.infra import intervention_store as _ist
+
+    wid, cid, fids = await _make_work_with_functions(2)
+    cards = card_store.iter_card_metas(wid)
+    rid = await _open_main_batch(wid, cid, fids, cards)
+    r = await review_runner.request_resume(wid, cid, spawn=False)
+    old_aid, old_batch = r["action_id"], r["step"]["batch"]
+
+    await review_store.close_batch(wid, rid, "人工收口")
+    # 重开新批：草稿还在，open_review 起新 rv_（对齐批）
+    out = await card_tools._h_open_review(
+        wid, cid, {"card_id": cid, "brief": "重开"}, cards)
+    st2 = await review_store.state_of(wid, rid)
+    assert st2["batch"] and st2["batch"] != old_batch
+
+    async def boom(*a, **k):
+        raise AssertionError("旧批请求不许打新批")
+
+    monkeypatch.setattr(review_runner, "_seat_turn", boom)
+    monkeypatch.delenv(review_runner.ENV_NO_AUTO, raising=False)
+    res = await _ir.deliver_registered_action(wid, old_aid)
+    assert res == "continue:stale", res
+    row = _ist.store().get_action(wid, old_aid)
+    assert row["state"] == "stale"
+
+
+async def test_409_preserves_unspoken_and_nudge_basis(sandbox, monkeypatch):
+    """[011→012 实案] 场务占锁 409：席位回合早退 ⇒ 发言标记、被叫水位、
+    补票依据**一律不推进**——释放后按原步骤重叫，不吞不跳。"""
+    from src.api import routes
+
+    wid, cid, fids = await _make_work_with_functions(2)
+    cards = card_store.iter_card_metas(wid)
+    rid = await _open_main_batch(wid, cid, fids, cards)
+
+    class _Resp409:                     # _run_message 锁冲突早退形态
+        status_code = 409
+
+    async def locked(*a, **k):
+        return _Resp409()
+
+    monkeypatch.setattr(routes, "_run_message", locked)
+    monkeypatch.delenv(review_runner.ENV_NO_AUTO, raising=False)
+    r = await review_runner.run_once(wid, rid)
+    assert r["error"].startswith("turn_http_409"), r
+    # 发言事实没被假推进 ⇒ 分类器仍按 speak 叫同一席
+    spoken = await review_store.spoken_round(wid, rid)
+    assert fids[0] not in spoken
+    st = await review_store.state_of(wid, rid)
+    st_now = await review_store.status(wid, rid)
+    nxt, _ = review_runner._classify(st, st_now, set(spoken),
+                                     tail_seq=None, has_draft=True)
+    assert nxt[:3] == ("seat", fids[0], "speak"), nxt
+
+    # 补投路径同理：已发言未表态 + 409 ⇒ nudge_basis 不落，下一步仍 vote_nudge
+    await _seated(wid, rid, *fids)
+    r = await review_runner.run_once(wid, rid)
+    assert r["error"].startswith("turn_http_409"), r
+    st = await review_store.state_of(wid, rid)
+    assert (st.get("seats") or {}).get(fids[0], {}).get(
+        "vote_nudge_basis") is None, "409 不得吞掉补投依据"
+    st_now = await review_store.status(wid, rid)
+    spoken = set(await review_store.spoken_round(wid, rid))
+    nxt, _ = review_runner._classify(st, st_now, spoken,
+                                     tail_seq=None, has_draft=True)
+    assert nxt[:3] == ("seat", fids[0], "vote_nudge"), nxt
+
+
+async def test_named_seat_pin_survives_step_json(sandbox):
+    """pin 随 step_json 落台账，step_expect 取回仍是结构化 dict
+    （点名身份不在 batch/draft/next 三元组里，复核只核三元组）。"""
+    from src.infra import intervention_runner as _ir
+    from src.infra import intervention_store as _ist
+
+    wid, cid, fids = await _make_work_with_functions(3)
+    cards = card_store.iter_card_metas(wid)
+    rid = await _open_main_batch(wid, cid, fids, cards)
+    r = await review_runner.request_resume(wid, cid, seat=fids[1],
+                                           spawn=False)
+    row = _ist.store().get_action(wid, r["action_id"])
+    exp = _ir.step_expect(row)
+    assert exp["batch"] == r["step"]["batch"]
+    assert exp["pin"] == {"seat": fids[1], "kind": "speak"}
+
+
+async def test_resume_review_waiting_returns_reason(sandbox):
+    """无合法步：等正卡回应期间请求续跑 ⇒ waiting＋责任方，不登记。"""
+    wid, cid, fids = await _make_work_with_functions(2)
+    cards = card_store.iter_card_metas(wid)
+    rid = await _open_main_batch(wid, cid, fids, cards)
+    await _seated(wid, rid, *fids)
+    for f in fids:
+        await review_store.reject(wid, rid, f)
+    await review_store.mark_asked(wid, rid)     # 已派活，等正卡交回
+    r = await review_runner.request_resume(wid, cid, spawn=False)
+    assert r["ok"] and r["outcome"] == "waiting", r
+    assert r["reason"] == "awaiting_target"
+    assert r["waiting"]["party"] == "target"
+
+
+async def test_resume_review_rejected_for_non_target(sandbox):
+    """非被评卡请求 ⇒ not_target 拒（评审卡号不是授权凭证）。"""
+    wid, cid, fids = await _make_work_with_functions(2)
+    cards = card_store.iter_card_metas(wid)
+    rid = await _open_main_batch(wid, cid, fids, cards)
+    root = str(work_store.work_card_id_of(wid) or "")
+    r = await review_runner.request_resume(wid, root, spawn=False)
+    assert not r["ok"] and r["error"] == "no_review_card", r
+    # 席位也不是被评正卡
+    r = await review_runner.request_resume(wid, fids[0], spawn=False)
+    assert not r["ok"], r
+
+
+async def test_named_seat_confirm_step_for_stale_approver(
+        sandbox, monkeypatch):
+    """[981→982 实案] 旧稿批过＋drift 挂账 ⇒ 点名该席＝增量确认步。"""
+    from src.infra import intervention_runner as _ir
+
+    wid, cid, fids = await _make_work_with_functions(2)
+    cards = card_store.iter_card_metas(wid)
+    rid = await _open_main_batch(wid, cid, fids, cards)
+    await _seated(wid, rid, *fids)
+    for f in fids:
+        await review_store.approve(wid, rid, f)
+    await card_store.update_card(
+        wid, cid, {"requirements_draft": "v2 改稿"}, "漂移")
+    await review_runner.report_target_turn_end(wid, cid, "ok")
+    st = await review_store.status(wid, rid)
+    await review_store.set_drift_pending(wid, rid, st["stale"])
+
+    seen: list[tuple] = []
+
+    async def fake_seat(work_id, review_id, seat, st2, *, kind, hint=""):
+        seen.append((seat, kind))
+        return {"seat": seat, "kind": kind, "voted": True,
+                "vote": "approve", "error": ""}
+
+    monkeypatch.setattr(review_runner, "_seat_turn", fake_seat)
+    monkeypatch.delenv(review_runner.ENV_NO_AUTO, raising=False)
+    r = await review_runner.request_resume(wid, cid, seat=fids[1],
+                                           spawn=False)
+    assert r["ok"] and r["step"]["pin"]["kind"] == "confirm", r
+    assert r["step"]["next"].startswith(f"seat:{fids[1]}:confirm")
+    res = await _ir.deliver_registered_action(wid, r["action_id"])
+    assert res == "continue:1", res
+    assert seen == [(fids[1], "confirm")], seen

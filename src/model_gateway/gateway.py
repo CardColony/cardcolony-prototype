@@ -32,6 +32,7 @@ import json
 import os
 import re
 import time
+from dataclasses import replace
 from typing import Any, AsyncIterator, Optional
 
 from ..infra.errors import ErrorCode, ModelError
@@ -39,6 +40,7 @@ from ..infra.logging import get_logger
 from .llm.assembler import BlockAssembler
 from .llm.errors import LlmError
 from .llm.runtime import LlmAdapter, LlmRuntime, RuntimeStats
+from .llm.transport import record_dispatch
 from .llm.types import (
     ErrorReason,
     GenerateOptions,
@@ -751,6 +753,8 @@ class ModelGateway:
                 if isinstance(res, dict):
                     res.setdefault("model_used", mname)
                 return res
+            except _SendGuardRejected as exc:
+                raise exc.error from None
             except ModelError as exc:
                 last = exc
                 if idx + 1 >= len(chain):
@@ -782,6 +786,7 @@ class ModelGateway:
         caller: str = "",
         work_id: str = "",
         card_id: str = "",
+        before_send: Any = None,
     ) -> dict[str, Any]:
         # [F22 · 2026-10-31 观测重建] 新增**可选** keyword-only 形参 trace_id/caller：
         # 只加不改——既有调用方零感知（不传＝自动生成 trace_id、caller 空）。
@@ -840,7 +845,10 @@ class ModelGateway:
                 _build_opts_ms = (time.monotonic() - _ser0) * 1000.0
                 assembler = BlockAssembler()
                 emitted: list[str] = []
-                async for chunk in _guarded_stream(self._sem_for(model_name), self._runtime.stream(options)):
+                response_stream = self._runtime.stream(options)
+                if before_send is not None:
+                    response_stream = _checked_stream(response_stream, before_send)
+                async for chunk in _guarded_stream(self._sem_for(model_name), response_stream):
                     if chunk.type == "serialize-timing":
                         # 〔返工3〕适配器实际发送编码耗时帧：入账后不透传、
                         # 不计入端点首事件台账（编码发生在网络请求之前）。
@@ -941,6 +949,9 @@ class ModelGateway:
                 _obs.call_end(_trace)
                 return result
 
+            except _SendGuardRejected:
+                _obs.call_end(_trace)
+                raise
             except ModelCallFailure as exc:
                 reason = exc.reason
                 logger.warning("model_call_retry", model_name=model_name,
@@ -1034,6 +1045,8 @@ class ModelGateway:
                         ev.setdefault("model_used", mname)   # 终帧：实际使用的模型
                     yield ev
                 return
+            except _SendGuardRejected as exc:
+                raise exc.error from None
             except ModelError as exc:
                 last = exc
                 if emitted or idx + 1 >= len(chain):
@@ -1060,10 +1073,12 @@ class ModelGateway:
         reasoning_effort: str | None = None,
         *,
         on_chunk: Any = None,
+        on_transport: Any = None,
         trace_id: Optional[str] = None,
         caller: str = "",
         work_id: str = "",
         card_id: str = "",
+        before_send: Any = None,
     ) -> AsyncIterator[dict[str, Any]]:
         # [F22 · 2026-10-31] 新增**可选** on_chunk/trace_id/caller（只加不改）：
         # on_chunk ＝ 每个 chunk 事件旁路（凝练 F8 静默判死的计数依据）；
@@ -1108,15 +1123,36 @@ class ModelGateway:
                 tools, prior_messages, turn_tail, turn_once, stream=True,
                 reasoning_effort=reasoning_effort,
             )
+            transport_facts: dict[str, Any] = {}
+            if on_transport is not None:
+                def observe_dispatch(facts: dict[str, Any]) -> None:
+                    transport_facts.update({
+                        "model_used_entry": model_name,
+                        "endpoint_model": str(mc.get("model") or ""),
+                        "vendor": _vendor_of(mc),
+                        "endpoint_protocol": self._endpoint_protocol(model_name),
+                        "trace_id": _trace,
+                        "attempt": attempt + 1,
+                        **facts,
+                    })
+                    on_transport(dict(transport_facts))
+
+                options = replace(options, on_dispatch=observe_dispatch)
             _build_opts_ms = (time.monotonic() - _ser0) * 1000.0
             assembler = BlockAssembler()
             try:
-                async for chunk in _guarded_stream(self._sem_for(model_name), self._runtime.stream(options)):
+                response_stream = self._runtime.stream(options)
+                if before_send is not None:
+                    response_stream = _checked_stream(response_stream, before_send)
+                async for chunk in _guarded_stream(self._sem_for(model_name), response_stream):
                     if chunk.type == "serialize-timing":
                         # 〔返工3〕适配器实际发送编码耗时帧：入账后不透传、
                         # 不计入端点首事件台账（编码发生在网络请求之前）。
                         _json_dumps_ms = float(getattr(chunk, "ms", 0.0))
                         continue
+                    if chunk.type == "response-meta" and transport_facts:
+                        transport_facts.setdefault("response_model", str(chunk.model))
+                        on_transport(dict(transport_facts))
                     _obs.call_chunk(_trace)
                     if chunk.type == "text-delta":
                         # 〔四段〕首个非空正文帧＝用户可见首字——同一台账基准。
@@ -1145,6 +1181,7 @@ class ModelGateway:
                 if failure is not None:
                     raise ModelCallFailure(failure.message, _classify(failure))
                 result = self._result_from(assembler, model_name, started, tools)
+                result["terminal_received"] = assembler.has_finish
                 self.stats.record(model_name, result["tokens_used"], result["latency_ms"], True)
                 _emit("success", attempt)
                 # [F22] 因果链回执 + JSONL 落账（usage 真值随行）
@@ -1174,6 +1211,9 @@ class ModelGateway:
                 yield result
                 _obs.call_end(_trace)
                 return
+            except _SendGuardRejected:
+                _obs.call_end(_trace)
+                raise
             except ModelCallFailure as exc:
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(backoff)
@@ -1272,6 +1312,22 @@ async def _guarded_stream(sem: asyncio.Semaphore, agen: Any):
             yield chunk
 
 
+class _SendGuardRejected(Exception):
+    def __init__(self, error: Exception) -> None:
+        super().__init__(str(error))
+        self.error = error
+
+
+async def _checked_stream(agen: Any, before_send: Any):
+    # 生成器首次迭代发生在取得并发额度之后，且先于适配器发送。
+    try:
+        await before_send()
+    except Exception as exc:
+        raise _SendGuardRejected(exc) from exc
+    async for chunk in agen:
+        yield chunk
+
+
 class MockAdapter(LlmAdapter):
     """离线 mock 适配器（旧 ``MockGateway`` 迁移）：产 ``StreamChunk``，罐头内容形态不变。"""
 
@@ -1284,6 +1340,7 @@ class MockAdapter(LlmAdapter):
     async def stream(self, options: GenerateOptions) -> AsyncIterator[Any]:
         from .llm.types import FinishChunk, StopReason, TextDelta
 
+        record_dispatch(options, options.model, transport="mock")
         user_prompt = ""
         for m in options.messages:
             if isinstance(m, dict) and m.get("role") == "user":

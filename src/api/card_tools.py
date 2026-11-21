@@ -4072,12 +4072,21 @@ async def _h_read_file(work_id: str, current_id: str,
         arguments.get("path", ""), cards.get(current_id),
     ):
         return err("denied", f"越权：无权访问 {arguments.get('path', '')}")
-    return await asyncio.to_thread(
+    res = await asyncio.to_thread(
         file_tools.read_file,
         arguments.get("path", ""),
         para_start=arguments.get("para_start"),
         para_end=arguments.get("para_end"),
     )
+    if isinstance(res, dict) and "error" in res:
+        return res                                  # 失败沿用 internal 通道
+    # [批四返修] 整文件版本指纹抬到信封层：不进 data ⇒ 渲染/台账/会话块
+    # 零变化；轮槽证据键从 tool_result 顶层取它判「文件换版」。
+    fp = res.pop("_file_sha256", None)
+    out = ok_(res)
+    if fp:
+        out["_file_sha256"] = fp
+    return out
 
 
 async def _h_search_files(work_id: str, current_id: str,
@@ -6024,6 +6033,86 @@ def set_tool_run_id(run_id: str) -> None:
     _TOOL_RUN_ID.set(str(run_id or ""))
 
 
+# [评审按阶段缩量·材料绑定 2026-11-20 · 任务书 §二.3] 席位回合的**本轮材料
+# 身份**随 contextvar 进工具执行面：approve/reject 落票时把它当 expect 传进
+# 写事务复核——批次/稿次/原文指纹任一不符 ⇒ 拒落（轻量材料算好后到续跳
+# 投票之间换批/改稿，票不得从旧材料挪到新稿）。无材料的路径（测试直调、
+# 手工入口）照旧零闸。
+_TOOL_TURN_MATERIAL: contextvars.ContextVar[dict] = contextvars.ContextVar(
+    "card_tools_turn_material", default={})
+
+
+def set_tool_turn_material(material: Any) -> None:
+    _TOOL_TURN_MATERIAL.set(
+        dict(material) if isinstance(material, dict) else {})
+
+
+class MaterialStale(RuntimeError):
+    """席位回合的材料身份在**发送边界**已失效——换批/推版/同稿次正文变更。
+
+    在 `message_runner._call_model_resumable` 的每次真实出站前复核：装配
+    与首跳之间、续跳之间、同位置重试期间材料过期 ⇒ 不拿旧材料出站，
+    由 `_seat_turn` 按现有过期路径交回。
+    ``pair_id`` 捎回抛出时那轮回合的标识（异常路径 result 为空，
+    清场仍能按旧回合标识点名）。
+    """
+
+    def __init__(self, why: str = "stale_material", *, pair_id: str = ""):
+        super().__init__(why)
+        self.pair_id = str(pair_id or "")
+
+
+async def turn_material_stale_reason(work_id: str, material: Any) -> str:
+    """本轮材料身份 → 过期原因（``""``＝新鲜或无绑定）。
+
+    与投票写事务同一判据集：批次、稿次、被评原文指纹——同一组值两边
+    复核（发送边界不发旧材料；万一漏到落票，事务里再拒一次）。
+    读不出状态按**新鲜**处理（不臆造过期阻断合法回合）。
+    """
+    if not isinstance(material, dict) or not material:
+        return ""
+    rid = str(material.get("review_id") or "")
+    if not rid:
+        return ""
+    try:
+        from ..storage import review_store as _rv
+        st = await _rv.state_of(work_id, rid)
+    except Exception:  # noqa: BLE001
+        return ""
+    if str(st.get("batch") or "") != str(material.get("batch") or ""):
+        return "batch"
+    if int(st.get("draft") or 1) != int(material.get("draft_ver") or 0):
+        return "draft"
+    fp = str(material.get("draft_fp") or "")
+    if fp:
+        tgt = str(st.get("target") or material.get("target") or "")
+        try:
+            meta = (await card_store.read_card(work_id, tgt)).get("meta") or {}
+            cur = str(meta.get("requirements_draft") or "")
+        except Exception:  # noqa: BLE001
+            return ""
+        if hashlib.sha1(cur.encode("utf-8")).hexdigest() != fp:
+            return "draft_fp"
+    return ""
+
+
+def _vote_expect_for(review_id: str, current_id: str) -> dict:
+    """本轮材料身份 → 投票 expect：只在本评审卡、本席位名下生效。
+
+    返回 ``{}``＝无绑定（材料不存在的回合按现行口径投）。"""
+    mat = _TOOL_TURN_MATERIAL.get() or {}
+    if not isinstance(mat, dict) or not mat:
+        return {}
+    if str(mat.get("review_id") or "") != str(review_id or ""):
+        return {}
+    if str(mat.get("seat") or "") != str(current_id or ""):
+        return {}
+    return {"batch": str(mat.get("batch") or ""),
+            "draft": int(mat.get("draft_ver") or 0),
+            "draft_fp": str(mat.get("draft_fp") or ""),
+            "target": str(mat.get("target") or "")}
+
+
 #: 本轮已发过「草稿全行号基线」的 run_id 登记（有界 LRU，防长跑进程累积）。
 _DRAFT_BASELINE_SENT: dict[str, None] = {}
 _DRAFT_BASELINE_CAP = 512
@@ -6489,8 +6578,11 @@ async def _h_reject(work_id: str, current_id: str,
     gate = await _vote_gate(work_id, rid, current_id)
     if gate is not None:
         return gate
-    r = await _rv.reject(work_id, rid, current_id)
+    r = await _rv.reject(work_id, rid, current_id,
+                         expect=_vote_expect_for(rid, current_id))
     if not r.get("ok"):
+        # [批三·材料绑定] stale_material＝材料身份在装配后失效（换批/改稿/
+        # 同稿次正文变更）——如实回 stale，席位下一轮按新材料重判。
         return err("validation", str(r.get("error") or "reject 失败"))
     if r.get("changed"):
         from . import review_runner
@@ -6517,7 +6609,8 @@ async def _h_approve(work_id: str, current_id: str,
     gate = await _vote_gate(work_id, rid, current_id)
     if gate is not None:
         return gate
-    r = await _rv.approve(work_id, rid, current_id)
+    r = await _rv.approve(work_id, rid, current_id,
+                          expect=_vote_expect_for(rid, current_id))
     if not r.get("ok"):
         return err("validation", str(r.get("error") or "approve 失败"))
     if r.get("changed"):
@@ -6860,6 +6953,113 @@ TOOL_REGISTRY["decide"] = ToolDef(
     readonly=False,
 )
 TOOL_SWITCH["decide"] = policy.SWITCH_EDIT
+
+
+async def _h_read_review_status(work_id: str, current_id: str,
+                                arguments: dict[str, Any],
+                                cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """**查评审卡点**（被评正卡自查）：批次/稿次/逐席票态/下一步/等待方/
+    最近动作回执——只读，不起轮不派发。
+
+    权限＝运行身份：只查**自己**的伴生评审卡（review_of 伴生关系解析），
+    评审卡号不是授权凭证；读不到的事实如实标「待核实」。
+    """
+    from ..storage import review_store as _rv
+    from . import review_runner as _rr
+
+    rid = await _rv.review_card_of(work_id, current_id)
+    if not rid:
+        return err("validation", "本卡没有伴生评审卡")
+    return ok_(await _rr.review_snapshot(work_id, rid, caller=current_id))
+
+
+async def _h_resume_review(work_id: str, current_id: str,
+                           arguments: dict[str, Any],
+                           cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """**续跑／点名席位**（被评正卡操作）：登记动作 → 异步转评审属主 →
+    立即回受理状态与动作编号；实际进展以台账回执为准。
+
+    ``seat`` 可选：点名调起某一席——服务端按现行评审规则算**该席**的
+    合法步骤（首次发言/补投/重评/增量确认），不借自动挑席的顺序。
+    """
+    from ..storage import review_store as _rv
+    from . import review_runner as _rr
+
+    rid = await _rv.review_card_of(work_id, current_id)
+    if not rid:
+        return err("validation", "本卡没有伴生评审卡")
+    seat = str(arguments.get("seat") or "").strip()
+    res = await _rr.request_resume(work_id, current_id, seat=seat)
+    if not res.get("ok"):
+        return err(str(res.get("error") or "internal"),
+                   str(res.get("message") or "续跑请求失败"))
+    return ok_(res)
+
+
+TOOL_REGISTRY["read_review_status"] = ToolDef(
+    schema={
+        "name": "read_review_status",
+        "description": (
+            "**查你被评的批次现在卡在哪**：批次、稿次、每席投没投（含票属哪一版草稿）、"
+            "现有下一步、在等谁/等什么条件、最近一次续跑的结果与动作编号。\n"
+            "· 只读——不起轮、不派发、不产生任何动作\n"
+            "· 查的是你自己的伴生评审卡；读不到的事实会如实标「待核实」"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    handler=_h_read_review_status,
+    readonly=False,   # 不进席位场授面（这是正卡自查件，席位没这权限面）
+    doc=ToolDoc(
+        group="评审",
+        scene="你在被评审、想知道现在卡在哪：哪席投了没、票属哪版草稿、"
+              "下一步是什么、在等谁、上次续跑成没成——机械事实直读，"
+              "不起轮不派发。",
+        usage="无参数。读的是你自己的伴生评审卡；返回里 unverified "
+              "非空＝那块事实没读出来（待核实），不是默认值。",
+        effect=ToolEffect(),
+    ),
+)
+TOOL_SWITCH["read_review_status"] = policy.SWITCH_READ
+
+TOOL_REGISTRY["resume_review"] = ToolDef(
+    schema={
+        "name": "resume_review",
+        "description": (
+            "**让你被评的批次继续跑一步**，或**点名调起某一席**表态。\n"
+            "· 登记动作 → 转评审属主异步兑现 → 立即回受理状态与动作编号；"
+            "后续进展以动作回执为准，别拿「已受理」当「已跑成」\n"
+            "· seat（可选）点名：只调起那一席的合法步骤（首发/补投/重评/"
+            "增量确认），它已有当前票或在等你回应时会如实告诉你\n"
+            "· 同一实际步骤手工/自动/点名共享去重身份，重复调不会重复跑"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "seat": {"type": "string",
+                         "description": "（可选）点名某席（fn id/卡 id）——只调起"
+                                        "它的合法步骤；缺省＝续跑当前下一步"},
+            },
+            "required": [],
+        },
+    },
+    handler=_h_resume_review,
+    readonly=False,
+    doc=ToolDoc(
+        group="评审",
+        scene="你被评的批次停了/某席迟迟不表态：续跑当前一步，或点名"
+              "请那一席表态。返回的 action_id 可在 read_review_status 的"
+              " last_action 里查到兑现结果。",
+        usage="seat 可选。返回 outcome：queued/requeued（已受理）、"
+              "in_flight（同一步在投）、already_done（该步已受理过）、"
+              "waiting/seat_no_step（现在没有可执行步骤，原因照实）。",
+        effect=ToolEffect(),
+    ),
+)
+TOOL_SWITCH["resume_review"] = policy.SWITCH_EDIT
 
 
 # ---------------------------------------------------------------------------
@@ -7980,6 +8180,13 @@ async def _h_scene_direct(work_id: str, current_id: str,
         return err("denied",
                    f"越权：{target} 与你之间没有通信线——"
                    f"先 link_cards 建一条再下指令")
+    task_spec = None
+    if "task_basis" in arguments:
+        from . import task_basis
+        try:
+            task_spec = task_basis.dispatch_spec(work_id, current_id, arguments["task_basis"])
+        except ValueError as exc:
+            return err("validation", str(exc))
     try:
         # [2026-10-26 · 记录补全] 改前只 append_inbox + 唤醒：**没有任何事件**
         # （type 还写的 msg_notify）⇒ 被派发的卡在自己事件流里看不到「我被父卡
@@ -8001,6 +8208,26 @@ async def _h_scene_direct(work_id: str, current_id: str,
             msg_id = str(_seq) if _seq is not None else ""
     except Exception as exc:  # noqa: BLE001
         return err("internal", f"指令落信失败:{exc}")
+    source = {"kind": "card_msg", "from": current_id, "require_report": True}
+    if task_spec is not None:
+        try:
+            if not msg_id.startswith("cmsg-"):
+                raise RuntimeError("缺少原派工消息编号")
+            task = task_basis.register_dispatch(
+                work_id, **task_spec, owner_card=target, target_card=current_id,
+                task_id=msg_id, dispatch_id=msg_id, source_msg_id=msg_id,
+                accept=acceptance)
+        except Exception:
+            logger.exception("[task_basis] 派工已落信，任务登记待核实 msg=%s", msg_id)
+            return {"ok": True, "card_id": target, "msg_id": msg_id, "delivered": False,
+                    "task_status": "unverified", "note": "指令已落信，任务登记待核实"}
+        source["task"] = {"task_id": task["task_id"], "target": current_id,
+                          "accept": acceptance}
+        source["basis_task"] = True
+        source["require_report"] = False
+        source["dispatch_task_id"] = msg_id
+        session_ops.ops_log("task_basis_queued", work_id, target,
+                            {"task_id": msg_id, "from": current_id})
     # [2026-10-26] 消息已落会话块 ⇒ 唤醒走 text 模式（不取件，只起轮）
     # [2026-11-10] 两处修：
     #   · await 取代 _spawn_tracked——deliver_now 在「沉默/非 directive 停卡」上
@@ -8016,14 +8243,14 @@ async def _h_scene_direct(work_id: str, current_id: str,
         _ok = await _mr.deliver_now(
             work_id, target,
             text=(f"你收到一条来自 {current_id} 的指令，正文已在上文（卡间指令）。"
-                  f"请按其执行，完成后用 report_up 汇报。"),
+                  + ("请按本轮任务依据执行并提交核证。" if task_spec is not None
+                     else "请按其执行，完成后用 report_up 汇报。")),
             steer_text=f"卡 {current_id} 给你发来一条指令：\n{_body}\n请按其执行，完成后用 report_up 汇报。",
             source_kind="directive",
             # [2026-11-20 二次返修] 显式携带汇报义务与核对目标：direct 指令的
             # 机制级收口=「完成后用 report_up 汇报」（唤醒文原文）——收令回合的
             # 汇报义务核对只认这个显式标志，普通/其他来源的 directive 不默认绑定。
-            source={"kind": "card_msg", "from": current_id,
-                    "require_report": True})
+            source=source)
     except Exception as exc:  # noqa: BLE001 唤醒失败≠落信失败
         logger.warning("[direct] 落信成功但唤醒异常 target=%s: %s",
                        target, exc)
@@ -8036,6 +8263,8 @@ async def _h_scene_direct(work_id: str, current_id: str,
     elif _wake_exc:
         _note = ("指令已落对方会话但唤醒异常(对方下轮会看到)——"
                  f"唤醒错误:{_wake_exc[:120]}")
+    elif task_spec is not None:
+        _note = "指令和任务已落账，尚未调起，沿原派工编号查询或接续"
     else:
         _note = ("指令已落对方会话但未唤醒(对方处于沉默态)——"
                  "解冻后下一轮会看到;如需强制唤醒请先联络用户")
@@ -8577,6 +8806,11 @@ TOOL_REGISTRY["direct"] = ToolDef(
                 "acceptance": {"type": "string", "description":
                                "验收判据(怎么算做到)。禁止填「…[参数已折叠]」"
                                "等折叠占位——判据必须是核实过的完整事实"},
+                "task_basis": {
+                    "type": "object",
+                    "description": "试点任务依据。clauses 是本卡正稿条款号，allowed/deferred 是步骤；"
+                                   "criteria 每项包含 id、text 以及 evidence{tool,arguments,stdout}。",
+                },
             },
             "required": ["card_id", "instruction", "acceptance"],
         },
@@ -9523,6 +9757,70 @@ async def _h_verify_directive(work_id: str, current_id: str,
         return err("not_found", f"你的台账里没有可验收的指令 {directive_id}")
     return {"ok": True, "directive_id": directive_id, "status": status}
 
+
+async def _h_task_deliver(work_id: str, current_id: str,
+                          arguments: dict[str, Any],
+                          cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """任务交付入口（B 批）：按判据挂**原始记录锚**交付，逐条机械判定。
+
+    只认锚不认话——正文声称「我做完了」不是证据；锚必须解析到真实的
+    会话块/工具回执/站内信，且目标与原任务一致。
+    """
+    from . import task_evidence
+    task_id = str(arguments.get("task_id") or "").strip()
+    if not task_id:
+        return err("validation", "task_id 不能为空（沿原派工编号交付）")
+    raw = arguments.get("claims") or []
+    if isinstance(raw, dict):
+        raw = [raw]
+    claims = [{
+        "criterion": str(c.get("criterion") or c.get("id") or ""),
+        "anchor": str(c.get("anchor") or ""),
+        "note": str(c.get("note") or "")[:400],
+    } for c in raw if isinstance(c, dict)]
+    res = task_evidence.deliver_task(work_id, current_id, task_id, claims)
+    if not res.get("ok"):
+        return err(str(res.get("error") or "error"),
+                   str(res.get("why") or "交付失败"))
+    return res
+
+
+# [B 批 · 交付核证 2026-11-20] 任务交付入口：按判据挂原始记录锚，逐条机械判定。
+TOOL_REGISTRY["task_deliver"] = ToolDef(
+    schema={
+        "name": "task_deliver",
+        "description": (
+            "(任务)**沿原派工编号交付**：逐判据挂证据锚交付，宿主逐条机械判定"
+            "（通过/未通过/待核实/未覆盖）并落回执。\n"
+            "锚只认原始记录：`rc:<seq>`（工具回执块）、`seq:<N>`（会话块）、"
+            "`msg:<msg_id>`（站内信）。正文声称「做完了」没有锚 ⇒ 待核实，不作数。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string",
+                            "description": "原派工编号（开工依据里给的）"},
+                "claims": {"type": "array", "items": {"type": "object"},
+                           "description":
+                               "每条判据一个证据项：{criterion: 判据id, "
+                               "anchor: 记录锚, note: 附言}"},
+            },
+            "required": ["task_id", "claims"],
+        },
+    },
+    handler=_h_task_deliver,
+    readonly=False,
+    doc=ToolDoc(
+        group="通信",
+        scene="派给你的任务做完了要交差——把每条判据对应的**真实记录锚**挂上。"
+              "没有锚的声称不作数，目标不符的记录判未通过。",
+        usage="task_id 用开工依据里的原派工编号；claims 每条挂"
+              " rc:<seq>/seq:<N>/msg:<id>。交付后宿主回执逐条判定，"
+              "待核实的补锚再交，未通过的返工。",
+        effect=ToolEffect(sink="none", wake=False, targets=""),
+    ),
+)
+TOOL_SWITCH["task_deliver"] = policy.SWITCH_READ
 
 
 # ============================================================
@@ -10604,7 +10902,15 @@ def build_tool_schemas(
     tools = [_schema_of(def_) for name, def_ in TOOL_REGISTRY.items()
              if name not in OP_ONLY_TOOLS and name not in AUTO_ONLY_TOOLS
              and name not in ROLE_ONLY_TOOLS
-             and name not in VENUE_ONLY_TOOLS]
+             and name not in VENUE_ONLY_TOOLS and name != "task_deliver"]
+    from . import task_basis
+    if not task_basis.enabled(work_id):
+        for schema in tools:
+            if schema["name"] == "direct":
+                params = schema["parameters"]
+                schema["parameters"] = {**params, "properties": {
+                    k: v for k, v in params["properties"].items() if k != "task_basis"}}
+                break
     # ---- 一级：角色过滤（工具卡底座 T9）----
     tools = _filter_by_role(tools, card_id, work_id, cards)
     # ---- 二级：分类过滤（权限线 T4）----
@@ -11172,6 +11478,7 @@ async def execute_tool(
     cards: dict[str, dict[str, Any]],
     *,
     perm_gate: bool = False,
+    task_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """执行单个工具调用，返回**信封**（成功 {"ok":True,...,"data":{...}}，失败
     {"ok":False,...,"error":{"code","message"}}）。
@@ -11198,7 +11505,15 @@ async def execute_tool(
         # [执行层权限闸 2026-10-25] 与工具面同一判据：卡上没有该工具的开关 ⇒ 拒。
         # 位置＝注册表命中之后、handler 之前：未知工具仍走 not_found（文案不变），
         # 已知但无权限的工具在此被拦，**不再有第二条路能把它送到 handler**。
-        if perm_gate:
+        if tool_name == "task_deliver":
+            # 授权随当前任务走。未绑定回合即使知道任务号也不能交付。
+            if (not task_contract
+                    or task_contract["owner_card"] != current_id
+                    or task_contract["task_id"] != arguments.get("task_id")):
+                return err("denied", "当前回合未绑定此任务")
+            if not _actor_can_switch(cards.get(current_id), policy.SWITCH_READ):
+                return err("denied", "本卡未授权访问任务交付")
+        elif perm_gate:
             # [场授件豁免 2026-11-15] VENUE_ONLY_TOOLS（align_end）的授权是
             # **场成员资格**不是卡能力——handler 里已有 current_id ∈
             # participants 的真校验。成员哪怕 abilities=[]（qa_card 天花板

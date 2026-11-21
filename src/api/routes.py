@@ -170,6 +170,8 @@ class CtlRunMessageRequest(BaseModel):
     tool_allow: Optional[list] = None
     profile: str = ""
     prior_extra: Optional[list] = None
+    # [批二·按任务缩量 2026-11-20] 本轮可信任务绑定（跨片转发不能丢）。
+    task_binding: Optional[dict[str, Any]] = None
 
 
 class CtlDeliverRequest(BaseModel):
@@ -186,6 +188,35 @@ class CtlReviewStepRequest(BaseModel):
     work_id: str
     review_id: str
     hint: str = ""
+    # [步骤身份 2026-11-20 · 批次A第四轮返工] 台账登记的 {batch,draft,
+    # next}——跨 runner 转发必须带到属主，执行前复核过期销账。
+    expect: Optional[dict] = None
+
+
+class CtlReviewSnapshotRequest(BaseModel):
+    work_id: str
+    review_id: str
+    caller: str = ""
+
+
+class CtlReviewResumeRequest(BaseModel):
+    work_id: str
+    target_id: str
+    seat: str = ""
+    spawn: bool = True
+    source: str = "tool"
+
+
+class CtlReviewOpenBatchRequest(BaseModel):
+    work_id: str
+    review_id: str
+    focus: str
+    members: Optional[list[str]] = None
+    target: str = ""
+    brief: str = ""
+    batch_type: str = "requirements"
+    next_members: Optional[list[str]] = None
+    expect_batch: str = ""
 
 
 class CtlAlignKickRequest(BaseModel):
@@ -206,6 +237,7 @@ class PostMessageRequest(BaseModel):
     # [可信任务入口 2026-11-20 · B2返修] 明确提交记录的任务绑定：
     # {task_id, rev, text, action, target, accept}——服务端据它对账
     # 「交办动作有没有真派发」。缺省 None ⇒ 普通聊天（不入绑定账）。
+    # target 为本卡时可显式给 scope="jurisdiction"，按本卡管辖范围选材。
     task: Optional[dict] = None
 
 
@@ -1372,14 +1404,22 @@ async def get_work_card(work_id: str, card_id: str, projection: str = ""):
 # ⇒ 这个端点**只回答"现在该不该出现、出现了显示什么"**，不承载过程流：
 #   过程流走 `/cards/{rid}/stream`（SSE，与普通卡同一条通道，含逐字流）。
 # ============================================================
+class ReviewRerunRequest(BaseModel):
+    seat: Optional[str] = None
+
+
 @router.post("/works/{work_id}/cards/{card_id}/review/rerun")
-async def rerun_review(work_id: str, card_id: str):
-    """把停在 pending 的评审批次**续上**。
+async def rerun_review(work_id: str, card_id: str,
+                       req: Optional[ReviewRerunRequest] = None):
+    """把停在 pending 的评审批次**续上**（人工入口＝正卡续跑同一链）。
 
     [2026-10-29] 轮循环是进程内的 task，重启就断了；批次状态还留在库里
     （active、有人 pending）⇒ 重启后没人推它，就永远卡着。这个入口让
     「重启后继续」成为可能，不用等人手动去戳子卡。
-    只在**有批次且还没全员通过**时起一轮，其余情况空转。
+
+    [2026-11-25 · 任务书] 改走 ``request_resume``——与正卡 ``resume_review``
+    同一链：台账登记、共享去重身份、异步转属主、``expect`` 随链复核；
+    可选 ``seat`` 点名调起某一席的合法步骤。
     """
     from . import review_runner as _rr
     from ..storage import review_store as _rv
@@ -1387,8 +1427,13 @@ async def rerun_review(work_id: str, card_id: str):
     rid = await _rv.review_card_of(work_id, card_id)
     if not rid:
         return {"ok": False, "error": "这张卡没有伴生评审卡"}
-    started = await _rr.rerun_if_pending(work_id, rid)
-    return {"ok": True, "started": bool(started), "review_card_id": rid}
+    seat = str(req.seat or "").strip() if req else ""
+    res = await _rr.request_resume(work_id, card_id, seat=seat,
+                                   source="api")
+    if not res.get("ok"):
+        return {"ok": False, "error": str(res.get("error") or "resume_failed"),
+                "message": str(res.get("message") or "")}
+    return res
 
 
 @router.get("/works/{work_id}/cards/{card_id}/review-status")
@@ -2111,7 +2156,7 @@ async def post_work_rule_dismiss(work_id: str, req: RuleDismissRequest):
 @router.get("/works/{work_id}/cards/{card_id}/timeline")
 async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alias="from"),
                             tail: int = Query(0), before: int = Query(0),
-                            session: str = Query("")):
+                            session: str = Query(""), view: str = Query("")):
     """[消息底座能力对齐 · 件4] 恢复唯一入口（C3/C4）：合并时序表。
 
     [席位会话] ``session=card@N`` 时取该会话的时序（事件流按会话键分账）。
@@ -2139,16 +2184,38 @@ async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alia
                                         card_id, str(session))
         except ValueError as exc:
             return _err(404, str(exc))
-    items = await asyncio.to_thread(
-        event_log.timeline, work_id, _tkey, from_seq=frm, tail=tail, before=before)
     # 〔2026-10-26 · 治「切卡卡死」〕**响应层载荷裁剪**（落盘不动）：
     # 实测打开一张大卡的 `timeline?tail=400` 响应体 **36.9MB**（其中 31.8MB 是
     # 一条 `tool_result`——read_linked 把整张卡的内容回灌进了事件日志）
     # ⇒ 服务端序列化 3~7 秒 ＋ 浏览器 parse 36.9MB ＋ 撞 15 秒客户端超时
     # ⇒ 「请求超时」＋ 内存态建不起来（看着像被释放）⇒ 只能刷新。
     # 而前端工具行**默认折叠**（摘要只要 content 的第一行）⇒ 裁掉零可见变化。
+    # [窄投影 2026-11-21 · 性能批次二] ``view=brief``：折叠类事件的重字段
+    # （tool_result.result / card_block_edited.old-new / reasoning.text /
+    # 超长参数与顶层串）→ 前缀预览＋``_brief`` 契约位，折叠渲染零可见变化；
+    # 展开时前端按 seq 走下方 ``timeline/event`` 按需补全文。只裁响应不动
+    # 落盘；旧调用方不带 view ⇒ 逐字同旧（含 payload_cap 兜底裁剪）。
+    # 〔2026-11-21〕读+两级投影**全进线程**：cap/brief 都是 O(记录×结构) 的
+    # 纯 CPU 遍历，大卡（750MB 事件文件、单条 MB 级 result）在事件循环上
+    # 算一遍就是一次心跳级卡顿——与 dumps 挪线程同一口径。
+    # 〔Server-Timing 分段账〕queueExec 拆四段透出：queue（线程排队）/
+    # read（尾窗读取+JSON 解析）/project（cap+brief 投影）/encode（编码）——
+    # 浏览器 resource timing 的 serverTiming 直接可读，探针按段归因。
     from . import payload_cap
-    payload_cap.cap_records(items)
+    _pt: list[float] = []
+    _t_submit = time.perf_counter()
+    def _read_and_project() -> list:
+        _pt.append(time.perf_counter())
+        its = event_log.timeline(work_id, _tkey,
+                                 from_seq=frm, tail=tail, before=before)
+        _pt.append(time.perf_counter())
+        payload_cap.cap_records(its)
+        if view == "brief":
+            payload_cap.brief_records(its)
+        _pt.append(time.perf_counter())
+        return its
+    items = await asyncio.to_thread(_read_and_project)
+    _pt.append(time.perf_counter())
     # [对话流分页 2026-10-20] has_earlier＝「这次是窗口请求，且拿满了窗口」
     # ⇒ 更早还有。前端据此决定「往上翻」是否还有东西可拉。
     # 全量请求（tail=0）恒 false：已经拿到全部。
@@ -2174,10 +2241,71 @@ async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alia
     # [2026-11-09] 非有限浮点随 dumps 同线程消毒：模型吐进事件的 JS 字面量
     # （如 card_507 的 ``"verbose": Infinity``）落盘宽容读回后在此
     # allow_nan=False 炸 500——整页取不到对话。响应层消毒，落盘不动。
+    _t_enc0 = time.perf_counter()
     body = await asyncio.to_thread(
         lambda: json.dumps(payload_cap.scrub_nonfinite(payload),
                            ensure_ascii=False, allow_nan=False,
                            indent=None, separators=(",", ":")))
+    _t_enc1 = time.perf_counter()
+    # Server-Timing 分段（ms）：queue＝线程池排队，read＝尾窗读+解析，
+    # project＝cap+brief 投影，encode＝json.dumps。读不出段就省略头。
+    _st = ""
+    if len(_pt) >= 4:
+        _st = ("queue;dur=%.1f,read;dur=%.1f,project;dur=%.1f,encode;dur=%.1f"
+               % ((_pt[0] - _t_submit) * 1000, (_pt[1] - _pt[0]) * 1000,
+                  (_pt[2] - _pt[1]) * 1000, (_t_enc1 - _t_enc0) * 1000))
+    return Response(content=body.encode("utf-8"),
+                    media_type="application/json",
+                    headers={"Server-Timing": _st} if _st else {})
+
+
+@router.get("/works/{work_id}/cards/{card_id}/timeline/event")
+async def get_card_timeline_event(work_id: str, card_id: str,
+                                  seqs: str = Query(""),
+                                  session: str = Query("")):
+    """[窄投影补详情 2026-11-21 · 性能批次二] 按 seq 取**完整**时序记录。
+
+    ``timeline?view=brief`` 把重字段投影成预览；展开折叠详情时前端按 seq
+    回取原文（一次可多条，逗号分隔）。与 timeline 同一道 work/card/session
+    校验；被 revoke 软删的记录不回——``revoked`` 列出来让界面显示「已撤销」
+    而不是「加载失败」。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    _light = await card_store.read_card_sessions_light(work_id, card_id)
+    if _light is None:
+        return _err(404, f"卡片不存在: {card_id}")
+    _tkey = card_id
+    if session:
+        try:
+            _tkey, _ = _resolve_session({"sessions": _light["sessions"]},
+                                        card_id, str(session))
+        except ValueError as exc:
+            return _err(404, str(exc))
+    want: list[int] = []
+    for part in str(seqs or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            want.append(int(part))
+        except (TypeError, ValueError):
+            continue
+    if not want:
+        return _err(400, "seqs 必填（逗号分隔的 seq 列表）")
+    items, revoked = await asyncio.to_thread(
+        event_log.timeline_events, work_id, _tkey, want[:64])
+    # 单条详情仍过 payload_cap：历史巨块（31.8MB tool_result 实录）展开时
+    # 不能又炸一次——与 timeline 同一道兜底裁剪（响应层，落盘不动）。
+    from . import payload_cap
+    payload_cap.cap_records(items)
+    body = await asyncio.to_thread(
+        lambda: json.dumps(payload_cap.scrub_nonfinite({
+            "ok": True,
+            "items": items,
+            "revoked": sorted(revoked),
+        }), ensure_ascii=False, allow_nan=False,
+            indent=None, separators=(",", ":")))
     return Response(content=body.encode("utf-8"), media_type="application/json")
 
 
@@ -2619,6 +2747,16 @@ async def post_card_session(work_id: str, card_id: str, req: dict):
     return {"ok": True, **entry}
 
 
+@router.get("/works/{work_id}/tasks/{dispatch_id}")
+async def read_dispatch_task(work_id: str, dispatch_id: str):
+    from . import task_basis, task_evidence
+
+    if not task_basis.enabled(work_id):
+        return _err(404, "此 work 未启用任务依据试点")
+    result = await asyncio.to_thread(task_evidence.task_status, work_id, dispatch_id)
+    return result if result["found"] else _err(404, "找不到此派工任务")
+
+
 @router.post("/works/{work_id}/cards/{card_id}/messages")
 async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest):
     """对话主链路（模块 H2）。"""
@@ -2656,6 +2794,8 @@ async def post_work_message(work_id: str, card_id: str, req: PostMessageRequest)
                 _meta, card_id, str(req.session))
         except ValueError as exc:
             return _err(404, str(exc))
+    if _sid_param == f"{card_id}@coordination":
+        return _err(403, "统筹会话只读。请从统筹计划面板点名唤醒。")
     _is_seat = _sid_param != card_id
     # [完工不影响功能 2026-11-08] 改前只对「worker + completed」走这段，
     # 目的之一是把它复位成 active。现在完工只是「交付过结果」的标记，
@@ -3327,6 +3467,193 @@ async def create_work_function(work_id: str, req: CreateFunctionRequest):
 
 
 
+# ============================================================
+# 项目统筹（coordination，2026-11-21 任务一）：任命/状态/计划版本。
+# 判断归模型、调度归任务三；这里只有机械事实的用户控制面。
+# ============================================================
+
+class CoordinationAppointRequest(BaseModel):
+    function_id: str = ""
+    objective: str = ""
+    observe: Optional[dict] = None
+    instruct: Optional[dict] = None
+    models: Optional[dict] = None
+    mode: str = "observe"
+    next_review_at: str = ""
+
+
+class CoordinationOpRequest(BaseModel):
+    op: str
+    function_id: str = ""
+    objective: str = ""
+    observe: Optional[dict] = None
+    instruct: Optional[dict] = None
+    models: Optional[dict] = None
+    mode: str = ""
+    next_review_at: str = ""
+    assignment_id: str = ""
+    note: str = ""
+    # [读入版本 2026-11-21 · 用户令] 任务书「任命以外的变更带当前任命标识
+    # 和读入版本」：控制变更（pause/resume/revoke/finish/set_mode/set_grant）
+    # 必带 expected_rev，后端校验不匹配 ⇒ 409。wake 是入账，不带。
+    expected_rev: Optional[int] = None
+
+
+class CoordinationPlanPatch(BaseModel):
+    assignment_id: str
+    expected_rev: int
+    plan: dict
+
+
+def _coord_err(exc: "object") -> JSONResponse:
+    """CoordinationError → HTTP（404/400/409/403）。"""
+    from ..storage import coordination_store as _cs
+    assert isinstance(exc, _cs.CoordinationError)
+    status = {"not_found": 404, "validation": 400,
+              "conflict": 409, "denied": 403}.get(exc.code, 400)
+    body: dict[str, Any] = {"error": exc.message}
+    body.update(exc.extra or {})
+    return JSONResponse(status_code=status, content=body)
+
+
+def _coord_store():
+    from ..storage import coordination_store as _cs
+    return _cs
+
+
+@router.get("/works/{work_id}/coordination")
+async def list_work_coordination(work_id: str):
+    """本 work 的统筹计划列表（导航用，只读；打开/刷新/浏览历史不唤醒模型）。"""
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    _cs = _coord_store()
+    return {"plans": _cs.list_plans(work_id)}
+
+
+@router.get("/works/{work_id}/cards/{card_id}/coordination")
+async def get_card_coordination(work_id: str, card_id: str,
+                                history: bool = False,
+                                rev: Optional[int] = None,
+                                history_id: Optional[int] = None):
+    """卡面「统筹计划」面板：当前任命、计划、版本、授权、到期、待办、回执。
+
+    尚无任命时返回空面板（state=none，**不写库**）。?history=1 附版本史
+    索引摘要；?history_id=N 按修订记录主键回读该版**完整计划正文**
+    （跨任命重号后仍能唯一定位）；?rev=N 按当前任命链内版本号回读
+    （跨任命重号时取最新一次任命）。历史回读不唤醒模型。
+    """
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    _cs = _coord_store()
+    try:
+        return _cs.panel(work_id, card_id, history=history, rev=rev,
+                         history_id=history_id)
+    except Exception as exc:  # noqa: BLE001 统一转 HTTP
+        if type(exc).__name__ == "CoordinationError":
+            return _coord_err(exc)
+        logger.warning("[coordination] panel 失败 work=%s card=%s: %s",
+                       work_id, card_id, exc)
+        return _err(500, f"面板读取失败: {exc}")
+
+
+@router.post("/works/{work_id}/cards/{card_id}/coordination")
+async def post_card_coordination(work_id: str, card_id: str,
+                                 req: CoordinationOpRequest):
+    """任命与控制操作：appoint/pause/resume/revoke/finish/wake/set_mode/set_grant。"""
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    _cs = _coord_store()
+    try:
+        if req.op == "appoint":
+            out = await _cs.appoint(
+                work_id, card_id,
+                function_id=req.function_id,
+                objective=req.objective,
+                observe=req.observe, instruct=req.instruct,
+                models=req.models, mode=req.mode or "observe",
+                next_review_at=req.next_review_at, by="user", schedule_first=True)
+        elif req.op in ("pause", "resume", "revoke", "finish", "wake",
+                        "set_mode", "set_grant", "set_review_at"):
+            # [读入版本 2026-11-21 · 用户令] 变更类控制操作必带 expected_rev
+            # 并在后端校验（不匹配 409 带最新版本）；wake 是入账，不带。
+            if req.op != "wake" and req.expected_rev is None:
+                return _err(400,
+                            f"{req.op} 是变更操作，须带读入版本 expected_rev"
+                            "（面板当前显示的 rev）")
+            out = await _cs.control_op(
+                work_id, card_id, assignment_id=req.assignment_id,
+                op=req.op, mode=req.mode, observe=req.observe,
+                instruct=req.instruct, next_review_at=req.next_review_at,
+                note=req.note, expected_rev=req.expected_rev)
+        else:
+            return _err(400, f"未知 op: {req.op!r}（appoint/pause/resume/"
+                             "revoke/finish/wake/set_mode/set_grant）")
+    except Exception as exc:  # noqa: BLE001 统一转 HTTP
+        if type(exc).__name__ == "CoordinationError":
+            return _coord_err(exc)
+        raise
+    appt = (out or {}).get("appointment") or {}
+    # [任务二 2026-11-21] 强模型**首次起轮由任命触发**（任务书口径）：
+    # [2026-11-21 · 用户令] 后台回合绑定本次任命标识——起轮前校验仍在任
+    # 且活跃，暂停/撤回/换人后旧任务不启动不写入。起轮失败不影响任命本身。
+    if req.op == "appoint" and out.get("ok"):
+        from .message_runner import _spawn_tracked
+        _spawn_tracked(_coord_first_turn(work_id, card_id,
+                                         str(appt.get("assignment_id") or "")),
+                       work_id=work_id, card_id=card_id)
+    elif req.op == "wake" and out.get("ok"):
+        from ..infra import coordination_watcher
+        wake = appt["pending"][-1]
+        coordination_watcher._spawn_strong_turn(work_id, card_id, appt["assignment_id"],
+                                               "user_wake", _cs.wake_key(wake))
+    return {
+        "ok": True,
+        "assignment_id": appt.get("assignment_id", ""),
+        "state": appt.get("state", ""),
+        "mode": appt.get("mode", ""),
+        "rev": appt.get("rev", 0),
+        "op_seq": appt.get("op_seq", 0),
+        "next_review_at": appt.get("next_review_at", ""),
+    }
+
+
+async def _coord_first_turn(work_id: str, card_id: str,
+                            assignment_id: str = "") -> dict[str, Any]:
+    """任命触发的统筹首轮（打桩点：测试 monkeypatch 本函数）。
+
+    ``assignment_id``＝触发它的那次任命——runner 调用前核对仍在任且活跃，
+    落账前再查；暂停/撤回/换人后旧任务不启动、不写入新任命。
+    """
+    from ..infra import coordination_watcher
+    try:
+        return await coordination_watcher.dispatch_turn(
+            work_id, card_id, assignment_id, "appoint", assignment_id)
+    except Exception as exc:  # noqa: BLE001 起轮失败不拖垮任命响应
+        logger.warning("[coordination] 首轮起轮失败 work=%s card=%s: %s",
+                       work_id, card_id, exc)
+        return {"status": "error", "detail": {"error": str(exc)}}
+
+
+@router.patch("/works/{work_id}/cards/{card_id}/coordination")
+async def patch_card_coordination(work_id: str, card_id: str,
+                                  req: CoordinationPlanPatch):
+    """保存完整新计划（乐观并发）：expected_rev 过期返回 409＋最新版本。"""
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    _cs = _coord_store()
+    try:
+        out = await _cs.save_plan(
+            work_id, card_id, assignment_id=req.assignment_id,
+            expected_rev=req.expected_rev, plan=req.plan, by="user")
+    except Exception as exc:  # noqa: BLE001 统一转 HTTP
+        if type(exc).__name__ == "CoordinationError":
+            return _coord_err(exc)
+        raise
+    appt = (out or {}).get("appointment") or {}
+    return {"ok": True, "rev": appt.get("rev", 0),
+            "updated_at": appt.get("updated_at", "")}
+
+
 # [phase8.5] 原文只读端点（给未来前端留口，不加写端点）
 @router.get("/works/{work_id}/manuscript")
 async def list_work_manuscript(work_id: str):
@@ -3441,8 +3768,31 @@ async def ctl_run_message(req: CtlRunMessageRequest):
                      act_meta=req.act_meta, ctx_card=req.ctx_card,
                      tool_allow=(set(req.tool_allow)
                                  if req.tool_allow else None),
-                     profile=req.profile, prior_extra=req.prior_extra),
+                     profile=req.profile, prior_extra=req.prior_extra,
+                     task_binding=req.task_binding),
         work_id=req.work_id, card_id=req.card_id))
+
+
+class CtlCoordinationTurnRequest(BaseModel):
+    work_id: str
+    card_id: str
+    assignment_id: str
+    trigger: str
+    request_id: str
+
+
+@router.post("/ctl/coordination_turn")
+async def ctl_coordination_turn(req: CtlCoordinationTurnRequest):
+    from ..infra import coordination_watcher
+
+    if req.trigger == "weak_observation":
+        turn = coordination_watcher.run_owned_batch(
+            req.work_id, req.card_id, req.assignment_id, req.request_id)
+    else:
+        turn = coordination_watcher.run_owned_turn(
+            req.work_id, req.card_id, req.assignment_id, req.trigger, req.request_id)
+    return await message_runner.await_spawned(message_runner._spawn_tracked(
+        turn, work_id=req.work_id, card_id=req.card_id))
 
 
 @router.post("/ctl/deliver")
@@ -3461,7 +3811,30 @@ async def ctl_review_step(req: CtlReviewStepRequest):
     run_once 入口自查分片：走到这里时属主已是本进程，不再转发。
     """
     from . import review_runner as _rr
-    return await _rr.run_once(req.work_id, req.review_id, hint=req.hint)
+    return await _rr.run_once(req.work_id, req.review_id, hint=req.hint,
+                              expect=req.expect)
+
+
+@router.post("/ctl/review_snapshot")
+async def ctl_review_snapshot(req: CtlReviewSnapshotRequest):
+    from . import review_runner
+
+    return await review_runner.review_snapshot(req.work_id, req.review_id, caller=req.caller)
+
+
+@router.post("/ctl/review_resume")
+async def ctl_review_resume(req: CtlReviewResumeRequest):
+    from . import review_runner
+
+    return await review_runner.request_resume(req.work_id, req.target_id, seat=req.seat,
+                                              spawn=req.spawn, source=req.source)
+
+
+@router.post("/ctl/review_open_batch")
+async def ctl_review_open_batch(req: CtlReviewOpenBatchRequest):
+    from ..storage import review_store
+
+    return await review_store.open_batch(**req.model_dump())
 
 
 @router.post("/ctl/align_kick")
@@ -3499,7 +3872,8 @@ async def _run_message(work_id: str, card_id: str, content: str,
                        profile: str = "",
                        prior_extra: Optional[list] = None,
                        session_id: str = "",
-                       persona: str = "") -> Any:
+                       persona: str = "",
+                       task_binding: Optional[dict[str, Any]] = None) -> Any:
     from ..infra import procs as _procs
     if (_procs.is_runner()
             and _procs.owner_index_of(work_id, card_id)
@@ -3512,7 +3886,9 @@ async def _run_message(work_id: str, card_id: str, content: str,
             "act_as": act_as, "act_meta": act_meta, "ctx_card": ctx_card,
             "tool_allow": sorted(tool_allow) if tool_allow else None,
             "profile": profile, "prior_extra": prior_extra,
-            "session_id": session_id, "persona": persona})
+            "session_id": session_id, "persona": persona,
+            # [批二·按任务缩量 2026-11-20] 显式任务绑定随转发带过去（跨片不丢）。
+            "task_binding": task_binding})
     # [席位会话 2026-11-18 · 一卡多会话] 会话锚：附加会话＝card@N，
     # 会话文件/历史/事件流/回合锁/停止登记全部按它寻址——与主会话并行
     # （锁在会话键上不在卡键上），卡面事实仍归卡。
@@ -3601,19 +3977,27 @@ async def _run_message(work_id: str, card_id: str, content: str,
         control.unbind_turn_task(work_id, sid, _turn_task)
         event_stream.reset_stream_context(_stream_ctx_token)
         raise
-    if source and source.get("kind") == "review_activation":
+    if source and source.get("kind") in ("review_activation", "review_dispatch"):
         from . import review_runner
 
-        current = False
+        block_reason = "review_dispatch_unverified"
         try:
-            current = await review_runner.activation_wake_is_current(work_id, card_id, source)
+            if source["kind"] == "review_activation":
+                current = await review_runner.activation_wake_is_current(
+                    work_id, card_id, source)
+                block_reason = "" if current else "review_activation_stale"
+            else:
+                block_reason = await review_runner.dispatch_block_reason(
+                    work_id, card_id, source, phase="turn")
         finally:
-            if not current:
+            if block_reason:
                 serial_gate.release(work_id, sid)
                 session_facade.turn_release(work_id, sid, turn_owner)
                 control.unbind_turn_task(work_id, sid, _turn_task)
                 event_stream.reset_stream_context(_stream_ctx_token)
-        if not current:
+        if block_reason == "review_dispatch_unverified":
+            return _err(503, "评审指令待核实")
+        if block_reason:
             return _err(409, "待接收的评审请求已变更")
     failed = False
     # [goal 域 2026-10-20 · 照抄 dsh] 回合来源。工具权威判定（create/edit/pause/
@@ -3641,7 +4025,8 @@ async def _run_message(work_id: str, card_id: str, content: str,
                                           act_as=act_as, act_meta=act_meta,
                                           ctx_card=ctx_card, tool_allow=tool_allow,
                                           profile=profile, prior_extra=prior_extra,
-                                          session_id=sid, persona=persona)
+                                          session_id=sid, persona=persona,
+                                          task_binding=task_binding)
     except asyncio.CancelledError:
         # 取消 ⇒ 已预留/已接纳的那一轮必须 pause 目标，绝不能自动重启（原版
         # turn/end reason=aborted 的 idle 检查点语义）。
@@ -3766,13 +4151,21 @@ async def _run_message(work_id: str, card_id: str, content: str,
             # 插话原文（含 〔用户插话〕/〔卡间消息〕 标）作 prompt 直接进。
             if _steer_remains:
                 try:
+                    plain = [entry for entry in _steer_remains
+                             if not entry.review_source]
                     _report_targets = sorted({
-                        target for entry in _steer_remains for target in entry.report_targets
+                        target for entry in plain for target in entry.report_targets
                     })
-                    _rt = await message_runner.deliver_now(
-                        work_id, card_id,
-                        text="\n\n".join(entry.text for entry in _steer_remains),
+                    _rt = bool(plain) and await message_runner.deliver_now(
+                        work_id, card_id, text="\n\n".join(entry.text for entry in plain),
                         source={"kind": "steer_remains", "report_targets": _report_targets})
+                    for entry in _steer_remains:
+                        if entry.review_source:
+                            delivered = await message_runner.deliver_now(
+                                work_id, card_id, text=entry.text,
+                                steer_text=entry.text.removeprefix("系统消息："),
+                                source=entry.review_source)
+                            _rt = _rt or delivered
                     if _rt:
                         logger.info("[steer] 残留插话补投 card=%s 条数=%d",
                                     card_id, len(_steer_remains))
@@ -3837,7 +4230,8 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
                              profile: str = "",
                              prior_extra: Optional[list] = None,
                              session_id: str = "",
-                             persona: str = "") -> Any:
+                             persona: str = "",
+                             task_binding: Optional[dict[str, Any]] = None) -> Any:
     """_run_message 的实际链路体（外层只负责逐字流 contextvar 的设/还原）。
 
     [T-0009 拆分] 本函数**只做三件事**：① 装配（读卡/pair 去重/上下文）
@@ -3875,6 +4269,9 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
     # 职能身份（145区＋回复 from），工具面/模型层仍归本卡。
     state.session_id = str(session_id or "")
     state.persona = str(persona or "")
+    # [批二·按任务缩量 2026-11-20] **本轮可信任务绑定**（显式）：知道任务的人
+    # 给的（差事投递／目标驱动／回合入口）。没有它 ⇒ 范围判不出来 ⇒ 完整材料。
+    state.task_binding = dict(task_binding) if task_binding else None
     # 本会话键（与 _run_message 外层的 sid 同口径）——历史读/会话写/事件
     # 流/进度点全部按它寻址。
     sid = state.session_id or card_id
@@ -4076,7 +4473,7 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
                 outcome = await message_runner.run_seats(state)
             if outcome.kind != "continue":
                 break
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError) as exc:
         _hup = getattr(state, "hop_unparsed", None)
         if _hup:
             state.hop_unparsed = None
@@ -4096,11 +4493,20 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
                 1 for e in (state.tool_events or [])
                 if int(e.get("round") or 0) == int(_acc.get("round") or 0)
                 and e.get("ok") is True)
+            _acc["executed_tools"] = [
+                str(e.get("tool") or "") for e in (state.tool_events or [])
+                if int(e.get("round") or 0) == int(_acc.get("round") or 0)]
             _acc["aborted"] = True
             event_stream.emit(work_id, sid, "hop_accounting", _acc)
             tool_receipt.ledger({"kind": "request_accounting",
                                  "work_id": work_id, "card_id": card_id,
                                  **_acc})
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        if isinstance(exc, card_tools.MaterialStale):
+            # [批三返修③] 材料在发送边界过期是**控制裁定**，不是模型错误——
+            # 不吞进 handle_error 记 502，透传给评审回合按过期路径收口。
+            raise
         message_runner.handle_error(state, exc)
 
     # 段④ prompt 日志（无论成败）

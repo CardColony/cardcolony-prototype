@@ -186,8 +186,8 @@ async def test_v6_mark_advances_over_tool_blocks(sandbox, work, monkeypatch):
     # 单段旧格式产出过不了 S2a 的 G-1 闸（F3，整批作废）。
     from tests._condense_stub import three_stage_stub as _tss
     monkeypatch.setattr(memory_store, "_condense_call", _tss(gist="做了事"))
-    ok = await memory_store._condense_one_batch(wid, cid, blocks, 0)
-    assert ok is True
+    result = await memory_store._condense_one_batch(wid, cid, blocks, 0, verify_source=False)
+    assert result["ok"] is True
     state = memory_store.load_memory(wid, cid)
     assert state["mark"] == blocks[-1]["seq"] + 1, "mark 越过含工具块的窗口最后一块"
     assert blocks[state["mark"]:] == [], "未凝窗口里工具块已消失"
@@ -208,8 +208,8 @@ async def test_v6b_all_tool_window_sells_account_without_model_call(sandbox, wor
         return "不应被调用"
 
     monkeypatch.setattr(memory_store, "_condense_call", fake_call)
-    ok = await memory_store._condense_one_batch(wid, cid, window, 1)
-    assert ok is True
+    result = await memory_store._condense_one_batch(wid, cid, window, 1, verify_source=False)
+    assert result["ok"] is True
     assert called["n"] == 0, "不得送空 prompt 给模型"
     assert memory_store.load_memory(wid, cid)["mark"] == window[-1]["seq"] + 1
 

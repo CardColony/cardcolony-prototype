@@ -47,6 +47,16 @@ SYSTEM_SENDER = "system"
 #: 投递留痕的事件类型
 EV_TYPE = "harness_message"
 
+
+class ContinueReceipt(str):
+    """续跑短码及属主事实。字符串兼容现有投递和回放调用方。"""
+
+    def __new__(cls, code: str, details: dict[str, Any]):
+        receipt = super().__new__(cls, code)
+        receipt.details = details
+        return receipt
+
+
 #: ``{event.<路径>}`` 占位符
 _EVENT_PH_RE = re.compile(r"\{event\.([A-Za-z_][\w.]*)\}")
 
@@ -283,6 +293,13 @@ async def _deliver_continue(work_id: str, target: str, text: str, *,
         from ..api import review_runner
         r = await review_runner.run_once(work_id, target, hint=text,
                                          expect=expect)
+        r = r if isinstance(r, dict) else {}
+        error = r.get("error")
+        reason = str(r.get("reason") or (
+            error.get("code") if isinstance(error, dict) else "") or "unverified")
+        details = {k: r[k] for k in ("error", "seat", "kind", "voted", "vote",
+                                      "vote_draft", "diff") if k in r}
+        details["reason"] = reason
         # [过期步骤销账 2026-11-20 · 批次A第三轮返工] 评审属主判定
         # 步骤身份已过期（批次/稿次/next 与登记时不符）⇒ 不执行、
         # 回 continue:stale——台账销账 stale 不重试。
@@ -290,14 +307,14 @@ async def _deliver_continue(work_id: str, target: str, text: str, *,
             try:
                 event_stream.emit(work_id, target, EV_TYPE, {
                     "rule_id": rule_id, "to": str(target), "wake": False,
-                    "mode": "continue", "started": False,
+                    "mode": "continue", "started": False, "accepted": False,
                     "reason": "stale_step", "stale": True,
                     "action_id": str(action_id or ""),
                     "text": text,
                 })
             except Exception:  # noqa: BLE001
                 pass
-            return "continue:stale"
+            return ContinueReceipt("continue:stale", {**details, "started": False})
         # [受理记账 2026-11-20 · 批次A返工4] 受理与否由评审入口的
         # ``accepted`` 显式回执说了算——no_auto/already_running/步崩/
         # 投递失败 ⇒ continue:0（台账 failed 待 resume）；无键旧形态
@@ -305,31 +322,33 @@ async def _deliver_continue(work_id: str, target: str, text: str, *,
         # [2026-10-31] 到站原因补两个：**stopped**（用户点了停止）与
         # **review_busy**（评审卡被别的回合占着，本步让路）——都不是"这一步干成了"，
         # 不该报成 continue 成功（否则前端会显示"已续跑"，实际一步没走）。
-        if isinstance(r, dict) and "accepted" in r:
+        if "accepted" in r:
             ok = bool(r.get("accepted"))
         else:
             # 回落黑名单与 review_runner._STEP_REFUSED 同口径：只拒
             # 「请求没被真正处理」的结局；no_batch 是确定终点照旧受理。
-            ok = bool(isinstance(r, dict) and r.get("reason") not in
+            ok = bool(r and not error and reason not in
                       ("already_running", "speak_failed",
                        "stopped", "review_busy", "no_auto",
                        "step_error", "child_busy", "wake_failed",
                        "advance_no_members"))
+        started = bool(r.get("started", ok))
         try:
             event_stream.emit(work_id, target, EV_TYPE, {
                 "rule_id": rule_id, "to": str(target), "wake": ok,
-                "mode": "continue", "started": ok,
-                "reason": str((r or {}).get("reason") or ""),
+                "mode": "continue", "started": started, "accepted": ok,
+                "reason": reason,
                 "action_id": str(action_id or ""),
                 "text": text,
             })
         except Exception:  # noqa: BLE001
             pass
-        return f"continue:{int(ok)}"
+        return ContinueReceipt(f"continue:{int(ok)}", {**details, "started": started})
     except Exception as exc:  # noqa: BLE001 投递失败不影响触发它的主流程
         logger.warning("[harness] 续接失败 work=%s to=%s rule=%s: %s",
                        work_id, target, rule_id, exc)
-        return None
+        return ContinueReceipt("continue:0", {
+            "reason": "delivery_failed", "error": str(exc), "started": False})
 
 
 def deliver_accepted(result: Any) -> bool:

@@ -598,8 +598,8 @@ async def test_fatal_model_error_reports_to_user(sandbox, work, monkeypatch):
     events = []
     monkeypatch.setattr(event_stream, "emit",
                         lambda w, c, t, d=None: events.append((w, c, t, d)) or {"seq": 1})
-    ok = await memory_store._condense_one_batch(wid, cid, window, 0)
-    assert ok is False
+    result = await memory_store._condense_one_batch(wid, cid, window, 0, verify_source=False)
+    assert result["ok"] is False
     errs = [d for _w, _c, t, d in events if t == "error"]
     assert errs and "无法继续使用" in str(errs[0].get("error")), "失效类必须报错给用户"
 
@@ -611,8 +611,8 @@ async def test_fatal_model_error_reports_to_user(sandbox, work, monkeypatch):
         raise RuntimeError("connection reset by peer")
 
     monkeypatch.setattr(memory_store, "_condense_call", conn_call)
-    ok = await memory_store._condense_one_batch(wid, cid, window, 0)
-    assert ok is False and not [d for _w, _c, t, d in events if t == "error"],         "批级断连失败不打扰用户（留给重试）"
+    result = await memory_store._condense_one_batch(wid, cid, window, 0, verify_source=False)
+    assert result["ok"] is False and not [d for _w, _c, t, d in events if t == "error"],         "批级断连失败不打扰用户（留给重试）"
 
     monkeypatch.setattr(memory_store, "trigger_k_tokens", lambda: 0)
 
@@ -635,8 +635,8 @@ async def test_oversized_block_chunk_condensed(work, monkeypatch):
     calls = []
     monkeypatch.setattr(memory_store, "_condense_call",
                         three_stage_stub(gist="巨块段结论", record=calls))
-    ok = await memory_store._condense_one_batch(wid, cid, window, 0)
-    assert ok is True and calls, "分块凝必须真调模型"
+    result = await memory_store._condense_one_batch(wid, cid, window, 0, verify_source=False)
+    assert result["ok"] is True and calls, "分块凝必须真调模型"
     st = memory_store.load_memory(wid, cid)
     assert st["mark"] == 2, "水位越过巨块"
     chunk_nodes = [e for e in st["entries"]

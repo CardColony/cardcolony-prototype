@@ -327,8 +327,8 @@ def _report_state(target: str, events: list[dict[str, Any]]) -> str:
         if recipients:
             for recipient in recipients:
                 actual = str(recipient.get("to") or "").strip()
-                if actual == target and event.get("ok") is True:
-                    if str(recipient.get("msg_id") or "").strip():
+                if actual == target:
+                    if event.get("ok") is True and str(recipient.get("msg_id") or "").strip():
                         return "verified"
                     unverified = True
                 elif not actual:
@@ -368,6 +368,7 @@ def receipt_verdict(state: Any) -> dict[str, Any]:
     required = set(bound["required_tools"])
     is_op = bound["kind"] == "op"
     op_satisfied = not is_op or any(e.get("tool") in required for e in ok_events)
+    op_missing = is_op and not any(e.get("tool") in required for e in events)
     # [任务绑定核对 2026-11-20 · B2返修] task：要求动作到要求目标的
     # 真实派发逐项核，**「动作已派发」与「业务判据已满足」分开记**——
     #   missing    无任何满足目标的派发 ⇒ 补一次的判据；
@@ -390,17 +391,26 @@ def receipt_verdict(state: Any) -> dict[str, Any]:
         _tgt = str(bound.get("target") or "")
         if _act:
             _cands = [e for e in events if str(e.get("tool") or "") == _act]
-            task_dispatched = any(e.get("ok") is True for e in _cands)
+            task_dispatched = bool(_cands)
             if _act in SEND_TOOLS:
                 # [B2返修·收件人证据全扫] 收件人记录不只看 ok 事件——
                 # 「落信成功、唤醒/后续步骤失败」的形态里 msg_id 已落账，
                 # 落账证据不因事件 ok=False 而消失（防重复发信的第一道闸）。
                 _recs: list[dict[str, str]] = []
+                unknown_recipients = []
                 for e in _cands:
-                    for r in ((e.get("send") or {}).get("recipients") or []):
+                    recipients = (e.get("send") or {}).get("recipients") or []
+                    if not recipients and e.get("ok") is True:
+                        known_targets = _event_targets(e)
+                        if not known_targets or not _tgt or _tgt in known_targets:
+                            unknown_recipients.append("")
+                    for r in recipients:
                         if not isinstance(r, dict):
                             continue
-                        _to = str(r.get("to") or "")
+                        _to = str(r.get("to") or "").strip()
+                        if not _to:
+                            unknown_recipients.append(str(r.get("msg_id") or "").strip())
+                            continue
                         if _tgt and _to != _tgt:
                             continue
                         _recs.append({
@@ -411,13 +421,13 @@ def receipt_verdict(state: Any) -> dict[str, Any]:
                     # 无满足目标的收件人记录——含「发信工具成功但
                     # recipients 未记录」（msg_report/send_card_message
                     # 无 send 块）时退回 tool+目标粗核，锚缺如实降级。
-                    _legacy = [e for e in _cands
-                               if e.get("ok") is True
-                               and (not _tgt or _tgt in _event_targets(e))]
-                    if _legacy:
+                    if unknown_recipients:
                         task_state = "unverified"
                         task_satisfied = False
+                        anchors = sorted({mid for mid in unknown_recipients if mid})
                         task_note = "收件人明细未记录，投递状态待核实"
+                        if anchors:
+                            task_note += f"（msg_id {'、'.join(anchors)}）"
                     else:
                         # [B2返修·失败分级] 「确认目标侧没有派发」才算
                         # missing 可补：失败事件全是**派发前拒绝**
@@ -477,7 +487,7 @@ def receipt_verdict(state: Any) -> dict[str, Any]:
                   f"{detail}")
     return {"bound": bound, "dispatched": dispatched,
             "ok": len(ok_events), "satisfied": satisfied, "detail": detail,
-            "op_satisfied": op_satisfied, "send_state": send_state,
+            "op_satisfied": op_satisfied, "op_missing": op_missing, "send_state": send_state,
             "reports": reports,
             "task_state": task_state, "task_missing": task_missing,
             # [B2返修] 「动作已派发」与「业务判据已满足」分开记——
@@ -664,8 +674,6 @@ def remediation_prompt(state: Any, bound: dict[str, Any],
     kind = str(bound.get("kind") or "")
     v = verdict or {}
     debts: list[str] = []
-    _STATE_CN = {"not_sent": "未送出", "unverified": "待核实",
-                 "failed": "失败"}
     if kind == "task":
         act = str(bound.get("action") or "")
         tgt = str(bound.get("target") or "—")
@@ -676,11 +684,6 @@ def remediation_prompt(state: Any, bound: dict[str, Any],
             debts.append(
                 f"欠任务动作 {act}（目标 {tgt}，任务 {tid}{rev}"
                 "——本回合无到目标的真实派发记录）")
-        elif ts == "unverified":
-            debts.append(
-                f"任务动作 {act}→{tgt}（任务 {tid}{rev}）已派发但判据"
-                f"未证（{v.get('task_note') or '待核实'}）——先核查既有"
-                "记录，勿重复执行")
         elif act and not v:
             debts.append(
                 f"欠任务动作 {act}（目标 {tgt}，任务 {tid}{rev}"
@@ -692,26 +695,27 @@ def remediation_prompt(state: Any, bound: dict[str, Any],
         if not (v.get("reports")):
             tg = "、".join(bound.get("targets") or [])
             debts.append(f"欠向发令卡 {tg} 的汇报（本回合尚无送出记录）")
-    else:
+    elif kind == "op" and (not v or v.get("op_missing")):
         req = "/".join(sorted(bound.get("required_tools") or []))
         debts.append(f"欠绑定动作 {req}（本回合无派发记录）")
     # 汇报义务独立核对：逐目标列实际欠项（与任务动作欠项可并存；
     # directive 的欠项即汇报本体，由此行承载，不再另起静态行）。
     reports = v.get("reports") or {}
     if reports:
-        _owed = sorted(
-            (t, s) for t, s in reports.items() if s != "verified")
-        if _owed:
+        already_named = (bound.get("target") if v.get("task_missing")
+                         and bound.get("action") == "report_up" else None)
+        owed = sorted(t for t, status in reports.items()
+                      if status == "not_sent" and t != already_named)
+        if owed:
             debts.append(
-                "欠汇报：" + "、".join(
-                    f"{t}（{_STATE_CN.get(s, s)}）" for t, s in _owed)
-                + "——本回合尚无送出记录")
+                "欠汇报：" + "、".join(owed) + "——本回合尚无送出记录")
     missing = "；".join(debts) or "本回合绑定的执行要求存在未满足项"
-    if bound.get("text") and kind == "task":
+    include_task = kind == "task" and (not v or v.get("task_missing"))
+    if bound.get("text") and include_task:
         missing += f"；原任务：{bound['text']}"
-    if bound.get("accept") and kind == "task":
+    if bound.get("accept") and include_task:
         missing += f"；判据：{bound['accept']}"
-    if bound.get("session") and kind == "task":
+    if bound.get("session") and include_task:
         missing += f"；责任会话：{bound['session']}"
     done: list[str] = []
     for e in (getattr(state, "tool_events", None) or [])[-8:]:
@@ -726,6 +730,6 @@ def remediation_prompt(state: Any, bound: dict[str, Any],
     return (
         f"[系统提示] 本回合绑定了执行要求（{kind}），{missing}。"
         f"本轮已完成动作：{done_txt}（结果原文见轮内回执，勿重复执行）。"
-        "上面的任务还欠执行——请通过当前通道的标准调用方式发出实际调用；"
+        "请只补上面明确列出的欠项，通过当前通道的标准调用方式执行；"
         "执行结果以系统回执为准。"
         "若研判后确认无需执行，请明说理由并收口。")

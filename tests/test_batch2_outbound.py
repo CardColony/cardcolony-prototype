@@ -20,141 +20,17 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 import httpx
 import pytest
 
+from src.api import context_regions  # noqa: F401
+from outbound_probe import (CHILD_MARK, DEP_MARK, LIST_MARK,  # noqa: F401
+                            OutboundRecorder, TurnScript, frame_finish,
+                            frame_text, frame_tool, lcp_bytes, seg_bytes, sse)
+
 ROOT = Path(__file__).resolve().parents[1]
-
-LIST_MARK = "〔卡片清单〕"
-CHILD_MARK = "〔直接子卡现状〕"
-DEP_MARK = "## 依赖关联"
-
-
-# ============================================================
-# 出站抓取器
-# ============================================================
-
-class OutboundRecorder:
-    """拦 httpx 出站，记录**实际发送的请求正文**。"""
-
-    def __init__(self, responder: Callable[[int, dict], Any]):
-        self.requests: list[dict[str, Any]] = []
-        self._responder = responder
-
-    async def send(self, client, request, **kwargs):  # noqa: ANN001
-        raw = request.content or b""
-        try:
-            body = json.loads(raw.decode("utf-8"))
-        except Exception:  # noqa: BLE001 非 JSON 体也记下来（字节照样算）
-            body = {}
-        rec = {"index": len(self.requests), "url": str(request.url),
-               "bytes": len(raw), "body": body, "raw": raw}
-        self.requests.append(rec)
-        out = self._responder(rec["index"], body)
-        if isinstance(out, BaseException):
-            raise out
-        return httpx.Response(200, content=out, request=request)
-
-    def install(self, monkeypatch) -> "OutboundRecorder":
-        """挂到 httpx 上。**必须是普通函数**（挂成 bound method 不会重绑 self，
-        参数会错位——实测踩过：适配器侧报的是「API request … failed」）。"""
-        rec = self
-
-        async def _send(client, request, **kwargs):  # noqa: ANN001
-            return await rec.send(client, request, **kwargs)
-
-        monkeypatch.setattr(httpx.AsyncClient, "send", _send)
-        return self
-
-    # -- 取数面 ---------------------------------------------------------
-    def texts(self, index: int) -> list[str]:
-        """第 index 次出站里所有消息的正文（按 wire 顺序）。"""
-        body = self.requests[index]["body"] or {}
-        out: list[str] = []
-        for m in body.get("messages") or []:
-            c = m.get("content")
-            if isinstance(c, str):
-                out.append(c)
-            elif isinstance(c, list):
-                out.append("".join(str(x.get("text") or "") for x in c
-                                   if isinstance(x, dict)))
-        return out
-
-    def joined(self, index: int) -> str:
-        return "\n".join(self.texts(index))
-
-    def count_mark(self, index: int, mark: str) -> int:
-        return self.joined(index).count(mark)
-
-    def system_text(self, index: int) -> str:
-        body = self.requests[index]["body"] or {}
-        for m in body.get("messages") or []:
-            if m.get("role") == "system":
-                c = m.get("content")
-                return c if isinstance(c, str) else str(c or "")
-        return ""
-
-
-def sse(*frames: dict) -> bytes:
-    """OpenAI 兼容 chat-completions 的 SSE 帧序列。"""
-    out = ["data: " + json.dumps(fr, ensure_ascii=False) + "\n\n" for fr in frames]
-    out.append("data: [DONE]\n\n")
-    return "".join(out).encode("utf-8")
-
-
-def frame_text(text: str, model: str = "fake-model") -> dict:
-    return {"model": model, "choices": [{"index": 0, "delta": {"content": text}}]}
-
-
-def frame_tool(call_id: str, name: str, args: dict, model: str = "fake-model") -> dict:
-    return {"model": model, "choices": [{"index": 0, "delta": {"tool_calls": [
-        {"index": 0, "id": call_id, "type": "function",
-         "function": {"name": name,
-                      "arguments": json.dumps(args, ensure_ascii=False)}}]}}]}
-
-
-def frame_finish(reason: str = "tool_calls", model: str = "fake-model") -> dict:
-    return {"model": model,
-            "choices": [{"index": 0, "delta": {}, "finish_reason": reason}]}
-
-
-def lcp_bytes(a: str, b: str) -> int:
-    """两段文本的最长公共前缀（UTF-8 字节）。"""
-    n = min(len(a), len(b))
-    i = 0
-    while i < n and a[i] == b[i]:
-        i += 1
-    return len(a[:i].encode("utf-8"))
-
-
-def _seg_bytes(joined: str, mark: str, header: str) -> int:
-    """某份材料在出站正文里的字节数。
-
-    口径：tail 档的材料是**独立消息**（按消息边界算）；system 档的材料是区段
-    （从区头到下一个区头）。
-    """
-    if mark and mark in joined:
-        # 独立消息：标记在消息开头 ⇒ 取整条消息长度
-        i = joined.find(mark)
-        start = joined.rfind("\n", 0, i) + 1
-        j = joined.find("\n", i)
-        # 该消息到下一个消息为止：找下一个「标记行或角色行」的起点不靠猜——
-        # 直接按「下一个换行 + 另一个标记」切，够用且不误伤。
-        nxt = len(joined)
-        for other in (CHILD_MARK, LIST_MARK):
-            k = joined.find(other, i + 1)
-            if k > 0:
-                nxt = min(nxt, joined.rfind("\n", 0, k) + 1)
-        seg = joined[start:nxt] if nxt > start else joined[start:]
-        return len(seg.encode("utf-8"))
-    i = joined.find(header)
-    if i < 0:
-        return 0
-    j = joined.find("\n## ", i + 1)
-    seg = joined[i:j if j > 0 else len(joined)]
-    return len(seg.encode("utf-8"))
 
 
 # ============================================================
@@ -203,7 +79,8 @@ async def _mk_world(sandbox) -> dict[str, Any]:
     cid1 = await _mk("子领域甲", mid)
     cid2 = await _mk("子领域乙", mid)
     cid3 = await _mk("孙卡丙", cid1)
-    tid = await _mk("目标卡", root)
+    # 对象卡挂在**执行方**下面（父子线 ⇒ 可读全卡面；关系线只可读需求文档）
+    tid = await _mk("目标卡", mid)
 
     # 子卡现状写厚一点（缩量前的子卡区就是被这些现状撑大的）
     for cid, tag in ((cid1, "甲"), (cid2, "乙"), (cid3, "丙")):
@@ -254,44 +131,34 @@ def _sync_new_child(wid: str, parent: str) -> str:
     return out
 
 
-# ============================================================
-# 回包脚本：首跳调工具 → 续跳直答；第一次尝试可故意断连（同跳重试）
-# ============================================================
+def _sync_update_child(wid: str, card_id: str, marker: str) -> str:
+    """**同步**改一张卡的现状（替身回包里调；走正常存储入口的同一张表）。"""
+    from src.storage import card_db
 
-class TurnScript:
-    """按请求内容回包（不靠次数）：带工具结果 ⇒ 续跳；否则 ⇒ 首跳。"""
+    def _fn(conn):
+        conn.execute(
+            "UPDATE cards SET status_block = ? WHERE card_id = ?",
+            (marker + "新的现状正文。", card_id))
+        return card_id
 
-    def __init__(self, *, fail_first: bool = False, on_first_hop=None):
-        self.fail_first = fail_first
-        self.on_first_hop = on_first_hop
-        self.served = 0
-
-    def __call__(self, index: int, body: dict) -> Any:
-        msgs = body.get("messages") or []
-        has_tool_result = any(m.get("role") == "tool" for m in msgs)
-        if has_tool_result:
-            # 工具续跳轮：直答收口
-            return sse(frame_text("已按判据核对完毕。"), frame_finish("stop"))
-        # 首跳：先按需断连一次（同位置重发），否则真调一个工具
-        if self.fail_first and self.served == 0:
-            self.served += 1
-            raise httpx.ConnectError("（替身）首试断连——触发同位置重发")
-        if self.on_first_hop is not None:
-            self.on_first_hop()
-        return sse(
-            frame_tool("call_1", "read_card", {"card_id": "", "block": "现状"}),
-            frame_finish("tool_calls"),
-        )
+    card_db.write_sync(wid, _fn)
+    back = card_db.read_sync(wid, lambda conn: [
+        r["status_block"] for r in conn.execute(
+            "SELECT status_block FROM cards WHERE card_id=?", (card_id,))], [])
+    assert back and marker in back[0], "现状写入没落盘"
+    return card_id
 
 
 async def _run_turn(wid: str, card_id: str, script: TurnScript,
-                     monkeypatch) -> OutboundRecorder:
+                     monkeypatch, task_binding: Optional[dict] = None
+                     ) -> OutboundRecorder:
     """走生产入口跑一轮（routes._run_message），出站全被记录。"""
     from src.api import routes
     rec = OutboundRecorder(script)
     rec.install(monkeypatch)
     await routes._run_message(wid, card_id, "把这件事按判据做完", None,
-                              source_kind="human")
+                              source_kind="human",
+                              task_binding=task_binding)
     return rec
 
 
@@ -350,6 +217,30 @@ async def test_seats_outbound_shape_and_material(sandbox, monkeypatch, seat):
 
 
 @pytest.mark.asyncio
+async def test_siwc_seat_outbound_is_responses_class(sandbox, monkeypatch):
+    """SIWC 座（Responses API·**另一类序列化**）：出站形状与材料位置。
+
+    替身覆盖的位置＝**token 新鲜度判定**（本机 token 已过期，替身放行；
+    请求本身被 httpx 拦下，不会出网）。
+    """
+    from src.model_gateway.llm_siwc import adapter as _siwc
+
+    monkeypatch.setattr(_siwc._TokenStore, "_fresh", lambda self, data: True)
+    w = await _mk_world(sandbox)
+    from src.storage import model_override as _mo
+    _mo.put_row(w["wid"], w["mid"], {"model": "gpt-62-sol-siwc"}, src="manual")
+    script = TurnScript(fail_first=False)
+    rec = await _run_turn(w["wid"], w["mid"], script, monkeypatch)
+    assert rec.requests, "SIWC 没有出站记录"
+    body = rec.requests[0]["body"] or {}
+    assert isinstance(body.get("input"), list), "SIWC 出站应是 Responses 的 input 数组"
+    assert body.get("store") is False and body.get("stream") is True
+    joined = json.dumps(body.get("input"), ensure_ascii=False)
+    assert joined.count(LIST_MARK) == 1, "SIWC 出站里清单份数≠1"
+    assert joined.count(CHILD_MARK) == 1, "SIWC 出站里子卡份数≠1"
+
+
+@pytest.mark.asyncio
 async def test_same_turn_state_write_visible_next_hop(sandbox, monkeypatch):
     """同一回合里的一次真实写入 ⇒ **下一次**需要它的请求看得到新版本。"""
     w = await _mk_world(sandbox)
@@ -366,6 +257,83 @@ async def test_same_turn_state_write_visible_next_hop(sandbox, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_same_turn_existing_child_status_visible_next_hop(sandbox,
+                                                                monkeypatch):
+    """返工④a：**已有子卡**的现状更新 ⇒ 下一跳只出现新版（完整材料档）。
+
+    完整材料档（CONTEXT_SCOPE=0）：子卡区的现状正文在 tail 里 ⇒ 下一跳必须是
+    新写入的那一版，旧版不得再出现。
+    """
+    monkeypatch.setenv("CONTEXT_SCOPE", "0")
+    w = await _mk_world(sandbox)
+    wid = w["wid"]
+    child = w["children"][0]
+    marker = "〔本轮改了子卡现状〕"
+
+    def _write():
+        _sync_update_child(wid, child, marker)
+
+    script = TurnScript(on_first_hop=_write)
+    rec = await _run_turn(wid, w["mid"], script, monkeypatch)
+    last = rec.joined(len(rec.requests) - 1)
+    assert marker in last, "下一跳必须看见子卡的新现状"
+    assert "细节。细节。细节。" in last, "旧版正文不应整段留在下一跳"
+
+
+@pytest.mark.asyncio
+async def test_same_turn_bound_object_status_visible_next_hop(sandbox,
+                                                             monkeypatch):
+    """返工④b：**已绑定对象卡**的现状更新 ⇒ 下一跳只出现新版。
+
+    复核复现过：对象卡现状更新后，刷新仍把旧正文发进 tail —— 根因是刷新只
+    刷了清单与子卡现状，没刷「本轮对象卡」正文。
+    """
+    monkeypatch.setenv("CONTEXT_SCOPE", "1")
+    w = await _mk_world(sandbox)
+    wid = w["wid"]
+    obj = w["target"]
+    marker = "〔本轮改了对象卡现状〕"
+
+    def _write():
+        _sync_update_child(wid, obj, marker)
+
+    script = TurnScript(on_first_hop=_write)
+    rec = await _run_turn(wid, w["mid"], script, monkeypatch,
+                           task_binding={"kind": "card", "card_id": obj})
+    first = rec.joined(0)
+    last = rec.joined(len(rec.requests) - 1)
+    assert "本轮对象卡" in first, "首跳应带对象卡正文（对象＝本卡的子卡，可读）"
+    assert marker not in first, "首跳还不该看见写入"
+    assert marker in last, "下一跳必须看见对象卡的新现状"
+
+
+@pytest.mark.asyncio
+async def test_turn_material_not_persisted_into_history(sandbox, monkeypatch):
+    """当轮材料（清单/子卡现状）**不该进会话历史/缓存板**——进了就每轮重发。
+
+    生产样本实测：历史段里带着**旧轮**的当轮材料（副本的 context_board 与
+    session_blocks 都能查到〔卡片清单〕行）⇒ A→B 总字节几乎不变（材料只是
+    从 system 挪进了历史），真正省下的只有可缓存前缀。
+    """
+    from src.storage import context_board as _cb
+    from src.storage import session_facade as _sf
+
+    w = await _mk_world(sandbox)
+    script = TurnScript(fail_first=False)
+    rec = await _run_turn(w["wid"], w["mid"], script, monkeypatch)
+    # 本轮出站：材料各一份（当轮）
+    assert rec.count_mark(0, LIST_MARK) == 1
+    assert rec.count_mark(0, CHILD_MARK) == 1
+    # 会话历史里不该有当轮材料
+    hist = str(await _sf.read(w["wid"], w["mid"]) or "")
+    assert LIST_MARK not in hist, "当轮材料落进了会话历史（每轮重发）"
+    # 缓存板里也不该有
+    rows = _cb.read_board(w["wid"], w["mid"]) or []
+    blob = json.dumps(rows, ensure_ascii=False, default=str)
+    assert LIST_MARK not in blob, "当轮材料落进了缓存板（每轮重发）"
+
+
+@pytest.mark.asyncio
 async def test_three_groups_readings(sandbox, monkeypatch):
     """三组读数：第一批完成／仅移位／按任务缩量（同一棵树、同一入口）。"""
     from src.api import context_regions
@@ -373,19 +341,24 @@ async def test_three_groups_readings(sandbox, monkeypatch):
     w = await _mk_world(sandbox)
     wid = w["wid"]
 
-    async def _run_group(delivery: str, scope_on: bool) -> dict[str, Any]:
-        """跑一组：每组**独立一棵工作树**（否则上一组的对话历史会进下一组的
-        prior，回包脚本按「有没有 tool 结果」判轮次就会认错）。"""
+    async def _run_group(delivery: str, scope_on: bool,
+                         binding_kind: Optional[str] = None) -> dict[str, Any]:
+        """跑一组：同一棵树、同一入口，只换槽位与范围档。
+
+        ``binding_kind``＝本轮**可信任务绑定**的形态（``jurisdiction`` 管辖
+        范围／``card`` 对象卡）。没有绑定（None）⇒ 范围判不出来 ⇒ 完整材料
+        （返工①的对照组）。
+        """
         monkeypatch.setenv("CONTEXT_SCOPE", "1" if scope_on else "0")
         g = await _mk_world(sandbox)
+        binding = ({"kind": binding_kind, "card_id": g["mid"]}
+                   if binding_kind else None)
         patched = []
         for spec in context_regions.REGION_TABLE:
             if spec.get("key") in ("card_list", "child_status"):
                 patched.append((spec, spec.get("delivery"), spec.get("render")))
                 spec["delivery"] = delivery
                 if delivery == "system":
-                    # 移位前：这两区的载荷是**字符串**（无 tail 来源标记）。
-                    # 现在它们渲染成 tail 事实消息 ⇒ 这里取回正文（去掉标记行）。
                     orig = spec["render"]
 
                     def _as_system(ctx, _orig=orig):
@@ -401,7 +374,8 @@ async def test_three_groups_readings(sandbox, monkeypatch):
                     spec["render"] = _as_system
         try:
             script = TurnScript(fail_first=False)
-            rec = await _run_turn(g["wid"], g["mid"], script, monkeypatch)
+            rec = await _run_turn(g["wid"], g["mid"], script, monkeypatch,
+                                   task_binding=binding)
         finally:
             for spec, old_delivery, old_render in patched:
                 spec["delivery"] = old_delivery
@@ -414,9 +388,9 @@ async def test_three_groups_readings(sandbox, monkeypatch):
                 "index": r["index"],
                 "bytes": r["bytes"],
                 "system_bytes": len(rec.system_text(r["index"]).encode("utf-8")),
-                "list_bytes": _seg_bytes(joined, LIST_MARK, "## 卡片清单"),
-                "child_bytes": _seg_bytes(joined, CHILD_MARK, "## 直接子卡"),
-                "dep_bytes": _seg_bytes(joined, DEP_MARK, "## 依赖关联"),
+                "list_bytes": seg_bytes(joined, LIST_MARK, "## 卡片清单"),
+                "child_bytes": seg_bytes(joined, CHILD_MARK, "## 直接子卡"),
+                "dep_bytes": seg_bytes(joined, DEP_MARK, "## 依赖关联"),
                 "list_count": joined.count(LIST_MARK),
                 "child_count": joined.count(CHILD_MARK),
             })
@@ -435,9 +409,11 @@ async def test_three_groups_readings(sandbox, monkeypatch):
             "per_request": per_request,
         }
 
-    a = await _run_group("system", False)   # 第一批完成（清单/子卡还在 system）
-    b = await _run_group("tail", False)     # 仅移位（清单/子卡走当轮，未缩量）
-    c = await _run_group("tail", True)      # 按任务缩量（移位＋缩量）
+    # 本轮的可信任务绑定（**知道任务的人给的**）：管辖范围＝管理卡自己的子树
+    a = await _run_group("system", False, "jurisdiction")  # 第一批完成（清单/子卡还在 system）
+    b = await _run_group("tail", False, "jurisdiction")    # 仅移位（清单/子卡走当轮，未缩量）
+    c = await _run_group("tail", True, "jurisdiction")     # 按任务缩量（移位＋缩量）
+    u = await _run_group("tail", True, None)               # **无绑定** ⇒ 完整材料（返工①）
 
     # A：清单/子卡在 system（无来源标记）；B/C：在 tail（system 里没有）
     assert a["list_header_in_system"] == 1 and a["child_header_in_system"] == 1
@@ -447,8 +423,12 @@ async def test_three_groups_readings(sandbox, monkeypatch):
     assert b["child_in_tail"] == 1 and c["child_in_tail"] == 1
     # 缩量 ⇒ 出站更小
     assert c["total_bytes"] <= b["total_bytes"], "缩量后不该变大"
+    # **无绑定 ⇒ 完整材料**（与 B 组同量：没有可信绑定就不缩量）
+    assert u["total_bytes"] == b["total_bytes"], (
+        f"无绑定必须走完整材料：{u['total_bytes']}B vs B {b['total_bytes']}B")
     evidence = {"group_a_batch1_only": a, "group_b_tail_only": b,
-                "group_c_tail_and_narrowed": c}
+                "group_c_tail_and_narrowed": c,
+                "group_c_unbound_full_material": u}
     out_dir = os.environ.get("BATCH2_EVIDENCE_DIR")
     if out_dir:
         out = Path(out_dir) / "batch2_groups.json"
@@ -460,33 +440,26 @@ async def test_three_groups_readings(sandbox, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_prefix_divergence_moves_later(sandbox, monkeypatch):
-    """前缀分歧：只改**一项子卡状态**，两次可比请求的首次分歧位置与公共前缀。
+    """前缀分歧：**按适配器实际发出的请求正文**比（不是装配文本拼接）。
 
-    口径（任务书 §五.2）：按**适配器实际交付的消息顺序**比较——把出站请求的
-    system 段与 messages 段按 wire 顺序拼成一条可比文本，取最长公共前缀。
-    移位前那项状态在 system（分歧早），移位后在 tail（分歧后移）。
+    口径（任务书 §五.2）：两次**可比请求**＝同一路由、同一任务，**只改一项子卡
+    状态**；比较对象＝**适配器实际交付的请求正文**（出站抓取器抓到的字节，
+    消息顺序＝适配器 wire 顺序）。移位前那项状态在 system（分歧早），移位后
+    在 tail（分歧后移，且 system 段逐字相同）。
     """
-    from src.api import context_assembler, context_regions
     from src.storage import card_store
 
-    async def _model_input(wid: str, card_id: str) -> tuple[str, str]:
-        ctx = context_assembler.build_ctx(wid, card_id)
-        out = context_regions.compose_model_context(ctx, profile="main")
-        parts = [out["system_prompt"]]
-        for m in (out["prior_messages"] or []):
-            parts.append(str(m.get("content") or ""))
-        parts.append(str(out.get("user_prompt") or ""))
-        for m in (out.get("turn_tail") or []):
-            parts.append(str(m.get("content") or ""))
-        return "\n".join(parts), str(out["system_prompt"])
-
-    async def _measure(delivery: str) -> dict[str, Any]:
-        # **只比移位**：两档都用完整材料（CONTEXT_SCOPE=0），差别只在槽位
-        # （system ↔ tail）⇒ 分歧位置的差异才是移位带来的。
-        monkeypatch.setenv("CONTEXT_SCOPE", "0")
+    async def _first_outbound(delivery: str, changed: bool) -> str:
+        """跑一轮真实回合，抓**首跳**的实际出站正文。"""
+        monkeypatch.setenv("CONTEXT_SCOPE", "0")   # 两档都用完整材料：只比移位
         g = await _mk_world(sandbox)
         wid, mid = g["wid"], g["mid"]
-        child = g["children"][0]
+        if changed:
+            # 只改**这一项**子卡状态（别的材料不动）
+            await card_store.update_card(
+                wid, g["children"][0],
+                {"status_block": "甲的现状。〔本轮改了状态〕" + "细节。" * 400},
+                "改一项状态")
         patched = []
         for spec in context_regions.REGION_TABLE:
             if spec.get("key") in ("card_list", "child_status"):
@@ -507,49 +480,37 @@ async def test_prefix_divergence_moves_later(sandbox, monkeypatch):
 
                     spec["render"] = _as_system
         try:
-            before, before_sys = await _model_input(wid, mid)
-            # 只改**这一项**子卡状态（别的材料不动）
-            await card_store.update_card(
-                wid, child, {"status_block": "甲的现状。〔本轮改了状态〕" + "细节。" * 400},
-                "改一项状态")
-            after, after_sys = await _model_input(wid, mid)
+            script = TurnScript(fail_first=False)
+            rec = await _run_turn(wid, mid, script, monkeypatch)
         finally:
             for spec, old_delivery, old_render in patched:
                 spec["delivery"] = old_delivery
                 spec["render"] = old_render
-        # 整条输入的公共前缀
-        n = min(len(before), len(after))
+        assert rec.requests, "没有出站记录"
+        return rec.requests[0]["raw"].decode("utf-8", "replace")
+
+    def _compare(raw_a: str, raw_b: str) -> dict[str, Any]:
+        n = min(len(raw_a), len(raw_b))
         i = 0
-        while i < n and before[i] == after[i]:
+        while i < n and raw_a[i] == raw_b[i]:
             i += 1
-        lcp = len(before[:i].encode("utf-8"))
-        # **可缓存前缀（system）**的公共前缀——这才是前缀缓存真正能复用的那段
-        ns = min(len(before_sys), len(after_sys))
-        j = 0
-        while j < ns and before_sys[j] == after_sys[j]:
-            j += 1
-        sys_lcp = len(before_sys[:j].encode("utf-8"))
         return {
-            "delivery": delivery,
-            "before_bytes": len(before.encode("utf-8")),
-            "after_bytes": len(after.encode("utf-8")),
-            "system_bytes": len(before_sys.encode("utf-8")),
-            "input_common_prefix_bytes": lcp,
-            "input_divergence_ratio": round(lcp / max(1, len(before.encode("utf-8"))), 4),
-            "system_common_prefix_bytes": sys_lcp,
-            "system_divergence_ratio": round(
-                sys_lcp / max(1, len(before_sys.encode("utf-8"))), 4),
-            "divergence_context": before[max(0, i - 70):i + 130],
+            "common_prefix_bytes": len(raw_a[:i].encode("utf-8")),
+            "total_bytes": len(raw_a.encode("utf-8")),
+            "divergence_ratio": round(
+                len(raw_a[:i].encode("utf-8")) / max(1, len(raw_a.encode("utf-8"))), 4),
+            "divergence_context": raw_a[max(0, i - 70):i + 130],
         }
 
-    a = await _measure("system")   # 移位前：状态在 system ⇒ 可缓存前缀被截断
-    b = await _measure("tail")     # 移位后：状态在 tail ⇒ 可缓存前缀完整
-    assert b["system_common_prefix_bytes"] >= a["system_common_prefix_bytes"], (
-        f"移位后可缓存前缀不得变短：移位前 {a['system_common_prefix_bytes']}B "
-        f"→ 移位后 {b['system_common_prefix_bytes']}B")
-    assert b["input_common_prefix_bytes"] > a["input_common_prefix_bytes"], (
-        f"移位后分歧必须后移：移位前 {a['input_common_prefix_bytes']}B "
-        f"→ 移位后 {b['input_common_prefix_bytes']}B")
+    # 移位前（清单/子卡在 system）
+    a = _compare(await _first_outbound("system", False),
+                 await _first_outbound("system", True))
+    # 移位后（清单/子卡在 tail）
+    b = _compare(await _first_outbound("tail", False),
+                 await _first_outbound("tail", True))
+    assert b["common_prefix_bytes"] > a["common_prefix_bytes"], (
+        f"移位后分歧必须后移：移位前 {a['common_prefix_bytes']}B "
+        f"→ 移位后 {b['common_prefix_bytes']}B")
     out_dir = os.environ.get("BATCH2_EVIDENCE_DIR")
     if out_dir:
         out = Path(out_dir) / "batch2_divergence.json"

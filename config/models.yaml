@@ -671,6 +671,16 @@ models:
     temperature: 1
     note: '[第三份套餐] Command Code · GLM 5.3 Flash（2026-11-19 实调 200，走 7890 代理）。⚠ 推理型：小
       token 上限时正文可能为空（被 reasoning 吃掉）。'
+  glm-53-volc:
+    provider: volcengine-coding
+    model: glm-5-3
+    note: 第一份火山 coding plan · GLM 5.3 正式版（2026-11-21 实测 200，返回 model=glm-5.3）。⚠ 思考型：reasoning_content
+      占输出 token，max_tokens 太小会正文为空。
+  glm-53-volc2:
+    provider: volcengine-coding2
+    model: glm-5-3
+    note: 第二份火山 coding plan · GLM 5.3 正式版（2026-11-21 实测 200，返回 model=glm-5.3）。⚠ 思考型：reasoning_content
+      占输出 token，max_tokens 太小会正文为空。
 bindings:
   execute: glm-53-flash
   think: glm-53-flash

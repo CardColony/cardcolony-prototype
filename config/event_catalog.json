@@ -258,7 +258,15 @@
           "recent"
         ],
         "optional": [
-          "head"
+          "head",
+          "origin",
+          "candidates",
+          "proto_hint",
+          "handled",
+          "pair_id",
+          "sid",
+          "anomaly",
+          "task_id"
         ],
         "payload": []
       }
@@ -1051,6 +1059,7 @@
           "action_id",
           "queue_len",
           "started",
+          "accepted",
           "reason",
           "deployment_id",
           "error"
@@ -1673,7 +1682,42 @@
           "error"
         ],
         "optional": [
-          "next"
+          "next",
+          "draft_fp"
+        ],
+        "payload": []
+      }
+    },
+    "review_purge": {
+      "label": "评审旧回合已归档",
+      "group": "评审",
+      "source": "api/review_runner",
+      "channel": "card",
+      "triggerable": false,
+      "fields": {
+        "part": ["batch", "seat", "purged_seqs", "archive"],
+        "optional": [],
+        "payload": []
+      }
+    },
+    "review_resume": {
+      "label": "评审续跑请求",
+      "group": "评审",
+      "source": "api/review_runner",
+      "channel": "card",
+      "triggerable": false,
+      "fields": {
+        "part": [
+          "batch",
+          "draft",
+          "next",
+          "action_id"
+        ],
+        "optional": [
+          "seat",
+          "by",
+          "source",
+          "dedup"
         ],
         "payload": []
       }
@@ -1863,7 +1907,24 @@
       "triggerable": false,
       "fields": {
         "part": [],
-        "optional": [],
+        "optional": [
+          "pair_id",
+          "round",
+          "requested_model",
+          "model_used_entry",
+          "request_model",
+          "response_model",
+          "endpoint_protocol",
+          "finish_reason",
+          "native_candidates",
+          "text_candidates",
+          "candidates",
+          "admitted",
+          "refused",
+          "anomaly",
+          "failed",
+          "error"
+        ],
         "payload": []
       }
     },

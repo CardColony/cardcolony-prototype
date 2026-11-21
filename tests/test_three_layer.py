@@ -102,8 +102,9 @@ async def test_batch_commit_carries_l2_into_chain(sandbox, monkeypatch):
     monkeypatch.setattr(memory_store, "_condense_call",
                         three_stage_stub(gist="结论甲", subtopics=subs))
 
-    ok = await memory_store._condense_one_batch(wid, "card_001", window, 0)
-    assert ok is True
+    result = await memory_store._condense_one_batch(
+        wid, "card_001", window, 0, verify_source=False)
+    assert result["ok"] is True
 
     st = memory_store.load_memory(wid, "card_001")
     assert st["mark"] == 6, "整窗被覆盖 ⇒ 水位推到底"

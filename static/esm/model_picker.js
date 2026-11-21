@@ -47,8 +47,16 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
-  /* 全局默认由 /effective 一并带回（省一次目录读）。 */
-  function gd() { return String(eff().global_model || ""); }
+  /* 全局默认：[版本兼容 2026-11-20 返工] 老后端的 /effective **没有 global_model**
+     （实测现网 5700）⇒ 回落到模型目录里的 system.default_model。
+     ★ 目录是**懒加载**的（开面板时才拉）⇒ 这里取不到就返回空串，
+       继承链的显示由面板自己补（面板里目录已加载）。 */
+  function gd() {
+    const g = eff().global_model;
+    if (g) return String(g);
+    const s = state.settings || {};
+    return String((s.system && s.system.default_model) || "");
+  }
   function wd() { return String(eff().work_model || ""); }
   function cd() { return String(eff().card_model || ""); }
   /* 生效值以**后端解析结果**为准（表里那一行就是物化后的运行时真值）；
@@ -97,11 +105,11 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
     const rButton = (val, label, selected) =>
       `<button type="button" class="mp-row${selected ? " on" : ""}" data-mp-val="${esc(val)}">${esc(label)}${selected ? '<span class="mp-check">✓</span>' : ""}</button>`;
 
-    let rows = `<div class="mp-grp"><div class="mp-grp-title">默认</div>` +
-      rButton("", `默认（当前 ${esc(inheritName())}）`, !ch) + `</div>`;
-
     /* [懒加载 2026-11-20] 模型目录到这里才拉。徽标本身不需要它
-       （生效模型的名字由 /effective 带回）⇒ 冷开不再下整份目录。 */
+       （生效模型的名字由 /effective 带回）⇒ 冷开不再下整份目录。
+       [版本兼容 2026-11-20 返工] ★ 目录**先拉、后拼行**：
+       老后端的 /effective 没有 global_model ⇒ 继承链的显示名要靠目录里的
+       system.default_model ⇒ 先拼行就会显示成「（未配置）」。 */
     if (!state.settings) {
       panel.innerHTML = `<div class="mp-grp"><div class="mp-grp-title">载入中…</div></div>`;
       document.body.appendChild(panel);
@@ -114,6 +122,9 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
       }
       if (!panel) return;          // 载入期间用户关掉了面板
     }
+
+    let rows = `<div class="mp-grp"><div class="mp-grp-title">默认</div>` +
+      rButton("", `默认（当前 ${esc(inheritName())}）`, !ch) + `</div>`;
 
     for (const prov of providers()) {
       const keys = Object.keys(models()).filter((k) => (models()[k] || {}).provider === prov);
@@ -189,8 +200,10 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
     const wantCard = curCard;
     try {
       const q = wantCard ? `?card_id=${encodeURIComponent(wantCard)}` : "";
+      /* ★ 窄口：``/effective`` ＝ 只回**这一张卡**的生效模型（0.5 KB）。
+         少了这一段 ``/effective`` 就会打到整项目表（975 行 / 175 KB）。 */
       const data = await API.call(
-        "GET", `/api/settings/model-overrides/${encodeURIComponent(workId)}${q}`,
+        "GET", `/api/settings/model-overrides/${encodeURIComponent(workId)}/effective${q}`,
         undefined, { signal: ctrl.signal, silent: true });
       /* [晚回包归属 2026-11-20] 回来的不是刚才要的那张卡 ⇒ 丢。
          （否则：卡 A 的回包晚到，把 A 的模型写进 B 的徽标。） */

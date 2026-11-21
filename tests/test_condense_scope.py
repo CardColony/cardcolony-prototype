@@ -54,7 +54,7 @@ def test_mark_advances_past_tool_blocks(work, monkeypatch):
                         three_stage_stub(gist="有结论"))
     import asyncio
     asyncio.get_event_loop_policy()
-    asyncio.run(memory_store._run_condense_pipeline(wid, cid, pending, 0))
+    asyncio.run(memory_store._run_condense_pipeline(wid, cid, pending, 0, verify_source=False))
     st = memory_store.load_memory(wid, cid)
     print("mark =", st["mark"])
     assert st["mark"] == 3, "窗口末块 seq=2 ⇒ mark=3（工具块 seq=1 被一起销账）"
@@ -70,7 +70,8 @@ def test_tool_only_window_is_sold_without_prompt(work, monkeypatch):
     monkeypatch.setattr(memory_store, "_condense_call",
                         three_stage_stub(gist="不该被调用", record=called))
     import asyncio
-    asyncio.run(memory_store._run_condense_pipeline(wid, cid, [_tool(0), _tool(1)], 0))
+    asyncio.run(memory_store._run_condense_pipeline(
+        wid, cid, [_tool(0), _tool(1)], 0, verify_source=False))
     st = memory_store.load_memory(wid, cid)
     assert called == [], "全是工具块时不许调模型"
     assert st["mark"] == 2, "但要销账"
@@ -131,7 +132,7 @@ def test_three_rulers_share_one_source(work, monkeypatch):
     monkeypatch.setattr(memory_store, "_condense_call",
                         three_stage_stub(gist="只压第一批"))
     import asyncio
-    asyncio.run(memory_store._run_condense_pipeline(wid, cid, pending, 0))
+    asyncio.run(memory_store._run_condense_pipeline(wid, cid, pending, 0, verify_source=False))
     st = memory_store.load_memory(wid, cid)
     # 窗口 = 13+600+13 ≤ 700，第 4 条越线 ⇒ mark 必须停在 3（末块 seq=2 的下一块）
     assert st["mark"] == 3, f"销账要落在窗口末块，实际 {st['mark']}"

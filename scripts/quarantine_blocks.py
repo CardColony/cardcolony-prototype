@@ -27,8 +27,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))   # 以 src.* 包名导入（storage 内有 ..infra 相对引用）
 
+import os  # noqa: E402
+
 from src.api import text_tool_rescue  # noqa: E402
 from src.storage import context_board  # noqa: E402
+
+
+def _root() -> Path:
+    """数据根：``QUAR_ROOT`` 指到副本目录 ⇒ 全脚本在副本上跑
+    （隔离库验收/演练；不设 ⇒ 生产真根）。"""
+    return Path(os.environ.get("QUAR_ROOT") or ROOT)
 
 _REASON_BY_EVENT = {
     "pseudo_call_unparsed": "pseudo_unparsed",
@@ -38,11 +46,11 @@ _REASON_BY_EVENT = {
 
 
 def _db(work_id: str) -> Path:
-    return ROOT / "works_data" / work_id / "cards.db"
+    return _root() / "works_data" / work_id / "cards.db"
 
 
 def _events(work_id: str, card_id: str) -> list[dict]:
-    p = ROOT / "works" / work_id / "events" / f"{card_id}.jsonl"
+    p = _root() / "works" / work_id / "events" / f"{card_id}.jsonl"
     out = []
     if not p.exists():
         return out
@@ -130,8 +138,10 @@ def scan_candidates(work_id: str, card_id: str) -> list[dict]:
             continue
         view = text_tool_rescue.quarantine_view(str(r["content"] or ""))
         raw = str(r["content"] or "")
-        # 视图显著短于原文（家具行被剔）⇒ 疑似含未解析调用文本
-        if len(view) + 40 < len(raw):
+        # 视图显著短于原文（家具行被剔）⇒ 疑似含未解析调用文本；
+        # 含可证供方残片（ds_safety 块/CDATAEND>/begin▁of▁sentence）
+        # 同样入候选——残片块不靠长度差也能命中（补书 §二）。
+        if len(view) + 40 < len(raw) or text_tool_rescue.anomaly_fragments(raw):
             out.append({"seq": int(r["seq"]), "chars": len(raw),
                         "view_chars": len(view)})
     con.close()
@@ -154,7 +164,15 @@ def apply_marks(work_id: str, card_id: str, hits: list[dict]) -> None:
                       if text_tool_rescue.detect_pseudo_receipt(
                           raw, include_sys_lines=False)
                       else h["reason"])
-            view = text_tool_rescue.quarantine_view(raw)
+            # [补书 §二] 内容级再定性：无候选无疑似的纯残片块（历史
+            # pseudo_call_unparsed 是 _e_unknown_pair 对 ds_safety 的
+            # 误报）⇒ 按 provider_fragment 打标、用残片口径状态行。
+            if reason != "pseudo_receipt":
+                _calls, _unres, _ = text_tool_rescue.extract_text_tool_calls(raw)
+                if not _calls and not _unres and text_tool_rescue.anomaly_fragments(raw):
+                    reason = "provider_fragment"
+            view = text_tool_rescue.quarantine_view(
+                raw, fragment=(reason == "provider_fragment"))
             con.execute(
                 "UPDATE session_blocks SET data="
                 "json_set(data,'$.quarantine',?,'$.ctx_content',?) "
@@ -174,6 +192,12 @@ def main() -> int:
         return 2
     work_id, card_id = sys.argv[1], sys.argv[2]
     apply = "--apply" in sys.argv
+    if os.environ.get("QUAR_ROOT"):
+        # [副本验证] rebuild_board 经 card_db 取库路径（WORKS_DIR 调用时
+        # 派生）——QUAR_ROOT 下把根指到副本的 works/，板重建与扫描落同一
+        # 数据根，生产零触碰。
+        from src.storage import card_store
+        card_store.WORKS_DIR = _root() / "works"
 
     hits = collect_confirmed(work_id, card_id)
     print(f"=== 事件背书命中清单（{len(hits)}）===")

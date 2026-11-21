@@ -287,7 +287,7 @@ test("运行条时钟：15 秒前不显，15 秒后才显并计时", { skip: SKI
 
 /* [5715 · 网抓] 流式输出时列高会变：处于跟随态就得**继续钉在底部**，
    否则用户正看着新内容，它自己往上飘。 */
-test("流式增高：处于跟随态时列高变化要把底部重新钉住", { skip: SKIP }, (t) => {
+test("流式增高：处于跟随态时列高变化要把底部重新钉住", { skip: SKIP }, async (t) => {
   const { view, scroll, observers } = mountView(t);
   view.render(["a"], () => 1);
   view.markLoaded();
@@ -296,6 +296,9 @@ test("流式增高：处于跟随态时列高变化要把底部重新钉住", { 
   const ro = observers[0];
   assert.ok(ro, "应挂了 ResizeObserver");
   ro.cb();
+  /* [2026-11-21] 程序钉底的测量已合并进 rAF（同帧多次列高变化只量一次）——
+     断言前先等帧落地。 */
+  await nextFrame();
   assert.equal(scroll.scrollTop, scroll.scrollHeight, "跟随态下列高变化要重新钉底");
 });
 
@@ -328,4 +331,106 @@ test("未知面：载荷不丢，JSON 化后给人看", { skip: SKIP }, (t) => {
   const pre = row.querySelector("pre.flow-unknown-body");
   assert.ok(pre, "未知面应是 pre 块");
   assert.deepEqual(JSON.parse(pre.textContent), { a: 1, b: "x" });
+});
+
+/* ================================================================
+   有界挂载（性能批次二·任务二 2026-11-22）
+   窗口同时有起点和终点：视口±OVERSCAN 之外的节点不挂 DOM，
+   换挡锚定到同一行同一偏移，卸载行释放并回调宿主。
+   ================================================================ */
+
+const MANY = [];
+for (let i = 0; i < 60; i++) MANY.push("k" + i);
+
+test("有界挂载：60 个键首开只挂尾部小窗，DOM 行数受限", { skip: SKIP }, (t) => {
+  const { view, scroll } = mountView(t);
+  makeScrollable(scroll, { height: 4320, viewport: 400 });
+  view.render(MANY, () => 1);
+  const m = view._mounted();
+  assert.equal(m.total, 60);
+  assert.ok(m.count <= 31, `首开挂载应≤尾窗 30（实际 ${m.count}）`);
+  assert.equal(m.hi, 60, "首开在尾端");
+  // DOM 里只应有挂载行（+spacer×2 等非行元素不计）
+  const rows = view.columnEl.querySelectorAll("[data-chat-anchor-key]");
+  assert.ok(rows.length <= 31, `DOM 行数=${rows.length}`);
+});
+
+test("有界挂载：滚动换挡——区间跟视口走、出窗行释放、峰值受限", { skip: SKIP }, async (t) => {
+  const { view, scroll } = mountView(t);
+  makeScrollable(scroll, { height: 4320, viewport: 400 });
+  view.render(MANY, () => 1);
+  const before = view._mounted();
+  // 读者上滚到中段（scrollTop≈1500 ⇒ 估值 ~第20行）
+  scroll.scrollTop = 1500;
+  scroll.dispatchEvent(new window.Event("scroll"));
+  await nextFrame();
+  const mid = view._mounted();
+  assert.ok(mid.lo < before.lo, `窗口起点应前移（${before.lo}→${mid.lo}）`);
+  assert.ok(mid.hi < 60, "滚离底后尾窗收缩");
+  assert.ok(mid.count <= 40, `换挡后挂载仍受限（${mid.count}）`);
+  // 再滚回底：尾窗复位
+  scroll.scrollTop = 4000;
+  scroll.dispatchEvent(new window.Event("scroll"));
+  await nextFrame();
+  const tail = view._mounted();
+  assert.equal(tail.hi, 60);
+});
+
+test("有界挂载：卸载回调把出窗键交给宿主释放", { skip: SKIP }, async (t) => {
+  const { view, scroll } = mountView(t);
+  makeScrollable(scroll, { height: 4320, viewport: 400 });
+  const dropped = [];
+  view.setOnUnmount((k) => dropped.push(k));
+  view.render(MANY, () => 1);
+  scroll.scrollTop = 1500;
+  scroll.dispatchEvent(new window.Event("scroll"));
+  await nextFrame();
+  assert.ok(dropped.length > 0, "换挡应有行卸载");
+  assert.ok(dropped.every((k) => typeof k === "string" && k.startsWith("k")));
+});
+
+test("有界挂载：前插后锚定行保持原位（同 key 同偏移）", { skip: SKIP }, async (t) => {
+  const { view, scroll, scrollState, rows } = mountView(t, {
+    hasMore: () => true,
+    onLoadOlder: () => {},
+  });
+  makeScrollable(scroll, { height: 9000, viewport: 400 });
+  view.render(MANY, () => 1);
+  // 滚到中段
+  scroll.scrollTop = 1500;
+  scroll.dispatchEvent(new window.Event("scroll"));
+  await nextFrame();
+  const midKey = "k25";   // 估值上应落在挂载区内（cum≈1800 在 1500-1900 视口下沿）
+  const rowEl = rows.get(midKey);
+  assert.ok(rowEl, "k25 应已挂载");
+  /* 走真实前插路径：点「加载更早」→ captureAnchor 记锚（视口顶相交行）。
+     模拟「k25 在视口顶下 120px」的布局，让锚落在它身上（该行保持挂载）。 */
+  stubRects([rowEl], { top: 120, height: 50 });
+  view.columnEl.querySelector(".flow-view-older-btn").click();
+  await nextFrame();
+  // 前插 40 个键（等同 loadEarlier 翻页后的 render）
+  const older = [];
+  for (let i = 0; i < 40; i++) older.push("old" + i);
+  // 前插把 k25 顶下去：模拟它的新位置
+  stubRects([rowEl], { top: 3000, height: 50 });
+  view.render(older.concat(MANY), () => 1);
+  await nextFrame();
+  const m2 = view._mounted();
+  assert.equal(m2.total, 100);
+  assert.ok(rows.get(midKey) === rowEl && rowEl.isConnected,
+    "k25 元素应被复用且仍在 DOM");
+  /* 锚点校正：k25 原视口偏移 120、现偏移 3000 ⇒ scrollTop 应被推 +2880
+     （scrollTop 新值 = 旧值 + 新偏移 - 原偏移）。 */
+  const st = scroll.scrollTop;
+  assert.ok(st > 1500, `前插后 scrollTop 应下移保位（实际 ${st}）`);
+  assert.ok(Math.abs(st - (1500 + 3000 - 120)) < 1,
+    `scrollTop 应精确补偿锚点位移（实际 ${st}）`);
+});
+
+test("有界挂载：无布局环境（clientHeight=0）全量挂载兼容", { skip: SKIP }, (t) => {
+  const { view, scroll } = mountView(t);
+  // 不调用 makeScrollable ⇒ clientHeight=0 ⇒ 兜底全挂（隐藏画板不被误裁）
+  view.render(MANY.slice(0, 5), () => 1);
+  const m = view._mounted();
+  assert.equal(m.count, 5, "无布局环境全挂");
 });

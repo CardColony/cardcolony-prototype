@@ -106,7 +106,7 @@ def test_discard_steer_clears_leftover():
 
 # ---------------------------------------------------------------- 3. 轮槽插入
 
-def test_apply_steer_inserts_into_slot():
+async def test_apply_steer_inserts_into_slot():
     """插话进**轮槽** ⇒ 下一次模型调用即可见（rounds>=2 直接进槽）。"""
     state = message_runner.RunState(work_id="work_steer4", card_id="card_001", content="原始问题")
     state.rounds = 2
@@ -115,7 +115,7 @@ def test_apply_steer_inserts_into_slot():
     steer._pending[("work_steer4", "card_001")] = [
         steer.SteerEntry(steer.STEER_MARK + "插话：改成先说结论")]
 
-    n = message_runner._apply_steer(state)
+    n = await message_runner._apply_steer(state)
     assert n == [steer.STEER_MARK + "插话：改成先说结论"]  # 返回被消费条目（mark+body 成品）
     assert state.slot.messages == [
         {"role": "user", "content": steer.STEER_MARK + "插话：改成先说结论"}]
@@ -123,14 +123,14 @@ def test_apply_steer_inserts_into_slot():
     assert steer.pending_steer("work_steer4", "card_001") == 0
 
 
-def test_apply_steer_round1_goes_to_steer_tail():
+async def test_apply_steer_round1_goes_to_steer_tail():
     """rounds==1 ⇒ 暂存 steer_tail（随用户原文之后固化，顺序语义才对）。"""
     state = message_runner.RunState(work_id="work_steer5", card_id="card_001", content="原始问题")
     state.rounds = 1
     state.slot = _FakeSlot()
     steer._pending[("work_steer5", "card_001")] = [steer.SteerEntry("首轮插话")]
 
-    assert message_runner._apply_steer(state) == ["首轮插话"]  # 返回被消费条目
+    assert await message_runner._apply_steer(state) == ["首轮插话"]  # 返回被消费条目
     assert state.slot.messages == []          # 还没进槽
     assert len(state.steer_tail) == 1
     assert state.steer_tail[0]["role"] == "user"

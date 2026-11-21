@@ -447,22 +447,13 @@ def _load_function_roster(work_id: str, current_id: str) -> list[dict[str, Any]]
 
 
 def _load_dispatch_targets(work_id: str, card_id: str,
-                           card_type: str) -> list[str]:
-    """差事账里的**验收对象**（只对 qa_card/pm_card 取数——别的卡型零 IO）。
-
-    这是**唯一**能绑定到「验收对象」的结构化字段：差事账的 ``target_card``。
-    指令来源（source.from）只证明指令来自哪里，**不用于选材**（任务书明令）。
-    """
-    if str(card_type or "") not in ("qa_card", "pm_card"):
-        return []
+                           deployment_id: int) -> list[str]:
+    """只取当前回合指明、且归属本卡的在派差事对象。"""
     try:
         from ..storage import function_store as _fs
-        out: list[str] = []
-        for dep in _fs.active_for_venue(work_id, card_id, venue_kind="deploy"):
-            tgt = str(dep.get("target_card") or "")
-            if tgt:
-                out.append(tgt)
-        return out
+        rows = _fs.active_for_venue(work_id, card_id, venue_kind="deploy")
+        return [str(dep["target_card"]) for dep in rows
+                if dep.get("id") == deployment_id and dep.get("target_card")]
     except Exception:  # noqa: BLE001 差事账读不到＝判不出对象⇒回退 unknown
         return []
 
@@ -504,23 +495,29 @@ def _resolve_task_scope(work_id: str, current_id: str, cur_meta: dict[str, Any],
                               reason="调用方未请求范围判定（默认逐字同旧）")
     # [批二·按任务缩量 2026-11-20] **回退闸**：CONTEXT_SCOPE=0 ⇒ 一律完整材料
     # （试点期可整体退回既有装配，不必回滚代码；与 CONTEXT_BOARD=0 同族口径）。
-    if os.environ.get("CONTEXT_SCOPE", "1") == "0":
+    if os.environ.get("CONTEXT_SCOPE") != "1":
         return _ts.TaskScope(_ts.MODE_UNKNOWN, basis="switch_off",
                               reason="CONTEXT_SCOPE=0 ⇒ 完整材料回退")
-    ctype = str((cur_meta or {}).get("card_type") or "")
-    targets = _load_dispatch_targets(work_id, current_id, ctype)
-    criteria = _load_board_criteria(work_id, current_id)
+    src = dict(scope_hint.get("source") or {})
+    is_goal_turn = src.get("kind") == "goal" and bool(src.get("goalId"))
+    deployment_id = src.get("deployment_id")
+    targets = (_load_dispatch_targets(work_id, current_id, deployment_id)
+               if src.get("kind") == "deploy" and isinstance(deployment_id, int) else [])
     return _ts.resolve_scope(
         card_id=current_id,
-        card_type=ctype,
+        card_type=str((cur_meta or {}).get("card_type") or ""),
         children=children,
-        source=scope_hint.get("source"),
+        source=src,
         source_kind=str(scope_hint.get("source_kind") or ""),
         act_as=str(scope_hint.get("act_as") or ""),
         ctx_card=str(scope_hint.get("ctx_card") or ""),
         dispatch_targets=targets,
-        board_criteria=criteria,
+        board_criteria=_load_board_criteria(work_id, current_id) if is_goal_turn else "",
         readback_available=bool(scope_hint.get("readback_available", True)),
+        # [返工 2026-11-20] **显式任务绑定**：回合入口/调用方最清楚本轮任务
+        # 绑在哪（``{"kind": "card"|"jurisdiction", "card_id": ...}``）。
+        task_binding=scope_hint.get("task_binding"),
+        own_task=is_goal_turn,
     )
 
 
@@ -546,12 +543,15 @@ def _load_cards_index_light(work_id: str) -> list[dict[str, Any]]:
 
 def refresh_tail_facts(ctx: context_regions.RegionCtx, work_id: str,
                        card_id: str) -> None:
-    """**同一逻辑回合内**刷新当轮事实（清单 ＋ 直接子卡现状）的数据源。
+    """**同一逻辑回合内**刷新当轮事实（清单 ＋ 直接子卡现状 ＋ 对象卡正文）。
 
     [批二·按任务缩量 2026-11-20 · 成本优化任务书 §二.3] 清单与子卡现状走
     **tail 通道**（每个请求重渲染），但它们的数据取自**回合开始时**装配的
     那份 ctx ⇒ 回合里子卡跑了一步、建了新卡，下一跳仍看不到旧版本。
     ⇒ 每次工具续跳前刷新这两份数据：下一跳看到**当前有效**的那一份。
+
+    [返工 2026-11-20] **对象卡正文（scope_target_body）也在 tail 里** ⇒ 同样
+    要刷：对象卡现状更新后，下一跳仍发旧正文就是错版（复核复现过）。
 
     只刷 tail 绑定的数据：system 通道的区走同回合缓存（稳定前缀不动）。
     已有卡保留原正稿（依赖区若重渲染仍拿得到全文），新卡只带清单要的列。
@@ -576,6 +576,71 @@ def refresh_tail_facts(ctx: context_regions.RegionCtx, work_id: str,
         ctx.direct_child_status = _load_direct_child_status(work_id, card_id)
     except Exception:  # noqa: BLE001 刷不到＝沿用旧版本，不阻断回合
         pass
+    # 对象卡正文：重新按**当前读权限**取材（权限可能也变了）
+    scope = getattr(ctx, "task_scope", None)
+    tgt = str(getattr(scope, "target_card", "") or "") if scope is not None else ""
+    if (scope is not None and getattr(scope, "mode", "") == "single"
+            and tgt and tgt != card_id):
+        ctx.scope_target_body = _load_target_body(
+            work_id, card_id, tgt, merged)
+
+
+def _load_target_body(work_id: str, current_id: str, target_id: str,
+                       cards: list[dict[str, Any]]) -> dict[str, Any]:
+    """对象卡正文**按现有读权限逐块取材**（与 ``read_card`` 同一道闸）。
+
+    [返工 2026-11-20 · 复核算二] 之前这里是**无条件**投影对象卡的使命/现状 ⇒
+    隔离库里复现过：一条**未授予 read_card** 的差事，工具回 denied，目标卡的
+    现状却进了模型上下文——**绕过读权限的暗门**。
+
+    现在逐块按既有权限取：
+
+    - **父子线** ⇒ 可读全卡面（使命＋现状）；
+    - **关系线** ⇒ 只可读「需求文档」（对外信息）⇒ 使命/现状**不给**
+      （需求文档由依赖区按关系线投影，权限一致）；
+    - **无线** ⇒ 查差事授面（``_deployment_scope(..., "read_card")``）——
+      差事实发面含 read_card 才算临时读权；否则**不给**。
+
+    与 ``card_tools._h_read_card`` 同一套闸（同一行判定、同一 denials）。
+    """
+    if not target_id or target_id == current_id:
+        return {}
+    cards_map = {str(c.get("card_id") or ""): c for c in (cards or [])
+                 if str(c.get("card_id") or "")}
+    try:
+        from . import card_tools as _ct
+        line = _ct._line_between(work_id, current_id, target_id, cards_map)
+    except Exception:  # noqa: BLE001 闸算不出来＝不给（不绕过）
+        return {}
+    full_read = False
+    if line == "parent":
+        full_read = True
+    elif line == "relation":
+        full_read = False          # 关系线只读需求文档 ⇒ 使命/现状不给
+    else:
+        try:
+            from . import card_tools as _ct
+            full_read = bool(_ct._deployment_scope(
+                work_id, current_id, target_id, "read_card"))
+        except Exception:  # noqa: BLE001 授面算不出来＝不给
+            full_read = False
+    if not full_read:
+        return {}
+
+    def _fn(conn: Any) -> dict[str, Any]:
+        row = conn.execute(
+            "SELECT card_id, title, mission, status_block FROM cards "
+            "WHERE card_id = ?", (target_id,)).fetchone()
+        if row is None:
+            return {}
+        return {"card_id": row["card_id"], "title": row["title"] or "",
+                "mission": row["mission"] or "",
+                "status_block": row["status_block"] or ""}
+
+    try:
+        return card_db.read_sync(work_id, _fn, {}) or {}
+    except Exception:  # noqa: BLE001 取不到＝不出该段，不阻断装配
+        return {}
 
 
 def build_ctx(work_id: str, current_id: str,
@@ -623,9 +688,35 @@ def build_ctx(work_id: str, current_id: str,
     # [依赖关联线 2026-10-16] 双向依赖关联线：在已加载的 cards 索引上算（零额外 IO）。
     dep_out, dep_in = _dep_relations_for(cards, current_id, cur_meta)
     children = _load_direct_child_status(work_id, current_id)
-    # [批二·按任务缩量 2026-11-20] 本轮任务范围判定（结构化字段；判不出来＝unknown
-    # ⇒ 逐字同旧）。判定所需取数（差事账对象／活板当前步判据）在本处一次取完。
+    # [批二·按任务缩量 2026-11-20] 本轮任务范围判定（**由可信任务绑定驱动**；
+    # 判不出来＝unknown ⇒ 逐字同旧）。判定所需取数（差事账对象／活板当前步判据／
+    # 目标续轮标记）在本处一次取完。
     scope = _resolve_task_scope(work_id, current_id, cur_meta, children, scope_hint)
+    # single 档且对象≠本卡 ⇒ 把对象卡正文带进首跳（**按现有读权限逐块取材**）
+    target_body: dict[str, Any] = {}
+    if (scope is not None and getattr(scope, "mode", "") == "single"
+            and scope.target_card and scope.target_card != current_id):
+        target_body = _load_target_body(
+            work_id, current_id, scope.target_card, cards)
+    # [批三·评审按阶段缩量 2026-11-20 · 任务书 §三] 受限当轮决定：席位回合
+    # 材料快照判 restricted ⇒ 本轮只发完成表态所需的材料——清单/子卡/被评
+    # 长历史/记忆/依赖全文在渲染侧跳过（REGION_TABLE 各区自查
+    # `ctx.turn_decision`）。快照不带 ⇒ 空 dict ⇒ 逐字同旧。
+    turn_decision: dict[str, Any] = {}
+    _src = (scope_hint or {}).get("source") or {}
+    if isinstance(_src, dict):
+        _mat = _src.get("material")
+        if isinstance(_mat, dict) and _mat.get("restricted"):
+            turn_decision = dict(_mat)
+    hs = list(history_source or [])
+    board_rows = (snap or {}).get("board_rows") if snap is not None else None
+    snap_hist = (snap or {}).get("raw_history")
+    if turn_decision:
+        # 被评卡长历史整段不发——场内的有效用户发言/席位过程走
+        # history_extra 同一通道照常在（一条材料只经一个入口）。
+        hs = []
+        board_rows = []
+        snap_hist = []
     return context_regions.RegionCtx(
         work_id=work_id,
         card_id=current_id,
@@ -640,6 +731,10 @@ def build_ctx(work_id: str, current_id: str,
         direct_child_status=children,
         # [批二·按任务缩量 2026-11-20] 本轮任务范围（unknown ⇒ 逐字同旧）。
         task_scope=scope,
+        # [批三·评审按阶段缩量 2026-11-20] 受限当轮决定（空 ⇒ 逐字同旧）。
+        turn_decision=turn_decision,
+        # [批二·按任务缩量 2026-11-20] 对象卡卡面（single 档且对象≠本卡）。
+        scope_target_body=target_body,
         # [上游需求文档 2026-11-10] 执行/差事卡的参照尺（类型闸外零 IO）。
         upstream_requirements=_load_upstream_requirements(
             work_id, current_id, cur_meta, cards),
@@ -666,11 +761,11 @@ def build_ctx(work_id: str, current_id: str,
                          (memory_store.load_nodes(work_id, history_id)
                          if (memory_store.condense_enabled() or state is not None) else [])),
         # [§三.2] 板行随快照同版本下发；None＝快照判板不新鲜，渲染侧走懒重建旧路
-        board_rows=((snap or {}).get("board_rows") if snap is not None else None),
-        snapshot_history=(snap or {}).get("raw_history"),
+        board_rows=board_rows,
+        snapshot_history=snap_hist,
         controls=load_control(),
         rule_sections=_load_rule_sections(work_id),
-        history_source=history_source or [],
+        history_source=hs,
         history_id=history_id,
         history_mark=int((state or {}).get("mark", 0) or 0),
         history_extra=list(history_extra or []),

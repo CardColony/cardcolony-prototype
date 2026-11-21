@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from typing import Any, Optional
@@ -273,9 +274,11 @@ async def deliver_fired(work_id: str, fired: list[dict[str, Any]]) -> int:
                     if not spec:
                         spec = {k: v for k, v in (then["deploy"] or {}).items()
                                 if isinstance(v, (str, int, float, bool))}
-                    res = await deploy_runner.execute(
-                        work_id, spec=spec, venue=t, mandate=mandate,
-                        action_id=aid, policy_id=pid)
+                    async with intervention_runner.claim_lease(
+                            work_id, aid, token):
+                        res = await deploy_runner.execute(
+                            work_id, spec=spec, venue=t, mandate=mandate,
+                            action_id=aid, policy_id=pid)
                     if aid:
                         _st.mark_action(
                             work_id, aid,
@@ -317,9 +320,11 @@ async def deliver_fired(work_id: str, fired: list[dict[str, Any]]) -> int:
                         if not token:
                             continue  # 已被领取/在途 ⇒ 不重复归档
                     try:
-                        res = await _cs.archive_card(
-                            work_id, t, reason=reason,
-                            by=f"harness:{pid}")
+                        async with intervention_runner.claim_lease(
+                                work_id, aid, token):
+                            res = await _cs.archive_card(
+                                work_id, t, reason=reason,
+                                by=f"harness:{pid}")
                     except Exception as exc:  # noqa: BLE001 抛当失败回执
                         res = {"error": str(exc)}
                     ok = bool((res or {}).get("ok"))
@@ -355,16 +360,18 @@ async def deliver_fired(work_id: str, fired: list[dict[str, Any]]) -> int:
                                       kind="skip_check_exc", exc=exc,
                                       policy_id=pid, action_id=aid)
                     _arow = _ist.store().get_action(work_id, aid) or {}
-                    # [过期步骤销账 2026-11-20 · 批次A第三轮返工] 旧格式
-                    # 事件（runnable 但缺 next）只做诊断——零投递、
-                    # 动作销账；当前状态由评审属主/新事件另行立案。
-                    if intervention_runner.step_unverifiable(_arow):
+                    # [过期步骤销账 2026-11-20 · 批次A第三/四轮返工]
+                    # 契约策略下无法确认身份的动作（旧格式事件缺 next、
+                    # 或契约策略的旧账缺 step_json）只做诊断——零投递、
+                    # 动作销账；当前状态由评审属主/resume 重读另行立案。
+                    # 无 dedup_fields 契约的策略本无步骤身份概念，不拦。
+                    _contract = intervention_runner.step_contract_of(then)
+                    if intervention_runner.step_unverifiable(
+                            _arow, contract=_contract):
                         _ist.store().mark_action(
                             work_id, aid, "stale",
                             receipt={"reason": "unverifiable_step"})
                         continue
-                    if mode == "continue":
-                        expect = intervention_runner.step_expect(_arow)
                     # [并发领取 2026-11-20 · 批次A返工3/第三轮返工4]
                     # 发出前原子领取拿凭据——biz/fire 去重给的是同一
                     # action_id，并发第二个投递者拿 None 跳过，不会双发；
@@ -373,12 +380,20 @@ async def deliver_fired(work_id: str, fired: list[dict[str, Any]]) -> int:
                             work_id, aid)
                     if not token:
                         continue
+                    if mode == "continue":
+                        expect = intervention_runner.step_expect(
+                            _ist.store().get_action(work_id, aid) or _arow)
                 # action_id 是台账回执通道——没有台账调用方（直调 deliver_fired
                 # 的旧用法）就不传，保持 deliver 签名向后兼容。
-                res = await harness.deliver(
-                    work_id, t, text, rule_id=pid, wake=wake, mode=mode,
-                    expect=expect,
-                    **({"action_id": aid} if aid else {}))
+                # [在途续约 2026-11-20 · 批次A第四轮返工] claim_lease
+                # 让活发送者的 sending 行保鲜——超时≠退出，心跳停了才算。
+                async with (intervention_runner.claim_lease(
+                        work_id, aid, token) if aid and token
+                        else contextlib.nullcontext()):
+                    res = await harness.deliver(
+                        work_id, t, text, rule_id=pid, wake=wake, mode=mode,
+                        expect=expect,
+                        **({"action_id": aid} if aid else {}))
                 if aid:
                     intervention_runner.mark_receipt(
                         work_id, aid, res, claim_token=token)
@@ -457,6 +472,15 @@ def bootstrap(work_id: str, *, since: float,
         facts = store.query(work_id, since=time_now() - win)
         out["seeded"] = pset.seed(work_id, facts)
         fired = pset.check_all(work_id)
+        # [超限合并 批五] 合并开关开时：启动本身不广播存量超限——
+        # 只认「启动后的一次可信新编辑」立案；存量超限由事项复核
+        # 或下一次编辑触发接管（无存量事项时静候新事实）。
+        if fired:
+            from . import intervention_runner as _ir
+            if _ir._coalesce_on():
+                fired = [f for f in fired
+                         if str(f.get("policy") or "")
+                         != _ir._OVERSIZE_PID]
         out["fired"] = len(fired)
         if fired:
             try:
