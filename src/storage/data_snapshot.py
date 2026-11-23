@@ -21,6 +21,7 @@ import os
 import shutil
 import sqlite3
 import stat
+import tempfile
 import threading
 import time  # noqa: F401  (历史遗留，勿删)
 from datetime import datetime, timezone, timedelta
@@ -181,6 +182,102 @@ def _now_stamp() -> str:
 
 def _day_stamp() -> str:
     return datetime.now(_CST).strftime("%Y%m%d")
+
+
+_DAILY_MANIFEST = ".daily-manifest.json"
+_DAILY_PRIVATE = ".daily_"
+
+
+def _daily_source_file(path: Path) -> bool:
+    return not (_skip_snapshot_file(path) or path.name.endswith((".db-wal", ".db-shm")))
+
+
+def daily_snapshot_files(daily: Path) -> list[Path] | None:
+    """返回发布清单确认的文件，旧格式用同日最早留存的过程清单核对。"""
+    try:
+        if not daily.is_dir():
+            return None
+        marker = daily / _DAILY_MANIFEST
+        if marker.exists():
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+            files = payload.get("files") if payload.get("mode") == "daily-full" else None
+            if not isinstance(files, dict) or not all(type(n) is int and n >= 0
+                                                       for n in files.values()):
+                return None
+        else:
+            day = daily.name.removeprefix("daily_")
+            manifests = sorted(daily.parent.glob(f"{day}_*.manifest.json"))
+            if not manifests:
+                return None
+            payload = json.loads(manifests[0].read_text(encoding="utf-8"))
+            state, logs = payload.get("state_files"), payload.get("omitted_log_files")
+            if payload.get("mode") != "state-only" or not state \
+                    or not isinstance(state, list) or not isinstance(logs, list):
+                return None
+            files = {name: None for name in state + logs
+                     if _daily_source_file(Path(name))}
+        if not files:
+            return None
+        checked = []
+        for name, size in files.items():
+            rel = Path(name)
+            if rel.drive or rel.root or not rel.parts or ".." in rel.parts:
+                return None
+            target = daily / rel
+            if not target.is_file() or (size is not None and target.stat().st_size != size):
+                return None
+            checked.append(target)
+        return checked
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def _publish_daily(daily: Path, wid: str, paths: list[Path]) -> tuple[bool, list[dict]]:
+    """同卷暂存并发布日备。保留此前未通过清单核对的历史目录。"""
+    staging = None
+    previous = None
+    failed: list[dict] = []
+    indexed = {}
+    try:
+        daily.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=f".{daily.name}-", dir=daily.parent))
+        for p in paths:
+            if not _daily_source_file(p):
+                continue
+            rel = p.relative_to(BASE_DIR)
+            dst = staging / rel
+            error = _copy_with_lock_retry(p, dst, wid)
+            if error is None:
+                indexed[rel.as_posix()] = dst.stat().st_size
+            else:
+                failed.append({"work": wid, "file": str(rel),
+                               "stage": "daily", "error": error})
+        if failed:
+            return False, failed
+        if not indexed:
+            raise OSError("日备无可发布文件")
+        (staging / _DAILY_MANIFEST).write_text(
+            json.dumps({"mode": "daily-full", "files": indexed}, ensure_ascii=False),
+            encoding="utf-8")
+        if daily.exists():
+            if daily_snapshot_files(daily) is not None:
+                return False, []
+            previous = daily.with_name(f".{daily.name}-unverified-{staging.name.rsplit('-', 1)[-1]}")
+            daily.rename(previous)
+        staging.rename(daily)
+        return True, []
+    except OSError as exc:
+        if previous is not None and not daily.exists():
+            try:
+                previous.rename(daily)
+            except OSError:
+                logger.exception("旧日备仍保留在 %s", previous)
+        failed.append({"work": wid, "file": daily.name,
+                       "stage": "daily", "error": str(exc)})
+        return False, failed
+    finally:
+        if staging is not None and staging.exists():
+            _safe_rmtree(staging)
 
 
 def _iter_work_log_files(wid: str) -> list[Path]:
@@ -669,7 +766,8 @@ def _prune_batches(work_id: str, force: bool = False) -> int:
     wd = SNAPSHOT_ROOT / work_id
     if not wd.exists():
         return 0
-    all_dirs = sorted([p for p in wd.iterdir() if p.is_dir()], key=lambda p: p.name)
+    all_dirs = sorted([p for p in wd.iterdir()
+                       if p.is_dir() and not p.name.startswith(_DAILY_PRIVATE)], key=lambda p: p.name)
     proc = [p for p in all_dirs if not p.name.startswith("daily_")]
     dailies = [p for p in all_dirs if p.name.startswith("daily_")]
     removed = 0
@@ -748,7 +846,7 @@ def _prune_total(force: bool = False) -> int:
             if not wd.is_dir():
                 continue
             for b in wd.iterdir():
-                if b.is_dir() and not b.name.startswith("daily_"):
+                if b.is_dir() and not b.name.startswith(("daily_", _DAILY_PRIVATE)):
                     entries.append((b, _batch_bytes(b)))
     except OSError:
         return 0
@@ -929,7 +1027,10 @@ def _snapshot_sync_impl(reason: str = "", work_id: str | None = None) -> dict:
             state_paths, _walk_logs = _split_state_and_log(paths)
             log_paths: list[Path] = []
             fp = _fingerprint(state_paths)
-            if fps.get(wid) == fp:
+            daily = SNAPSHOT_ROOT / wid / f"daily_{_day_stamp()}"
+            daily_exists = daily.is_dir()
+            daily_ready = daily_exists and daily_snapshot_files(daily) is not None
+            if fps.get(wid) == fp and (not daily_exists or daily_ready):
                 logger.info("快照跳过（可变状态未变）: %s 原因=%s", wid, reason)
                 continue
             changed = True
@@ -968,27 +1069,10 @@ def _snapshot_sync_impl(reason: str = "", work_id: str | None = None) -> dict:
                 "omitted_log_files": [p.relative_to(BASE_DIR).as_posix() for p in log_paths],
                 "log_files_note": "只追加留痕未入本批；完整留痕见日备 daily_<日期>",
             })
-            # 每日首份另存日备（**全量**：含留痕 ⇒ 完整复盘点）
-            daily = SNAPSHOT_ROOT / wid / f"daily_{_day_stamp()}"
-            if not daily.exists():
-                daily_failed = []
-                # 日备＝**全量**（含留痕 ⇒ 完整复盘点）⇒ 文件集＝可变状态 ＋ 留痕
-                # 〔2026-10-30〕日备**仍是整库**（``_copy_mode_state_only`` 在过程批次
-                # 那段上下文里已复原）⇒ 日备是唯一的「完整恢复点」，历史也在里面。
-                for p in list(state_paths) + list(log_paths):
-                    rel = p.relative_to(BASE_DIR)
-                    err = _copy_with_lock_retry(p, daily / rel, wid)
-                    if err is not None:
-                        daily_failed.append(
-                            {"work": wid, "file": str(rel), "stage": "daily",
-                             "error": err})
-                if daily_failed:
-                    # 日备目录本轮新建（上方 not daily.exists() 闸），缺文件就整份作废：
-                    # 留着会被明日当成「今日已备」而永不补齐。
-                    _safe_rmtree(daily)
-                    failed.extend(daily_failed)
-                else:
-                    result["daily"] = True
+            if not daily_ready:
+                published, daily_failed = _publish_daily(daily, wid, state_paths + log_paths)
+                result["daily"] = result["daily"] or published
+                failed.extend(daily_failed)
             all_failed.extend(failed)
             if failed:
                 # [可对账] 这批缺了哪几个文件：日志一条说清，别只留笼统的「快照异常」。
@@ -1368,8 +1452,11 @@ def list_snapshots(work_id: str | None = None) -> list[dict]:
         if not wd.exists():
             continue
         for b in sorted(wd.iterdir()):
-            if not b.is_dir():
+            if not b.is_dir() or b.name.startswith(_DAILY_PRIVATE):
                 continue
-            n = sum(1 for _ in b.rglob("*") if _.is_file())
-            out.append({"work_id": wd.name, "stamp": b.name, "files": n})
+            n = sum(1 for p in b.rglob("*") if p.is_file() and p.name != _DAILY_MANIFEST)
+            item = {"work_id": wd.name, "stamp": b.name, "files": n}
+            if b.name.startswith("daily_"):
+                item["complete"] = daily_snapshot_files(b) is not None
+            out.append(item)
     return out

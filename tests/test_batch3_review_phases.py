@@ -1398,6 +1398,33 @@ async def test_gateway_retry_guard_blocks_second_send(sandbox, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_outer_model_retry_reaches_transport_and_lands_vote(sandbox, monkeypatch):
+    from src.api import message_runner, model_service
+    from src.storage import review_store
+
+    monkeypatch.setenv(ENV, "1")
+    monkeypatch.setenv("COST_HOP_RETRY_BUDGET", "0")
+    w = await _nudge_world(sandbox, monkeypatch)
+    wid, rid, seat = w["wid"], w["rid"], w["fids"][0]
+
+    # Exhaust the gateway on the first disconnect so the runner retries the
+    # same hop with its existing material guard.
+    monkeypatch.setattr(model_service.get_gateway(), "_retry_params", lambda _: (1, 0))
+    monkeypatch.setattr(message_runner.model_config, "layer_fallbacks",
+                        lambda *args, **kwargs: [])
+    response, rec = await _step_once(
+        wid, rid, _Plan([_approve_frames(rid), _text_frames("通过。")], fail_first=True),
+        monkeypatch)
+
+    assert not response.get("error"), response
+    assert len(rec.requests) >= 2
+    assert rec.requests[0]["raw"] == rec.requests[1]["raw"]
+    status = await review_store.status(wid, rid)
+    vote = status["votes"][seat]
+    assert vote["verdict"] == "approve" and vote["draft_ver"] == status["draft"]
+
+
+@pytest.mark.asyncio
 async def test_member_check_inside_vote_txn(sandbox, monkeypatch):
     """[返修③·二轮] 换批竞速：旧批成员闸过后切到不含该席的新批 ⇒
     落票事务按新批名单拒落，新批票表零写入。"""

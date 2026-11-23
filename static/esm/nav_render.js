@@ -24,9 +24,9 @@
  */
 import { escapeHtml } from "./util.js?v=30";
 import { notify } from "./api.js?v=57";
-import { createRowModel } from "./row_model.js?v=36";
+import { createRowModel } from "./row_model.js?v=37";
 import { createVirtualList } from "./nav_virtual.js?v=32";
-import { NAV_ROW_HEIGHT } from "./state_layers.js?v=32";
+import { NAV_ROW_HEIGHT } from "./state_layers.js?v=33";
 // [S3] 呈现族纯函数（R-33 徽章聚合／R-35 空态／R-21 快照存在性）
 import { projectAggregate, isProjectEmpty, cardInSnapshot } from "./nav_badge.js?v=30";
 // [左栏接线 步2] 行几何纯函数（微推进／图标列／树线段）
@@ -119,6 +119,15 @@ export function createNavRenderer(deps) {
 
   function buildRowEl(row) {
     if (row.kind === "project") return buildProjectEl(row);
+    if (row.kind === "coordination") {
+      const el = document.createElement("a");
+      el.className = "nav-card nav-coordination";
+      el.href = `/work/${encodeURIComponent(row.wid)}/card/${encodeURIComponent(row.card.work_card_id)}?coordination=1`;
+      el.style.textDecoration = "none";
+      el.style.color = "inherit";
+      el.innerHTML = '<span class="nav-ico" aria-hidden="true">◷</span><span class="nav-ctitle">项目统筹</span>';
+      return el;
+    }
     // [职能入口 2026-10-22] 职能不是卡（不进 cards 表），行结构另立。
     if (row.kind === "function") return buildFunctionEl(row);
     // [评审入口 2026-10-29] 评审卡也不是卡（离树、不进 cards 表）。
@@ -503,6 +512,15 @@ export function createNavRenderer(deps) {
   /* ---------- patch（R-15：只改变化字段；R-19 guard 在最前） ---------- */
 
   function patchRowEl(el, row) {
+    if (row.kind === "coordination") {
+      const selected = row.wid === window.__WORK_ID__
+        && new URLSearchParams(location.search).get("coordination") === "1";
+      el.classList.toggle("current", selected);
+      el.classList.toggle("nav-last", !!row.lastInProject);
+      if (selected) el.setAttribute("aria-current", "page");
+      else el.removeAttribute("aria-current");
+      return true;
+    }
     /* [职能行重叠 2026-10-22 · 真根因] 职能行没有 __chev / __tail / __segs 这套卡行
        结构，落到下面的 patchCardContent 会抛 TypeError；而 patch 是在
        nav_virtual.reslice() 的循环里逐行调的 ⇒ **一行抛异常，后面所有行的
@@ -685,6 +703,12 @@ export function createNavRenderer(deps) {
    * 为什么一个字都不写进 prefs：镜片是「换一种看法」，不是「改动你摆好的样子」——
    * 清空查询即原样还原，靠的就是它从没写过任何状态（query 只活在 temp 内存）。
    * 命中路径行不标黄，只作定位；命中的那一行标黄。 */
+  function appendCoordinationRow(rows, project) {
+    if (document.body.classList.contains("page-chat") && project.work_card_id) {
+      rows.push(createRowModel(project, store, { kind: "coordination", wid: project.work_id }));
+    }
+  }
+
   function searchRows(q) {
     const rows = [];
     const projects = (store.snapshot.get().projects) || [];
@@ -695,11 +719,17 @@ export function createNavRenderer(deps) {
       const root = p.work_card_id || "";
       const projHit = (p.title || "").toLowerCase().includes(q);
       const hits = all.filter(c => (c.title || "").toLowerCase().includes(q));
-      if (!projHit && !hits.length) continue;
+      const coordinationHit = !!root && document.body.classList.contains("page-chat")
+        && (wid === window.__WORK_ID__ || "项目统筹".includes(q));
+      if (!projHit && !hits.length && !coordinationHit) continue;
       rows.push(createRowModel(p, store, {
         kind: "project", depth: 0, wid, searching: true, matched: projHit,
       }));
-      if (!hits.length) continue;              // 只有项目名命中：显出项目行即可，不摊它的卡
+      appendCoordinationRow(rows, p);
+      if (!hits.length) {
+        if (rows.at(-1).kind === "coordination") rows.at(-1).lastInProject = true;
+        continue;
+      }
       // 命中集 ＋ 各自到根的路径（want: cid → 是否命中）
       const want = new Map();
       for (const c of hits) {
@@ -742,8 +772,12 @@ export function createNavRenderer(deps) {
     const projects = (store.snapshot.get().projects) || [];
     for (const p of projects) {
       rows.push(createRowModel(p, store, { kind: "project", depth: 0, wid: p.work_id }));
-      if (!store.prefs.getProjectOpen(p.work_id)) continue;
       const start = rows.length;
+      appendCoordinationRow(rows, p);
+      if (!store.prefs.getProjectOpen(p.work_id)) {
+        if (rows.length > start) rows.at(-1).lastInProject = true;
+        continue;
+      }
       pushSegment(rows, p.work_id, "", 0, new Set(), []);
       // [评审入口 2026-10-29] 有进行中批次的评审卡——临时入口，收口即消失。
       // 排在卡列表之后、职能之前：它跟着"事"走，不是"人"。
@@ -1021,7 +1055,23 @@ export function createNavRenderer(deps) {
     if (!api.getNavRunning) return;
     let r;
     try { r = await api.getNavRunning(); } catch (e) { return; }   // 失败静默（下轮再来）
-    const changed = store.temp.setRunningSet((r && r.running) || []);
+    if (!r) return;   // 查询失败：保留现状（≠完整空集——空集才许清转圈）
+    /* [任务三·合源] 三态：完整响应（含空集）⇒ 整体覆盖；
+       coverage.missing 非空＝部分 runner 缺失 ⇒ 按**实际可用响应**算覆盖：
+       已确认分片（total−missing）里缺席的旧条目删除（健康 A 完成清 A 转圈），
+       缺失分片与无标条目保留待校准（失联 B 不许清）；无 coverage（单进程/
+       老后端）⇒ 视作完整。 */
+    const cov = r.coverage || null;
+    const missing = cov && cov.missing;
+    let changed;
+    if (missing && missing.length) {
+      const miss = new Set(missing);
+      const okSet = new Set();
+      for (let i = 0; i < (cov.total || 0); i++) if (!miss.has(i)) okSet.add(i);
+      changed = store.temp.mergeRunningSet(r.running || [], okSet);
+    } else {
+      changed = store.temp.setRunningSet(r.running || []);
+    }
     if (changed) render();   // 无变化不重渲（不打断交互）
   }
 

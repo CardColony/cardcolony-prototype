@@ -204,6 +204,7 @@ _NATIVE_GET_TPLS: frozenset[str] = frozenset({
     "/api/nav/children",
     "/api/nav/running",
     "/api/nav/version",
+    "/api/live",
     "/api/health",
     "/api/observe/calls",
     "/api/works",

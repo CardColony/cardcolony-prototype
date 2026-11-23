@@ -545,6 +545,18 @@ def _spawn_strong_turn(work_id: str, plan_card_id: str, assignment_id: str,
 _TICK_SEC = 60.0
 
 _TASK: "asyncio.Task | None" = None
+_delivery_recovery: set[str] = set()
+
+
+async def _recover_deliveries(work_id: str) -> None:
+    from ..api import coordination_runner
+
+    try:
+        await coordination_runner.recover_deliveries(work_id)
+    except Exception as exc:  # noqa: BLE001 下次 tick 继续补写
+        logger.warning("[coordination_watcher] 收件恢复待重试 work=%s: %s", work_id, exc)
+    finally:
+        _delivery_recovery.discard(work_id)
 
 
 def install() -> None:
@@ -575,6 +587,9 @@ def install() -> None:
                         if d.is_dir() and (d / "work.json").is_file():
                             try:
                                 tick(d.name)
+                                if d.name not in _delivery_recovery:
+                                    _delivery_recovery.add(d.name)
+                                    _track(asyncio.create_task(_recover_deliveries(d.name)))
                             except Exception as exc:
                                 logger.warning("[coordination_watcher] tick 失败 work=%s: %s", d.name, exc)
             except Exception as exc:  # noqa: BLE001 单轮失败不终止循环

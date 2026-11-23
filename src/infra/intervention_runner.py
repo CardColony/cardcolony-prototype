@@ -307,17 +307,17 @@ def record_fired(work_id: str, fired: list[dict[str, Any]]) -> None:
             # 字段全空 ⇒ 键退化成分隔符串——不启用 biz 去重，回落
             # fire_key 事实级（宁可多发不吞步骤）。
             biz_key = _biz if _biz.strip("|").strip() else ""
-            # [批五·缺证回落] 伪调用缺原回合身份（旧事件无 pair_id）⇒
-            # 不用业务键——沿事实级 fire_key＋recent 节流，记缺证。
-            if (pid == "pseudo_call_reinvoke"
-                    and not str(_vals.get("pair_id") or "")):
-                biz_key = ""
-                st.record_error(
-                    work_id, stage="record", kind="missing_identity",
-                    policy_id=pid,
-                    card_id=str(basis.get("card") or ""),
-                    detail={"fields": [x for x in _dedup
-                                       if not str(_vals.get(str(x)) or "")]})
+            if pid == "pseudo_call_reinvoke":
+                missing = [key for key in ("pair_id", "round", "anomaly")
+                           if not _vals.get(key)]
+                if missing:
+                    biz_key = ""
+                    st.record_error(
+                        work_id, stage="record", kind="missing_identity",
+                        policy_id=pid, card_id=str(basis.get("card") or ""),
+                        detail={"fields": missing})
+                _vals["sid"] = str(trigger.get("sid") or "")
+                _vals["task_id"] = str(trigger.get("task_id") or "")
             step_map = _vals
             if pid == "review_step_not_finished":
                 draft_fp = _resolve_ref("event:draft_fp", trigger)
@@ -462,10 +462,29 @@ def record_fired(work_id: str, fired: list[dict[str, Any]]) -> None:
             f["_deploy"] = True
         else:
             for t in targets:
-                aid, _created = st.record_action(
-                    work_id, policy_id=pid, scope_key=scope_key, fire_key=fire_key,
-                    target=t, mode=mode, wake=wake, message=msg_tmpl,
-                    matter_id=matter_id, biz_key=biz_key, step=step_map)
+                # runner 与策略按原会话、原跳和异常共用一笔决定。
+                if (pid == "pseudo_call_reinvoke" and _coalesce_on()
+                        and step_map and biz_key):
+                    aid, _created, _owner = st.claim_anomaly_decision(
+                        work_id, policy_id=pid,
+                        scope_key=scope_key, fire_key=fire_key,
+                        target=t, mode=mode, wake=wake, message=msg_tmpl,
+                        matter_id=matter_id, step=step_map)
+                    if aid and not _created:
+                        f["_matter_reused"] = True
+                        f["_shared_decision"] = _owner
+                else:
+                    aid, _created = st.record_action(
+                        work_id, policy_id=pid, scope_key=scope_key,
+                        fire_key=fire_key,
+                        target=t, mode=mode, wake=wake, message=msg_tmpl,
+                        matter_id=matter_id, biz_key=biz_key, step=step_map,
+                    # [批五·最新材料] 超限提醒把模板随动作落账——resume
+                    # 领取时按当前卡面字数重渲染，不投陈旧读数。
+                    spec=(json.dumps({"msg_tmpl": msg_tmpl},
+                                     ensure_ascii=False)
+                          if pid == _OVERSIZE_PID and _coalesce_on()
+                          else ""))
                 if aid:
                     actions[t] = aid
                 else:
@@ -520,6 +539,28 @@ def action_skip(work_id: str, action_id: str) -> bool:
     verdict, evidence = _check(work_id, m)
     if verdict != "open":
         st.close_matter(work_id, mid, state=verdict, evidence=evidence)
+        return True
+    return False
+
+
+def oversize_delivery_stale(work_id: str, action: dict[str, Any]) -> bool:
+    """[批五·落信边界复核 2026-11-22] 超限动作**领取后、写会话前**
+    再核一次：事项已关 或 当前卡面已回阈值内 ⇒ True（不落信）。
+
+    领取与落信之间有缝——领取时超 10,000 的事实登记后，卡面可能
+    已被编辑恢复到 9,999；此时落信＝用过期读数打扰用户还触发
+    一次起轮（独立复跑实录）。只在合并开关开＋超限策略时生效。"""
+    if not _coalesce_on():
+        return False
+    if str((action or {}).get("policy_id") or "") != _OVERSIZE_PID:
+        return False
+    mid = str(action.get("matter_id") or "")
+    if mid:
+        m = intervention_store.store().get_matter(work_id, mid)
+        if m is None or str(m.get("state") or "") != "open":
+            return True
+    cur = _status_len(work_id, str(action.get("target") or ""))
+    if cur is not None and cur < _OVERSIZE_LIMIT:
         return True
     return False
 
@@ -1058,6 +1099,14 @@ async def resume(work_id: str) -> dict[str, int]:
         if not token:
             stats["skipped"] += 1
             continue
+        # [批五·落信边界复核] 领取到落信之间事项可能已关、卡面可能
+        # 已回阈值——与即时投递同口径，复核不过销账不落信。
+        if oversize_delivery_stale(work_id, a):
+            st.mark_action(work_id, aid, "stale",
+                           receipt={"reason": "resolved_before_deliver"},
+                           claim_token=token)
+            stats["skipped"] += 1
+            continue
         if _mode == "continue":
             _expect = step_expect(st.get_action(work_id, aid) or a)
         try:
@@ -1084,10 +1133,29 @@ async def resume(work_id: str) -> dict[str, int]:
                                     detail=res)
                 stats["redelivered"] += 1
                 continue
+            _msg = str(a.get("message") or "")
+            # [批五·最新材料] 超限提醒领取后按**当前卡面**字数重渲染
+            # （模板在 action.spec.msg_tmpl）——台账材料可能还停在更早
+            # 一次编辑的读数；恢复路径与实时投递同口径。
+            if (_coalesce_on()
+                    and str(a.get("policy_id") or "") == _OVERSIZE_PID):
+                _cur = _status_len(work_id, str(a.get("target") or ""))
+                if _cur is not None:
+                    try:
+                        _tmpl = str(
+                            json.loads(str(a.get("spec") or "{}") or "{}")
+                            .get("msg_tmpl") or _msg)
+                        _msg = (harness.render_message(
+                            {"message": _tmpl},
+                            {"trigger_data": {"new_len": _cur},
+                             "card_id": str(a.get("target") or ""),
+                             "work_id": work_id}) or _msg)
+                    except Exception:  # noqa: BLE001 渲染失败沿存稿
+                        pass
             async with claim_lease(work_id, aid, token):
                 res = await harness.deliver(
                     work_id, str(a.get("target") or ""),
-                    str(a.get("message") or ""),
+                    _msg,
                     rule_id=str(a.get("policy_id") or ""),
                     wake=bool(a.get("wake")), mode=_mode,
                     action_id=aid, expect=_expect)

@@ -2040,18 +2040,18 @@ async def _h_create_worker_card(work_id: str, current_id: str,
     # [2026-10-19 实验 permexp] **补 goal**：原先不传 goal ⇒ 自动模式下 worker 卡
     # goal 空、goal_state 不落 ⇒ auto_driver.will_continue 恒 False ⇒ 只有下面
     # ③ 的首跑一次，「一轮做不完就停在那里」。任务原文即目标文本（使命块同源）。
-    result = await card_store.create_card(
-        work_id, title, "模型生成",
-        card_type="worker", parent=_worker_parent,
-        charter=f"## 使命\n{task}",
-        goal=task,
-        # [调度改造 2026-10-19] 本工具**自己负责首跑**（下面 ③ `_spawn_tracked`
-        # 带任务正文）。若建卡也点一次，会起一个没有任务正文的空回合，把正式首跑
-        # 挡在互斥体外面 ⇒ worker 卡零产出（实测 test_worker_card 两条都挂）。
-        skip_kick=True,
-        # [2026-10-26 · 记录补全] 记下派发者（派生worker 卡 = 父卡派活）
-        created_by=current_id,
-    )
+    try:
+        result = await card_store.create_card(
+            work_id, title, "模型生成",
+            card_type="worker", parent=_worker_parent,
+            charter=f"## 使命\n{task}",
+            goal=task,
+            # 派工工具负责带任务正文的首跑，建卡时跳过默认空回合。
+            skip_kick=True,
+            created_by=current_id,
+        )
+    except PermissionError as exc:
+        return err("denied", str(exc))
     if "error" in result:
         return result
     new_id = result["meta"]["card_id"]
@@ -2064,10 +2064,6 @@ async def _h_create_worker_card(work_id: str, current_id: str,
         from . import routes as _routes
         _pc = await card_store.read_card(work_id, current_id)
         owner_title = str(_pc["meta"].get("title") or current_id)
-        # [上游需求文档 2026-11-10 · 用户令「worker 就要把需求文档自动塞进它的
-        # 提示词里」] worker 走委派执行体——kick 正文是它唯一拿尺的通道；
-        # 正稿全文不截断（它是验收尺，残本判不了卷）。占位模板不带（没有正稿
-        # 不硬塞）。
         _preq = _requirements_final_of(_pc)
         prompt = (
             f"卡 {current_id}（《{owner_title}》）给你发来开发任务。\n"
@@ -2080,18 +2076,22 @@ async def _h_create_worker_card(work_id: str, current_id: str,
         first_source = None
         if wait_store.enabled(work_id):
             dispatch = await session_facade.append_card_message(
-                work_id, new_id, from_card=current_id, text=task, msg_type="msg_directive")
+                work_id, new_id, from_card=current_id,
+                text=task, msg_type="msg_directive")
             task_id = str(dispatch.get("msg_id") or "")
-            first_source = {"kind": "worker_dispatch", "from": current_id, "task_id": task_id}
+            first_source = {"kind": "worker_dispatch", "from": current_id,
+                            "task_id": task_id}
         first_run = _message_runner._spawn_tracked(
-            _routes._run_message(work_id, new_id, prompt, None, append_user=False,
-                                 **({"source": first_source} if first_source else {})),
+            _routes._run_message(work_id, new_id, prompt, None,
+                                 append_user=False,
+                                 **({"source": first_source}
+                                    if first_source else {})),
             work_id=work_id, card_id=new_id)
-        
-        first_run._card_msg_target = new_id  # type: ignore[attr-defined]
+        first_run._card_msg_target = new_id
         started = True
-    except Exception as exc:  # noqa: BLE001 首跑拉起失败不吞——如实回报 started=False
-        logger.error("create_worker_card 首跑拉起失败 card=%s: %s", new_id, exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("create_worker_card 首跑拉起失败 card=%s: %s",
+                     new_id, exc)
         started = False
     return {
         "ok": True,
@@ -2189,9 +2189,50 @@ async def _h_create_ui_card(work_id: str, current_id: str,
 _DEPLOY_VENUE_TYPES: dict[str, str] = {"qa": "qa_card", "pm": "pm_card"}
 
 
+async def activate_and_wake_deployment(work_id: str, deployment_id: int) -> dict[str, Any]:
+    """用差事账的身份和材料起轮，目标回合过闸后才确认接纳。"""
+    from ..storage import function_store as _fs
+    from . import function_room as _fr
+    from . import message_runner as _mr
+    from . import routes as _routes
+
+    dep = _fs.get_deployment(work_id, deployment_id)
+    if not dep or dep["venue_kind"] != "deploy":
+        return err("not_found", "派驻差事不存在")
+    if dep["status"] == "created":
+        dep = await _fs.activate_deployment(work_id, deployment_id, only_created=True)
+    if not dep:
+        return err("not_found", "派驻差事不存在")
+    if dep["status"] != "active" or dep["wake_status"] != "pending":
+        status = dep["wake_status"] if dep["wake_status"] != "pending" else dep["status"]
+        return {"ok": True, "wake_status": status}
+
+    venue_card = dep["venue_ref"]
+    function_id = dep["function_id"]
+    coro = _routes._run_message(
+        work_id, venue_card, dep["mandate"], append_user=False,
+        source={"kind": "deploy", "deployment_id": deployment_id,
+                "delegator": dep["delegator"]},
+        act_as=function_id, act_meta=_fr.identity_for(work_id, function_id, "deploy"),
+        ctx_card=venue_card, tool_allow=set(dep["tools"]),
+        admission=lambda: _fs.admit_deployment_wake(
+            work_id, deployment_id, venue_card, function_id))
+    try:
+        run = _mr._spawn_tracked(coro, work_id=work_id, card_id=venue_card)
+    except Exception as exc:  # noqa: BLE001 未入队，原差事仍可续办
+        coro.close()
+        logger.error("deploy 起轮失败 card=%s dep=%s: %s",
+                     venue_card, deployment_id, exc)
+        return {"ok": True, "wake_status": "pending"}
+    run._card_msg_target = venue_card  # type: ignore[attr-defined]
+    return {"ok": True, "wake_status": "queued"}
+
+
 async def _h_create_deploy_card(work_id: str, current_id: str,
                                 arguments: dict[str, Any],
-                                cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+                                cards: dict[str, dict[str, Any]], *,
+                                bind_deployment: Callable[[Any, str, dict[str, Any]], None] | None = None,
+                                resume_card_id: str = "") -> dict[str, Any]:
     """建一张差事卡＝把职能部署进场干活，一次调用到底。
 
     流程（与 create_worker_card 同构）：
@@ -2242,22 +2283,16 @@ async def _h_create_deploy_card(work_id: str, current_id: str,
     label = "验收" if code == "qa" else ("执笔" if code == "pm" else code)
     title = str(arguments.get("title") or "").strip() or f"{label}·{tgt_title}"
     mission = task if target == current_id else f"{task}（对象卡：{target}）"
-    result = await card_store.create_card(
-        work_id, title, "模型生成",
-        card_type=card_type, parent=current_id,
-        charter=f"## 使命\n{mission}",
-        skip_kick=True, created_by=current_id)
-    if "error" in result:
-        return result
-    new_id = result["meta"]["card_id"]
-    cards[new_id] = {**result["meta"], "card_id": new_id}
+    new_id = resume_card_id
+    if new_id:
+        venue = cards.get(new_id) or {}
+        if venue.get("parent") != current_id or venue.get("card_type") != card_type:
+            return err("denied", "原差事卡不属于本次派驻")
 
-    # ③ 落差事账＋激活
     try:
         entry = _fr.entry(code) or {}
         exit_spec = str(entry.get("deploy_exit") or "report")
         tools = sorted(set(_fr.grant_for(work_id, fid, "deploy") or []))
-        ident = _fr.identity_for(work_id, fid, "deploy")
         # kick 正文＝职责书＋对象卡事实＋交差说明。两条执行路径共用：
         # 系统模型走 act_meta 身份＋工具；wb 执行体只有这段文本＋工作目录
         # 文件——所以对象卡的事实（验收的尺、执笔的据）必须落进正文。
@@ -2302,36 +2337,39 @@ async def _h_create_deploy_card(work_id: str, current_id: str,
         text = (f"{charter}\n\n" if charter else "") + \
                f"【差事】{task}\n派遣方：{current_id}\n" + \
                "\n".join(_facts) + f"\n\n{_how}"
-        dep = await _fs.create_deployment(
-            work_id, fid, venue_kind="deploy", venue_ref=new_id,
-            venue_label=title, mandate=text, delegator=current_id,
-            target_card=target, tools=tools,
-            exit_kind="deliverable", exit_spec=exit_spec,
-            meta={"deploy_card": True})
-        did = int(dep.get("id") or 0)
-        await _fs.activate_deployment(work_id, did)
+        deployment_args = {
+            "function_id": fid, "venue_kind": "deploy", "venue_label": title,
+            "mandate": text, "delegator": current_id,
+            "batch_id": str(arguments.get("batch_id") or ""),
+            "target_card": target, "tools": tools,
+            "exit_kind": "deliverable", "exit_spec": exit_spec,
+            "meta": {"deploy_card": True}, "once_per_batch": bind_deployment is not None,
+        }
+        if not new_id:
+            on_create_tx = None
+            if bind_deployment is not None:
+                def on_create_tx(conn, card_id):
+                    bind_deployment(conn, card_id, deployment_args)
+            result = await card_store.create_card(
+                work_id, title, "模型生成", card_type=card_type, parent=current_id,
+                charter=f"## 使命\n{mission}", skip_kick=True, created_by=current_id,
+                on_create_tx=on_create_tx)
+            if "error" in result:
+                return result
+            new_id = result["meta"]["card_id"]
+            cards[new_id] = {**result["meta"], "card_id": new_id}
+
+        dep = await _fs.create_deployment(work_id, venue_ref=new_id, **deployment_args)
+        did = int(dep["id"])
+        wake = await activate_and_wake_deployment(work_id, did)
     except Exception as exc:  # noqa: BLE001 落差事失败：卡已建——如实回报不吞
         logger.error("create_deploy_card 落差事失败 card=%s fn=%s: %s",
                      new_id, fid, exc)
-        return err("internal", f"差事卡已建({new_id})但差事落账失败: {exc}")
+        # 带出已建卡编号——统筹派驻可从断点继续（同 qa_id 不重建卡）
+        return {**err("internal",
+                      f"差事卡已建({new_id})但差事落账失败: {exc}"),
+                "card_id": new_id}
 
-    # ④ 唤起职能进场（背景任务；差事卡恒闲不等锁）
-    started = False
-    try:
-        from . import message_runner as _message_runner
-        from . import routes as _routes
-        run = _message_runner._spawn_tracked(_routes._run_message(
-            work_id, new_id, text, append_user=False,
-            source={"kind": "deploy", "deployment_id": did,
-                    "delegator": current_id},
-            act_as=fid, act_meta=ident, ctx_card=new_id,
-            tool_allow=set(dep.get("tools") or [])),
-            work_id=work_id, card_id=new_id)
-        run._card_msg_target = new_id  # type: ignore[attr-defined]
-        started = True
-    except Exception as exc:  # noqa: BLE001 唤起失败如实回报——差事账在可重唤
-        logger.error("create_deploy_card 唤起失败 card=%s dep=%s: %s",
-                     new_id, did, exc)
     return {
         "ok": True,
         "card_id": new_id,
@@ -2342,7 +2380,8 @@ async def _h_create_deploy_card(work_id: str, current_id: str,
         "function_id": fid,
         "deployment_id": did,
         "target_card": target,
-        "started": started,
+        "started": wake.get("wake_status") in ("queued", "admitted"),
+        "wake_status": wake.get("wake_status", "pending"),
         "note": "差事已落账、职能进场中；它办完会自动收工，结论回执到本卡。",
     }
 
@@ -2370,6 +2409,19 @@ async def _h_report_deploy(work_id: str, current_id: str,
         return err("denied",
                    "你没有在派的差事——report 是差事回执；对卡汇报用 report_up")
     dep = deps[0]
+    # [统筹 QA 归属] 宿主按当前回合注入绑定差事编号（非模型自报）——
+    # 同职能多项在派时命中本回合那项，不误挂到别的差事。
+    bound = arguments.get("_deployment_id")
+    if bound is not None:
+        try:
+            chosen = next((d for d in deps
+                           if int(d.get("id") or 0) == int(bound)), None)
+        except (TypeError, ValueError):
+            chosen = None
+        if chosen is None:
+            return err("denied",
+                       f"回合绑定的差事 {bound} 不在当前在派差事中（防错挂）")
+        dep = chosen
     to = str(dep.get("delegator") or "") or str(dep.get("target_card") or "")
     if not to or to not in cards:
         return err("internal", f"差事 {dep.get('id')} 没有可汇报的派遣方")
@@ -2391,6 +2443,14 @@ async def _h_report_deploy(work_id: str, current_id: str,
     except Exception as exc:  # noqa: BLE001 投递失败要如实回给模型
         logger.warning("[report] 投递失败 to=%s: %s", to, exc)
         return err("internal", f"差事回执投递失败: {exc}")
+    # [统筹 QA 桥] 正式回执按差事编号把结论回原事项（零阻断）
+    try:
+        from . import coordination_runner as _cr
+        await _cr.ingest_qa_report(
+            work_id, int(dep.get("id") or 0), content,
+            explicit_verdict=str(arguments.get("verdict") or ""))
+    except Exception as exc:  # noqa: BLE001 回执本体已落，不影响主路
+        logger.debug("[report] 统筹 QA 桥跳过: %s", exc)
     return {"ok": True, "delivered": [{"to": to, "msg_id": _mid}],
             "deployment_id": int(dep.get("id") or 0)}
 
@@ -7798,6 +7858,19 @@ async def _h_report_up(work_id: str, current_id: str,
                 # [回执对账 2026-11-20] 带原派工 ID——declare_wait 核对认它。
                 reply_to=task_id)
             _mid = str((_rec or {}).get("msg_id") or "")
+            # [返工①] 会话块已落盘即绑定（投递失败也不撤销收件事实）
+            _coord_mid = str(arguments.get("_coordination_msg_id") or "")
+            if _coord_mid and _mid:
+                try:
+                    from . import coordination_runner as _cr
+                    await _cr.bind_execution_evidence(
+                        work_id, current_id,
+                        coordination_msg_id=_coord_mid, reply_msg_id=_mid,
+                        reply_to=task_id, from_card=current_id, content=content,
+                        receipt_card=str(parent or ""),
+                        receipt_session=str(_rec.get("session") or ""))
+                except Exception as exc:  # noqa: BLE001 绑定失败不挡汇报主路
+                    logger.debug("[report_up] 执行证据绑定跳过: %s", exc)
             # [2026-11-08] await 拿真回执（改前 _spawn_tracked 起完就走，「delivered」
             # 是假的——deliver_now 返回 False 时照样报 delivered）。steer_text 带
             # 汇报全文：父卡在跑时 deliver_now 走插话通道，轮槽里给的是正文
@@ -8662,6 +8735,8 @@ TOOL_REGISTRY["report"] = ToolDef(
                             "description": "回执正文（非空：结论＋证据）。"
                             "禁止填「…[参数已折叠]」等折叠占位——那是装配存根"
                             "不是原文，要引用先取完整原文"},
+                "verdict": {"type": "string", "enum": ["passed", "failed", "unverified"],
+                            "description": "可选显式结论；缺省从正文「结论：」行读取"},
             },
             "required": ["content"],
         },

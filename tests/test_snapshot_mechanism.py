@@ -128,6 +128,44 @@ def test_daily_backup_stays_full(tmp_path, monkeypatch):
     assert STATE_DB in got, f"日备必须含状态：{got}"
 
 
+def test_partial_legacy_daily_is_preserved_until_full_replacement(tmp_path, monkeypatch):
+    base = _setup(tmp_path, monkeypatch, {
+        STATE_DB: "db", STATE_JSON: '{"ready": true}', EVENT_LOG: "origin\n",
+    })
+    wd = data_snapshot.SNAPSHOT_ROOT / "work_001"
+    day = data_snapshot._day_stamp()
+    daily = wd / f"daily_{day}"
+    partial = daily / STATE_JSON
+    partial.parent.mkdir(parents=True)
+    partial.write_text("legacy fragment", encoding="utf-8")
+    (wd / f"{day}_000000_000000.manifest.json").write_text(json.dumps({
+        "mode": "state-only", "state_files": [STATE_JSON, STATE_DB],
+        "omitted_log_files": [EVENT_LOG],
+    }), encoding="utf-8")
+    recent = data_snapshot._fingerprint([base / STATE_DB, base / STATE_JSON])
+    data_snapshot._save_fingerprints({"work_001": recent})
+    assert data_snapshot.daily_snapshot_files(daily) is None
+    assert data_snapshot.list_snapshots("work_001")[0]["complete"] is False
+
+    real_copy = data_snapshot._copy_protected_file
+
+    def check_during_copy(src, dst):
+        if any(part.startswith(".daily_") for part in dst.parts):
+            assert data_snapshot.daily_snapshot_files(daily) is None
+        real_copy(src, dst)
+
+    monkeypatch.setattr(data_snapshot, "_copy_protected_file", check_during_copy)
+    r = data_snapshot.snapshot_sync("complete missing daily", work_id="work_001")
+    assert r["daily"] and not r["failed"]
+    assert daily / EVENT_LOG in data_snapshot.daily_snapshot_files(daily)
+    retained = next(wd.glob(f".{daily.name}-unverified-*"))
+    assert (retained / STATE_JSON).read_text(encoding="utf-8") == "legacy fragment"
+    assert all(not row["stamp"].startswith(".daily_")
+               for row in data_snapshot.list_snapshots("work_001"))
+    (daily / EVENT_LOG).write_text("", encoding="utf-8")
+    assert data_snapshot.daily_snapshot_files(daily) is None
+
+
 def test_batch_manifest_says_what_is_omitted(tmp_path, monkeypatch):
     """批次写 manifest：说清这批是 state-only、留痕在哪。
 

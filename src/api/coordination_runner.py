@@ -24,16 +24,19 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
+import sqlite3
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from . import model_service
-from ..storage import card_db, card_store, coordination_store
+from ..storage import card_db, card_store, coordination_board, coordination_store
 
 logger = logging.getLogger("api.coordination_runner")
 
@@ -171,6 +174,20 @@ def plan_for_model(appt: dict[str, Any], allowed: set[str]) -> dict[str, Any]:
     return appt.get("plan") or {}
 
 
+def _board_tail(appt: dict[str, Any], allowed: set[str]) -> list[dict[str, str]]:
+    """当轮计划板投影——turn_tail 每次出站**一份**（含 rev，未完成按
+    (priority,item_id) 序；blocked/doing 也算未完成；无待推进写明）。
+
+    [2026-11-23 · 计划板任务书] 覆盖所有强模型唤醒口（任命/手动/弱模型
+    提请/直接节点/到期回看）＋工具续跳＋用户对话。改板成功后的下一跳
+    用保存回执的新 rev 重新投影——调用方负责刷新本返回值。
+    """
+    snap = coordination_board.board_snapshot(appt, allowed)
+    text = ("统筹计划板（当前快照；未完成＝todo/doing/blocked，按优先级序）\n"
+            + json.dumps(snap, ensure_ascii=False, separators=(",", ":")))
+    return [{"role": "user", "content": text}]
+
+
 def _changes_text(batch: dict[str, Any]) -> tuple[str, set[str]]:
     """变化批次 → 文本＋全部合法证据坐标集合（**只算过滤后批次**）。"""
     coords: set[str] = set()
@@ -224,6 +241,16 @@ def weak_input_pack(work_id: str, plan_card_id: str, batch: dict[str, Any],
         "按 system 里的协议输出 JSON。evidence_refs 只能引用上面 [event:…] "
         "坐标；引用不存在或不属于本批 ⇒ 宿主会记「未判断」。"
     )
+    # [2026-11-23 · 计划板] 本批涉及事项的状态与下一结果——帮弱模型判断
+    # 「这条变化对应的事项是否值得叫醒统筹」。全板只随强模型回合走。
+    if item_ids:
+        items_now = {it["item_id"]: it for it in coordination_board.visible_items(appt, allowed)}
+        involved = sorted(str(x) for x in item_ids if str(x) in items_now)
+        if involved:
+            user += "\n\n== 本批涉及事项现状（板面，只读）==\n" + "\n".join(
+                f"- {iid}（{items_now[iid]['status']}）："
+                f"{items_now[iid]['next_result'] or '（未填下一结果）'}"
+                for iid in involved)
     return {"system": _WEAK_SYSTEM, "user": user, "coords": coords}
 
 
@@ -486,7 +513,7 @@ _COORD_TURN_SYSTEM = (
     "安排开发。用户目标、授权和授权卡清单已给你，"
     "**需求原句、需求版本、各卡已有工作由你自己只读查证**（下面的指令协议），"
     "查证充分后提交一份可执行计划＋给观察哨（弱模型）的唤醒标准。\n"
-    "每轮输出**一个** JSON 对象（可包 ```json 围栏），二选一：\n"
+    "每轮输出**一个** JSON 对象（可包 ```json 围栏），按下列协议选择动作：\n"
     "① 查证：{\"action\": \"coord_read_card\", \"card_id\": \"…\"}"
     " —— 读一张授权卡的使命/需求文档（含版本状态）/现状；\n"
     "        {\"action\": \"coord_read_events\", \"card_id\": \"…\", \"tail\": 10}"
@@ -495,8 +522,6 @@ _COORD_TURN_SYSTEM = (
     '  {"objective": 一句话总目标,\n'
     '   "requirements": [{"ref": "出处卡", "version": "查证坐标（state+内容指纹）",'
     ' "quote": "原句"}],\n'
-    '   "items": [{"item_id": "稳定标识", "title": "标题", "owner_card": "卡号",\n'
-    '              "depends": [], "next_result": "下一项可验证结果", "status": "todo"}],\n'
     '   "wake_standards": [{"standard_id": "s1", "protect": "…", "ignore": "…",'
     ' "escalate": "…"}],\n'
     '   "direct_nodes": [], "next_check": "…"}\n'
@@ -506,19 +531,41 @@ _COORD_TURN_SYSTEM = (
     "**requirements[].version 必须填 coord_read_card 返回的版本坐标"
     "（requirements_state＋sha256 指纹）**——计划引用要能回指当时读到的需求"
     "版本，任何人可复核。计划必须落在查证到的事实上，不许编造；"
-    "空计划（没有目标/事项/唤醒标准）不会被接受。查证充分后必须提交。"
-    "不要输出指令之外的请求——**发令能力尚未接通（任务四）**，本轮没有"
-    "任何写卡或发令工具。"
+    "空计划（没有目标/事项/唤醒标准）不会被接受。查证充分后必须提交。\n"
+    "开发事项通过正式指令交给域责任卡，由责任卡在本域决定是否建卡和如何派工。\n"
     "③ 发令（**每轮至多一条**，受理后本轮结束）："
     '{"action": "coord_submit_instruction", "target_card": "…",'
-    ' "item_id": "…或 null", "instruction": "给受理卡的一句话指令",'
+    ' "item_id": "事项标识", "instruction": "给域责任卡的指令",'
+    ' "acceptance": "验收判据",'
     ' "evidence_refs": ["event:…"]}——宿主核对授权/证据后落信并给受理号；\n'
     "④ 问专家：{\"action\": \"coord_ask_function\", \"function_id\": \"fn_…\","
-    " \"question\": \"…\"}——向职能卡发问询（不算发令）。"
+    " \"question\": \"…\"}——向职能卡发问询（不算发令）。\n"
+    "⑤ 派 QA：{\"action\": \"coord_qa_request\", \"item_id\": \"…\","
+    " \"target_card\": \"…\", \"acceptance\": \"验收条款\","
+    " \"evidence_refs\": [\"event:…\"]}——走正式 QA 差事，编号回挂事项。\n"
+    "⑥ 计划板（登记/调整后续工作——**已登板条目以此为准**，plan 提交里的"
+    " items 不再回改）：\n"
+    "    {\"action\": \"coord_plan_board\", \"args\": {\"op\": \"read\""
+    " [, \"item_id\": \"…\"]}}——默认读未完成项（优先级升序）；指定"
+    " item_id 可读已完成项及已核验回执。长板用 offset 和 limit 分页。\n"
+    "    {\"action\": \"coord_plan_board\", \"args\": {\"op\": \"apply\","
+    " \"reason\": \"本次调整理由\", \"changes\": [\n"
+    "      {\"op\": \"add\", \"title\": \"…\", \"next_result\": \"…\","
+    " \"priority\": 150, \"owner_card\": \"card_x\","
+    " \"requirement_refs\": [\"read:1\"]},\n"
+    "      {\"op\": \"update\", \"item_id\": \"…\", \"priority\": 50},\n"
+    "      {\"op\": \"update\", \"item_id\": \"…\", \"status\": \"done\","
+    " \"result_note\": \"完成依据\", \"evidence_refs\": [\"receipt:cmsg-…\"]}]}}\n"
+    "    ——整批原子保存：任一条不合法全部不写入。add 的新 ID 由宿主"
+    "分配（回执 allocated 给出）；priority 是正整数、小者优先；"
+    "status=done 必须同批提交 result_note。保存回执给新 rev——此后"
+    "本轮以新 rev 为准，续跳材料里的计划板也随之换新快照。\n"
+    "    登记事项后另行用 ③ 发令给 owner 责任卡（发令仍每轮至多一条）。"
 )
 
 
-def _turn_system(work_id: str, appt: dict[str, Any]) -> str:
+def _turn_system(work_id: str, appt: dict[str, Any],
+                 instructions: str = _COORD_TURN_SYSTEM) -> str:
     """统筹轮 system：指令协议＋**任命职能的职责书**（identity_for，宿主
     职能身份机制的接入点——职责与授权随身份进上下文）。"""
     try:
@@ -528,12 +575,12 @@ def _turn_system(work_id: str, appt: dict[str, Any]) -> str:
         charter = str((ident.get("charter") or {}).get("text") or "").strip()
         name = str(ident.get("function_name") or "")
         if charter:
-            return (_COORD_TURN_SYSTEM
+            return (instructions
                     + f"\n\n== 你的职责与授权（任命职能：{name}"
                       f"｜{appt.get('function_id')}）==\n{charter}")
     except Exception:  # noqa: BLE001 职责书取不到不拦起轮
         pass
-    return _COORD_TURN_SYSTEM
+    return instructions
 
 
 def strong_first_input_pack(work_id: str, plan_card_id: str,
@@ -567,7 +614,8 @@ def strong_first_input_pack(work_id: str, plan_card_id: str,
     return {"system": _turn_system(work_id, appt), "user": user}
 
 
-def _validate_submitted_plan(plan: Any) -> tuple[Optional[dict[str, Any]], str]:
+def _validate_submitted_plan(plan: Any, *, registered_items: list[dict]
+                             ) -> tuple[Optional[dict[str, Any]], str]:
     """[2026-11-21 · 用户令] 空计划与劣质计划不记成功：完整结构校验。
 
     必须是对象；objective 非空；items/wake_standards/direct_nodes 是数组且
@@ -596,9 +644,9 @@ def _validate_submitted_plan(plan: Any) -> tuple[Optional[dict[str, Any]], str]:
                 or not str(st.get("standard_id") or "").strip():
             return None, (f"wake_standards 元素形状无效（每项需要非空 standard_id）："
                           f"{json.dumps(st, ensure_ascii=False)[:120]}")
-    if not items and not standards:
+    if not registered_items and not standards:
         return None, "空计划：既没有 items 也没有 wake_standards"
-    return plan, ""
+    return {key: value for key, value in plan.items() if key != "items"}, ""
 
 
 def _exec_coord_read(work_id: str, action: str, args: dict[str, Any],
@@ -675,49 +723,145 @@ def _session_key(plan_card_id: str) -> str:
     return f"{plan_card_id}@coordination"
 
 
-# ---------------------------------------------------------------- 发令受理（任务四）
+# ---------------------------------------------------------------- 发令受理/落信（任务四 · 返工版）
 
-# 发令受理表：每轮最多一条（UNIQUE assignment+turn）＋同内容重放同一受理号
-# （UNIQUE content_hash）。核对全部在**同一事务**内完成（任务书：幂等统一
-# 受理号同事务查重；调权在受理点完成）。
-_INSTRUCTIONS_DDL = (
-    "CREATE TABLE IF NOT EXISTS coordination_instructions ("
+# [2026-11-21 · 用户实测返工] 受理与落信分账：
+#   · 受理点只做核对+预留**稳定行动键**（宿主按任命及决策行动派键），
+#     不落信、不产生最终受理号（避免"写入失败也拿到受理号"吞掉重试）；
+#   · 落信点**同一事务重验授权**（含 mode=live、暂停/换人/版本）并落唯一收件
+#     （action_key UNIQUE），复用正式 direct 通信面
+#     （msg_directive + deliver_now 唤醒），不用裸 msg_notify 旁路；
+#   · 受理/落信/唤醒分别落账（observations 三种 kind）。
+_ACTIONS_DDL = (
+    "CREATE TABLE IF NOT EXISTS coordination_actions ("
     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
     " work_id TEXT NOT NULL,"
     " plan_card_id TEXT NOT NULL,"
     " assignment_id TEXT NOT NULL,"
+    " action_key TEXT NOT NULL UNIQUE,"
     " turn_id TEXT NOT NULL,"
     " rev INTEGER NOT NULL,"
     " item_id TEXT,"
     " target_card TEXT NOT NULL,"
     " instruction TEXT NOT NULL,"
     " evidence_refs TEXT NOT NULL DEFAULT '[]',"
-    " content_hash TEXT NOT NULL,"
-    " receipt_id TEXT NOT NULL UNIQUE,"
-    " created_at TEXT,"
-    " UNIQUE(assignment_id, turn_id),"
-    " UNIQUE(content_hash))"
+    " status TEXT NOT NULL DEFAULT 'accepted',"
+    " acceptance TEXT NOT NULL DEFAULT '',"
+    " receipt_id TEXT,"
+    " msg_id TEXT,"
+    " woke INTEGER NOT NULL DEFAULT 0,"
+    " created_at TEXT, updated_at TEXT,"
+    " UNIQUE(assignment_id, turn_id))"
 )
 
 #: 非开发卡（不接统筹指令的卡型/前缀）：职能卡、评审卡、差事伴生卡
 NON_DEV_CARD_TYPES = ("function", "review", "qa_card")
 
 
-def _ensure_instructions(conn) -> None:
-    """事务内幂等建受理表（不能用 executescript——隐式提交事务）。"""
-    conn.execute(_INSTRUCTIONS_DDL)
+def _ensure_actions(conn) -> None:
+    """在当前事务内建表，并为旧收件保留重新核实投影的入口。"""
+    conn.execute(_ACTIONS_DDL)
+    columns = {col["name"] for col in conn.execute("PRAGMA table_info(coordination_actions)")}
+    for col, ddl in (
+            ("acceptance", "TEXT NOT NULL DEFAULT ''"),
+            ("actor", "TEXT NOT NULL DEFAULT ''"),
+            ("projected_session", "INTEGER NOT NULL DEFAULT 0"),
+            ("projected_origin", "INTEGER NOT NULL DEFAULT 0"),
+            ("projected_event", "INTEGER NOT NULL DEFAULT 0"),
+            ("projection_verified", "INTEGER NOT NULL DEFAULT 0")):
+        if col not in columns:
+            conn.execute(f"ALTER TABLE coordination_actions ADD COLUMN {col} {ddl}")
 
 
-def _content_hash(assignment_id: str, item_id: str, target_card: str,
-                  instruction: str, refs: list[str]) -> str:
+# 执行证据绑定（联调任务书工作二）：原行动 + 目标回合正式回执 → 可打开证据
+_EVIDENCE_DDL = (
+    "CREATE TABLE IF NOT EXISTS coordination_evidence ("
+    " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    " work_id TEXT NOT NULL, plan_card_id TEXT NOT NULL,"
+    " assignment_id TEXT NOT NULL, action_key TEXT NOT NULL,"
+    " item_id TEXT, target_card TEXT NOT NULL,"
+    " msg_id TEXT NOT NULL,"
+    " reply_msg_id TEXT NOT NULL,"
+    " reply_to TEXT NOT NULL DEFAULT '',"
+    " from_card TEXT NOT NULL DEFAULT '',"
+    " content TEXT NOT NULL DEFAULT '',"
+    " evidence_refs TEXT NOT NULL DEFAULT '[]',"
+    " status TEXT NOT NULL DEFAULT 'verified',"
+    " created_at TEXT)"
+)
+
+
+def _ensure_evidence(conn) -> None:
+    conn.execute(_EVIDENCE_DDL)
+    for col, ddl in (("reply_session_card", "TEXT NOT NULL DEFAULT ''"),
+                     ("reply_seq", "INTEGER NOT NULL DEFAULT 0"),
+                     ("reply_msg_type", "TEXT NOT NULL DEFAULT ''")):
+        try:
+            conn.execute(f"ALTER TABLE coordination_evidence ADD COLUMN {col} {ddl}")
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS coordination_evidence_uq"
+                     " ON coordination_evidence(work_id, msg_id, reply_msg_id)")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# QA 差事记录（下一批 ②）：派驻编号＋结论回原事项
+_QA_DDL = (
+    "CREATE TABLE IF NOT EXISTS coordination_qa ("
+    " qa_id TEXT PRIMARY KEY, work_id TEXT NOT NULL,"
+    " plan_card_id TEXT NOT NULL, assignment_id TEXT NOT NULL,"
+    " rev INTEGER NOT NULL, item_id TEXT, target_card TEXT NOT NULL,"
+    " acceptance TEXT NOT NULL, deployment_id INTEGER, qa_card TEXT NOT NULL DEFAULT '',"
+    " status TEXT NOT NULL DEFAULT 'dispatched', verdict TEXT NOT NULL DEFAULT '',"
+    " conclusion TEXT NOT NULL DEFAULT '', evidence_refs TEXT NOT NULL DEFAULT '[]',"
+    " deployment_args TEXT NOT NULL DEFAULT '{}',"
+    " created_at TEXT, updated_at TEXT)"
+)
+
+
+def _ensure_qa(conn) -> None:
+    conn.execute(_QA_DDL)
+    columns = {col["name"] for col in conn.execute("PRAGMA table_info(coordination_qa)")}
+    for col, ddl in (("qa_card", "TEXT NOT NULL DEFAULT ''"),
+                     ("verdict", "TEXT NOT NULL DEFAULT ''"),
+                     ("deployment_args", "TEXT NOT NULL DEFAULT '{}'")):
+        if col not in columns:
+            conn.execute(f"ALTER TABLE coordination_qa ADD COLUMN {col} {ddl}")
+
+
+# 专业问答：问题稳定标识 + 只读回合答复（下一批 ②）
+_QUESTIONS_DDL = (
+    "CREATE TABLE IF NOT EXISTS coordination_questions ("
+    " question_id TEXT PRIMARY KEY,"
+    " work_id TEXT NOT NULL, plan_card_id TEXT NOT NULL,"
+    " assignment_id TEXT NOT NULL, rev INTEGER NOT NULL,"
+    " item_id TEXT, function_id TEXT NOT NULL,"
+    " question TEXT NOT NULL, requirements_version TEXT NOT NULL DEFAULT '',"
+    " evidence_refs TEXT NOT NULL DEFAULT '[]',"
+    " status TEXT NOT NULL DEFAULT 'queued',"
+    " answer TEXT NOT NULL DEFAULT '', answer_rev INTEGER,"
+    " answered_at TEXT, created_at TEXT)"
+)
+
+
+def _ensure_questions(conn) -> None:
+    conn.execute(_QUESTIONS_DDL)
+
+
+def _content_hash(work_id: str, assignment_id: str, turn_id: str,
+                  action_seq: str, target_card: str,
+                  _reserved: list[str] | None = None) -> str:
+    """稳定行动键：任命＋决策(turn_id)＋行动序号＋目标卡（不含内容，重试同键）。"""
     import hashlib
-    payload = "\x00".join([assignment_id, item_id or "", target_card,
-                           instruction, json.dumps(refs, ensure_ascii=False)])
+    payload = "\x00".join([work_id, assignment_id, turn_id, action_seq,
+                           target_card])
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _dev_card_ok(work_id: str, target_card: str) -> tuple[bool, str]:
-    """开发卡判据：卡存在、非职能/评审/差事伴生、非根卡、非统筹计划卡自身。"""
+    """开发卡判据：卡存在、非职能/评审/差事伴生、非根卡。"""
     metas = card_store.iter_card_metas(work_id)
     meta = metas.get(target_card)
     if not meta:
@@ -730,148 +874,1356 @@ def _dev_card_ok(work_id: str, target_card: str) -> tuple[bool, str]:
     return True, ""
 
 
-async def coordination_intake(work_id: str, plan_card_id: str, *,
-                              assignment_id: str, rev: int,
-                              turn_id: str, item_id: Optional[str],
-                              target_card: str, instruction: str,
-                              evidence_refs: list[str]) -> dict[str, Any]:
-    """发令**同步受理点**（任务书任务四）：核对、幂等、受理号——全在同一事务。
+def _gates(work_id: str, plan_card_id: str, assignment_id: str,
+           rev: int, target_card: str, refs: list[str],
+           conn=None, item_id: Optional[str] = None,
+           items_allowed: Optional[set[str]] = None
+           ) -> tuple[bool, str, dict[str, Any]]:
+    """发令共用闸门（受理与落信**都**调用）：任命/active/rev/**mode=live**/
+    观察∩发令范围/开发卡/证据引用（含 **work 前缀核对**）。
 
-    核对清单（任一不过 ⇒ {ok: False, code, why}，零写入）：
-    ① 任命标识匹配且 active（旧令牌＝标识不匹配 ⇒ 拒）；
-    ② 读入版本 rev 匹配（旧令牌＝版本过期 ⇒ 拒）；
-    ③ target ∈ 观察范围（统筹看不了现状的卡不受理）；
-    ④ target ∈ 发令范围（work_development_cards 或显式卡集）；
-    ⑤ target 是开发卡（职能卡/评审卡/差事伴生卡/根卡不接统筹指令）；
-    ⑥ 每个证据引用 ∈ 本任命的观察事件（coordination_seen）；
-    ⑦ 幂等：同轮（assignment+turn）已有指令 ⇒ 拒（每轮最多一条）；
-       同内容重放 ⇒ 返回**原受理号**（不重复落信）。
+    返回 (ok, code+why, appt_row)。conn 给定时用该连接（落信同事务重验），
+    否则走只读 panel。
+    """
+    import json as _json
 
-    受理成功 ⇒ 生成受理号并落受理表；落信（统筹身份写受理卡会话）与
-    回执由调用方完成。"""
-    import sqlite3
-    import uuid as _uuid
-    instruction = str(instruction or "").strip()
-    target_card = str(target_card or "").strip()
-    refs = [str(x) for x in (evidence_refs or [])]
-    if not target_card or not instruction:
-        return {"ok": False, "code": "validation",
-                "why": "target_card 与 instruction 不能为空"}
+    def _bad(code: str, why: str):
+        return False, code, {"code": code, "why": why}
 
-    def _fn(conn: sqlite3.Connection) -> dict[str, Any]:
-        coordination_store._ensure(conn)
-        _ensure_instructions(conn)
-        # ① 任命匹配 + active + ② 读入版本
+    if conn is not None:
         row = conn.execute(
             "SELECT * FROM coordination_appointments"
-            " WHERE work_id=? AND plan_card_id=? AND assignment_id=?"
-            " AND state='active' AND rev=?",
-            (work_id, plan_card_id, str(assignment_id), int(rev))).fetchone()
-        if row is None:
-            row_any = conn.execute(
-                "SELECT * FROM coordination_appointments"
-                " WHERE work_id=? AND plan_card_id=? AND assignment_id=?",
-                (work_id, plan_card_id, str(assignment_id))).fetchone()
-            if row_any is None:
-                return {"ok": False, "code": "stale_token",
-                        "why": "旧令牌：任命标识不匹配（任命已换人或已撤回）"}
-            if row_any["state"] != "active":
-                return {"ok": False, "code": "stale_token",
-                        "why": f"旧令牌：任命已{row_any['state']}"}
-            return {"ok": False, "code": "stale_token",
-                    "why": (f"旧令牌：读入版本 rev.{rev} 已过期"
-                            f"（当前 rev.{row_any['rev']}）——请按最新版本重新提交")}
-        # 幂等（先查重再核对其余——重放直接回原受理号）
-        chash = _content_hash(str(assignment_id), item_id or "", target_card,
-                              instruction, refs)
-        dup = conn.execute(
-            "SELECT receipt_id FROM coordination_instructions"
-            " WHERE content_hash=?", (chash,)).fetchone()
-        if dup is not None:
-            return {"ok": True, "receipt_id": dup["receipt_id"],
-                    "replayed": True}
-        dup_turn = conn.execute(
-            "SELECT receipt_id FROM coordination_instructions"
-            " WHERE assignment_id=? AND turn_id=?",
-            (str(assignment_id), str(turn_id or ""))).fetchone()
-        if dup_turn is not None:
-            return {"ok": False, "code": "turn_exhausted",
-                    "why": "本轮已受理过一条指令（每轮最多一条）"}
-        # ③④ 范围双闸（观察＋发令）
-        import json as _json
-        obs = _json.loads(row["observe_scope"] or {})
-        ins = _json.loads(row["instruct_scope"] or {})
-        obs_ids = (set(obs.get("ids") or [])
-                   if obs.get("scope") == "cards" else None)  # None＝整个 work
-        ins_ids = (set(ins.get("ids") or [])
-                   if ins.get("scope") == "cards" else None)
-        ins_is_all_dev = ins.get("scope") == "work_development_cards"
-        if obs_ids is not None and target_card not in obs_ids:
-            return {"ok": False, "code": "not_observed",
-                    "why": f"{target_card} 不在观察范围——统筹看不了现状的卡不受理"}
-        if ins_is_all_dev:
-            dev_ok, dev_why = _dev_card_ok(work_id, target_card)
-            if not dev_ok:
-                return {"ok": False, "code": "not_developable", "why": dev_why}
-        elif ins_ids is not None:
-            if target_card not in ins_ids:
-                return {"ok": False, "code": "not_instructable",
-                        "why": f"{target_card} 不在发令范围"}
-        else:
-            return {"ok": False, "code": "validation",
-                    "why": "任命缺发令范围"}
-        if not ins_is_all_dev:
-            dev_ok, dev_why = _dev_card_ok(work_id, target_card)
-            if not dev_ok:
-                return {"ok": False, "code": "not_developable", "why": dev_why}
-        # ⑥ 证据引用 ∈ 本任命的观察事件
-        for ref in refs:
+            " WHERE work_id=? AND plan_card_id=? AND assignment_id=?",
+            (work_id, plan_card_id, str(assignment_id))).fetchone()
+        appt = dict(row) if row else {}
+    else:
+        appt = _current_assignment(work_id, plan_card_id)  # grants 已拍平
+    if not appt or str(appt.get("assignment_id") or "") != str(assignment_id):
+        return _bad("stale_token", "旧令牌：任命标识不匹配（任命已换人或已撤回）")
+    if appt.get("state") != "active":
+        return _bad("stale_token", f"旧令牌：任命已{appt.get('state')}")
+    if int(appt.get("rev") or 0) != int(rev):
+        return _bad("stale_token",
+                    f"旧令牌：读入版本 rev.{rev} 已过期（当前 rev.{appt.get('rev')}）")
+    # [2026-11-21 · 用户令反例①] 旁观模式**零发令**
+    mode = str(appt.get("mode") or "")
+    if mode != "live":
+        return _bad("observe_mode", "旁观模式（observe）不发令——只观察，不写入")
+    # [下一批任务书] 事项必须属于本次任命读取/保存的计划版本
+    if not str(item_id or "").strip():
+        return _bad("missing_item", "发令必须绑定计划中的事项 item_id")
+    if items_allowed is not None and str(item_id) not in items_allowed:
+        return _bad("stale_item",
+                    f"事项 {item_id} 不属于本次任命读入的计划版本")
+    obs = _json.loads(appt.get("observe_scope") or "{}") \
+        if isinstance(appt.get("observe_scope"), str) \
+        else (appt.get("observe_scope") or {})
+    ins = _json.loads(appt.get("instruct_scope") or "{}") \
+        if isinstance(appt.get("instruct_scope"), str) \
+        else (appt.get("instruct_scope") or {})
+    obs_ids = set(obs.get("ids") or []) if obs.get("scope") == "cards" else None
+    ins_ids = set(ins.get("ids") or []) if ins.get("scope") == "cards" else None
+    ins_all_dev = ins.get("scope") == "work_development_cards"
+    if obs_ids is not None and target_card not in obs_ids:
+        return _bad("not_observed",
+                    f"{target_card} 不在观察范围——统筹看不了现状的卡不受理")
+    if ins_all_dev:
+        dev_ok, why = _dev_card_ok(work_id, target_card)
+        if not dev_ok:
+            return _bad("not_developable", why)
+    elif ins_ids is not None:
+        if target_card not in ins_ids:
+            return _bad("not_instructable", f"{target_card} 不在发令范围")
+        dev_ok, why = _dev_card_ok(work_id, target_card)
+        if not dev_ok:
+            return _bad("not_developable", why)
+    else:
+        return _bad("validation", "任命缺发令范围")
+    # 证据引用：**本 work 前缀** + 本任命 seen 坐标（反例⑤）
+    for ref in refs:
+        if not str(ref).startswith(f"event:{work_id}:"):
+            return _bad("bad_evidence", f"证据引用不属于本 work: {ref}")
+        if conn is not None:
             hit = conn.execute(
                 "SELECT 1 FROM coordination_seen"
                 " WHERE work_id=? AND plan_card_id=? AND assignment_id=?"
                 " AND card_id=? AND seq=?",
                 (work_id, plan_card_id, str(assignment_id),
                  _ref_card(ref), _ref_seq(ref))).fetchone()
-            if hit is None:
-                return {"ok": False, "code": "bad_evidence",
-                        "why": f"证据引用不属于本任命的观察事件: {ref}"}
-        # 受理：生成受理号落表
-        receipt_id = f"rcp_{_uuid.uuid4().hex[:12]}"
-        from ..storage.coordination_store import _now
-        conn.execute(
-            "INSERT INTO coordination_instructions"
-            " (work_id,plan_card_id,assignment_id,turn_id,rev,item_id,"
-            "  target_card,instruction,evidence_refs,content_hash,"
-            "  receipt_id,created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (work_id, plan_card_id, str(assignment_id), str(turn_id or ""),
-             int(rev), item_id or None, target_card, instruction,
-             json.dumps(refs, ensure_ascii=False), chash, receipt_id,
-             _now()))
-        return {"ok": True, "receipt_id": receipt_id, "replayed": False}
+        else:
+            hit = None
+            from ..storage import card_db as _cdb
+
+            def _chk(c):
+                return c.execute(
+                    "SELECT 1 FROM coordination_seen"
+                    " WHERE work_id=? AND plan_card_id=? AND assignment_id=?"
+                    " AND card_id=? AND seq=?",
+                    (work_id, plan_card_id, str(assignment_id),
+                     _ref_card(ref), _ref_seq(ref))).fetchone()
+            hit = _cdb.read_sync(work_id, _chk, None)
+        if hit is None:
+            return _bad("bad_evidence",
+                        f"证据引用不属于本任命的观察事件: {ref}")
+    return True, "", appt
+
+
+async def coordination_intake(work_id: str, plan_card_id: str, *,
+                              assignment_id: str, rev: int,
+                              turn_id: str, item_id: Optional[str],
+                              target_card: str, instruction: str,
+                              evidence_refs: list[str],
+                              action_seq: int = 0,
+                              acceptance: str = "",
+                              items_allowed: Optional[set[str]] = None
+                              ) -> dict[str, Any]:
+    """发令**受理**（同步）：七道闸核对＋预留**稳定行动键**；不落信、
+    不产生最终受理号（写入失败可凭同动作键重试）。
+
+    成功 ⇒ {ok, action_key}；同动作已提交收件 ⇒ {ok, replayed, receipt_id}；
+    failed ⇒ 允许重试（同 action_key）；同轮已有别的动作 ⇒ turn_exhausted。
+    """
+    import uuid as _uuid
+    instruction = str(instruction or "").strip()
+    target_card = str(target_card or "").strip()
+    refs = [str(x) for x in (evidence_refs or [])]
+    acceptance = str(acceptance or "").strip()
+    if not target_card or not instruction:
+        return {"ok": False, "code": "validation",
+                "why": "target_card 与 instruction 不能为空"}
+    if not acceptance:
+        return {"ok": False, "code": "missing_acceptance",
+                "why": "验收判据 acceptance 不能为空"}
+    if items_allowed is None:
+        # 历史任命的 plan 没有事项清单 ⇒ 不硬拒，但落账标缺项（如实呈现）
+        _items = ((_current_assignment(work_id, plan_card_id)
+                   or {}).get("plan") or {}).get("items") or []
+        items_allowed = ({str(it.get("item_id") or "")
+                          for it in _items if isinstance(it, dict)}
+                         if _items else None)
+
+    def _fn(conn) -> dict[str, Any]:
+        coordination_store._ensure(conn)
+        _ensure_actions(conn)
+        ok, code, gate = _gates(work_id, plan_card_id, str(assignment_id),
+                                int(rev), target_card, refs, conn=conn,
+                                item_id=item_id, items_allowed=items_allowed)
+        if not ok:
+            return {"ok": False, "code": code, "why": gate["why"]}
+        # [2026-11-21 · 用户令] 稳定键＝任命＋决策(turn)＋行动序号(seq)
+        # ——同动作重试同键，不随内容/引用改写换键（原内容 hash 会吞真实重试）
+        action_key = _content_hash(work_id, str(assignment_id),
+                                   str(turn_id or ""), str(action_seq),
+                                   target_card, refs[:0])
+        row = conn.execute(
+            "SELECT * FROM coordination_actions WHERE action_key=?",
+            (action_key,)).fetchone()
+        if row is not None:
+            if row["msg_id"]:
+                return {"ok": True, "action_key": action_key,
+                        "replayed": True,
+                        "receipt_id": row["receipt_id"]}
+            if row["status"] == "accepted":
+                return {"ok": True, "action_key": action_key,
+                        "replayed": True}  # 已受理待落信——不重复 spawn
+            # failed ⇒ 允许按原动作键重试落信
+        else:
+            dup_turn = conn.execute(
+                "SELECT 1 FROM coordination_actions"
+                " WHERE assignment_id=? AND turn_id=?",
+                (str(assignment_id), str(turn_id or ""))).fetchone()
+            if dup_turn is not None:
+                return {"ok": False, "code": "turn_exhausted",
+                        "why": "本轮已受理过一条指令（每轮最多一条）"}
+            from ..storage.coordination_store import _now
+            conn.execute(
+                "INSERT INTO coordination_actions"
+                " (work_id,plan_card_id,assignment_id,action_key,turn_id,"
+                "  rev,item_id,target_card,instruction,evidence_refs,"
+                "  acceptance,status,created_at,updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,'accepted',?,?)",
+                (work_id, plan_card_id, str(assignment_id), action_key,
+                 str(turn_id or ""), int(rev), item_id or None, target_card,
+                 instruction, json.dumps(refs, ensure_ascii=False),
+                 acceptance, _now(), _now()))
+        return {"ok": True, "action_key": action_key, "replayed": False}
 
     try:
         result = await card_db.run_write(work_id, _fn)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[coordination] 发令受理异常: %s", exc)
         return {"ok": False, "code": "error", "why": str(exc)}
-    # [任务书任务四] 落信是受理流程的一部分：受理成功（非重放）⇒ 以统筹身份
-    # 写受理卡会话并给回执；**重放不重复落信**（幂等语义）。
+    if not result.get("ok"):
+        # [任务书 · 用户令] 「拟发」记录：旁观/越权/令牌失效等**零收件**
+        # 的发令意图也要留痕（审计面；绝不落信）。
+        await coordination_store.add_observation(
+            work_id, plan_card_id, assignment_id=assignment_id,
+            kind="instruction_draft", status="refused",
+            item_id=item_id or None, evidence_refs=refs,
+            detail={"code": result.get("code"), "why": result.get("why"),
+                    "target_card": target_card,
+                    "instruction": instruction[:300], "turn_id": turn_id,
+                    "action_seq": action_seq})
     if result.get("ok") and not result.get("replayed"):
-        try:
-            fn_id = ""
-            try:
-                p = coordination_store.panel(work_id, plan_card_id)
-                fn_id = str(p.get("function_id") or "")
-            except Exception:  # noqa: BLE001
-                fn_id = ""
-            await _deliver_instruction(
-                work_id, plan_card_id, fn_id, result["receipt_id"],
-                target_card, item_id, instruction, refs)
-        except Exception as exc:  # noqa: BLE001 落信失败不影响受理号
-            logger.warning("[coordination] 落信失败 receipt=%s: %s",
-                           result.get("receipt_id"), exc)
+        await coordination_store.add_observation(
+            work_id, plan_card_id, assignment_id=assignment_id,
+            kind="instruction_accepted", status="accepted",
+            item_id=item_id or None, evidence_refs=refs,
+            detail={"action_key": result["action_key"],
+                    "target_card": target_card, "turn_id": turn_id,
+                    "instruction": instruction[:300]})
     return result
+
+
+
+def _read_action(work_id: str, plan_card_id: str, action_key: str) -> dict[str, Any] | None:
+    def _read(conn):
+        try:
+            row = conn.execute(
+                "SELECT * FROM coordination_actions WHERE work_id=? AND plan_card_id=? AND action_key=?",
+                (work_id, plan_card_id, action_key)).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table: coordination_actions" in str(exc):
+                return None
+            raise
+        return dict(row) if row else None
+
+    return card_db.read_sync(work_id, _read)
+
+
+async def _combined_submit(work_id: str, plan_card_id: str, *,
+                          assignment_id: str, rev: int,
+                          turn_id: str, hop: int,
+                          plan_raw: Any, instr_raw: Any,
+                          note: str, model_used: str,
+                          usage: dict[str, Any],
+                          allowed_now: set[str]) -> dict[str, Any]:
+    """同轮组合提交：先 save_plan（expected_rev＝读入版本），再用
+    **保存回执的 rev** 走 intake→deliver（任务书下一批 ①）。
+
+    模型填报的身份/版本/行动键无授权效力——全部取宿主读入值。
+    保存成功但后续失败 ⇒ 计划保留，分别记「计划已保存、指令尚未受理」与
+    「指令已受理、目标尚未确认」两账（不回滚计划）。
+    """
+    current = _current_assignment(work_id, plan_card_id)
+    candidates = coordination_board.visible_items(current, allowed_now)
+    plan, plan_err = _validate_submitted_plan(plan_raw, registered_items=candidates)
+    if plan is None:
+        return {"status": "unparsed", "detail": {"error": plan_err}}
+    instr = instr_raw if isinstance(instr_raw, dict) else {}
+    acceptance = str(instr.get("acceptance") or "").strip()
+    item_id = instr.get("item_id")
+    instruction = str(instr.get("instruction") or "").strip()
+    target = str(instr.get("target_card") or "").strip()
+    if not acceptance or not item_id or not instruction or not target:
+        return {"status": "unparsed",
+                "detail": {"error": "组合 instruction 缺 item_id/target_card/"
+                                    "instruction/acceptance（验收判据非空）"}}
+    if str(item_id) not in {str(it.get("item_id") or "") for it in candidates}:
+        return {"status": "unparsed",
+                "detail": {"error": f"事项 {item_id} 不在待保存计划内"}}
+    try:
+        saved = await coordination_store.save_plan(
+            work_id, plan_card_id, assignment_id=assignment_id,
+            expected_rev=rev, plan=plan, by=f"strong:{model_used}",
+            source_cards=allowed_now)
+    except Exception as exc:  # noqa: BLE001 保存冲突/暂停/撤回 ⇒ 全零收件
+        return {"status": "unparsed",
+                "detail": {"error": f"组合保存失败: {exc}", "saved": False}}
+    new_rev = int((saved.get("appointment") or {}).get("rev") or 0)
+    await coordination_store.add_observation(
+        work_id, plan_card_id, assignment_id=assignment_id,
+        kind="plan_saved", status="parsed",
+        detail={"rev": new_rev, "note": note, "combined": True},
+        model_used=model_used, usage=usage)
+    items_allowed = {str(it.get("item_id") or "") for it in candidates}
+    intake = await coordination_intake(
+        work_id, plan_card_id, assignment_id=assignment_id, rev=new_rev,
+        turn_id=turn_id, item_id=item_id, target_card=target,
+        instruction=instruction, action_seq=hop,
+        acceptance=acceptance,
+        evidence_refs=[str(x) for x in (instr.get("evidence_refs") or [])],
+        items_allowed=items_allowed)
+    if not intake.get("ok"):
+        await coordination_store.add_observation(
+            work_id, plan_card_id, assignment_id=assignment_id,
+            kind="instruction_pending_acceptance", status="pending",
+            detail={"rev": new_rev, "code": intake.get("code"),
+                    "why": intake.get("why"), "target_card": target,
+                    "item_id": item_id, "plan_saved": True})
+        return {"status": "parsed", "saved_rev": new_rev,
+                "instruction": "pending_acceptance",
+                "detail": {"error": intake.get("why")}}
+    delivered = await coordination_deliver(
+        work_id, plan_card_id, assignment_id=assignment_id, rev=new_rev,
+        action_key=intake["action_key"])
+    if not delivered.get("ok"):
+        await coordination_store.add_observation(
+            work_id, plan_card_id, assignment_id=assignment_id,
+            kind="instruction_accepted_no_receipt", status="accepted",
+            detail={"rev": new_rev, "code": delivered.get("code"),
+                    "why": delivered.get("why"),
+                    "action_key": intake["action_key"],
+                    "target_card": target, "item_id": item_id})
+        return {"status": "parsed", "saved_rev": new_rev,
+                "instruction": "accepted_no_receipt",
+                "detail": {"error": delivered.get("why")}}
+    return {"status": "parsed", "saved_rev": new_rev,
+            "instruction": "delivered",
+            "receipt_id": delivered.get("receipt_id"),
+            "msg_id": delivered.get("msg_id"),
+            "woke": delivered.get("woke", False)}
+
+
+async def coordination_qa_request(work_id: str, plan_card_id: str, *,
+                                   assignment_id: str, rev: int,
+                                   item_id: Optional[str],
+                                   target_card: str, acceptance: str,
+                                   evidence_refs: list[str]) -> dict[str, Any]:
+    """[下一批 ②] 用**正式派驻入口**（card_tools.create_deploy_card，
+    function=qa）对明确对象派 QA，差事编号回挂原事项。
+
+    权限不足/派驻失败如实拒；同一事项+对象+验收条款稳定 qa_id（重放回读）。
+    QA 的通过/失败/未验证与其原始证据由 qa_records() 从差事账与会话回读，
+    统筹不代替 QA 下结论。
+    """
+    target = str(target_card or "").strip()
+    acceptance = str(acceptance or "").strip()
+    if not target or not acceptance:
+        return {"ok": False, "code": "validation",
+                "why": "QA 派驻需要 target_card 与非空验收条款"}
+    # [反例③] 旁观模式零派驻（隔离测试断言派驻入口零调用）
+    appt = _current_assignment(work_id, plan_card_id)
+    if not appt or str(appt.get("assignment_id")) != str(assignment_id) \
+            or int(appt.get("rev") or 0) != int(rev) \
+            or appt.get("state") != "active":
+        return {"ok": False, "code": "stale_token",
+                "why": "派驻前任命/版本复核未通过"}
+    if appt.get("mode") != "live":
+        await coordination_store.add_observation(
+            work_id, plan_card_id, assignment_id=assignment_id,
+            kind="qa_draft", status="refused", item_id=item_id,
+            detail={"target_card": target, "acceptance": acceptance[:300],
+                    "why": "旁观模式不允许派驻 QA（拟发留痕、零调用）"})
+        return {"ok": False, "code": "observe_mode",
+                "why": "旁观模式不派驻 QA（只留拟发记录）"}
+    qhash = _content_hash(work_id, str(assignment_id), str(item_id or ""),
+                          target, acceptance)
+    qa_id = f"qa_{qhash[:20]}"
+
+    with _qa_request_lock:
+        key = (work_id, qa_id)
+        if key in _active_qa_requests:
+            return {"ok": True, "qa_id": qa_id, "replayed": True, "in_progress": True}
+        _active_qa_requests.add(key)
+    try:
+        return await _dispatch_qa(
+            work_id, plan_card_id, assignment_id, rev, qa_id,
+            item_id, target, acceptance, evidence_refs)
+    finally:
+        with _qa_request_lock:
+            _active_qa_requests.discard(key)
+
+
+_qa_request_lock = threading.Lock()
+_active_qa_requests: set[tuple[str, str]] = set()
+
+
+async def _dispatch_qa(work_id: str, plan_card_id: str, assignment_id: str,
+                       rev: int, qa_id: str, item_id: Optional[str], target: str,
+                       acceptance: str, evidence_refs: list[str]) -> dict[str, Any]:
+    from . import card_tools
+    from ..storage import function_store
+    from ..storage.coordination_store import _now
+
+    def _reserve(conn):
+        _ensure_qa(conn)
+        conn.execute(
+            "INSERT OR IGNORE INTO coordination_qa"
+            " (qa_id,work_id,plan_card_id,assignment_id,rev,item_id,"
+            "  target_card,acceptance,status,evidence_refs,created_at,updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,'reserving',?,?,?)",
+            (qa_id, work_id, plan_card_id, assignment_id, rev, item_id or None,
+             target, acceptance, json.dumps([str(ref) for ref in evidence_refs], ensure_ascii=False),
+             _now(), _now()))
+        return dict(conn.execute(
+            "SELECT * FROM coordination_qa WHERE qa_id=?", (qa_id,)).fetchone())
+
+    def _bind_card(conn, card_id, deployment_args):
+        updated = conn.execute(
+            "UPDATE coordination_qa SET qa_card=?, deployment_args=?, updated_at=?"
+            " WHERE qa_id=? AND qa_card=''",
+            (card_id, json.dumps(deployment_args, ensure_ascii=False), _now(), qa_id))
+        if updated.rowcount != 1:
+            raise RuntimeError("该验收已绑定差事卡，不能重复建卡")
+
+    row = card_db.write_sync(work_id, _reserve)
+    qa_card = str(row["qa_card"] or "")
+    deployment_id = int(row["deployment_id"] or 0)
+    replayed = bool(qa_card or deployment_id)
+    try:
+        # 差事账可以比统筹记录先提交，按原批次找回，即使差事已关账。
+        deps = function_store._query_deployments(
+            work_id, "AND venue_kind='deploy' AND batch_id=? AND delegator=? AND target_card=?"
+            " AND (?='' OR venue_ref=?) AND (?=0 OR id=?)",
+            (qa_id, plan_card_id, target, qa_card, qa_card, deployment_id, deployment_id),
+            limit=1)
+        if deps:
+            dep = deps[0]
+            qa_card, deployment_id = dep["venue_ref"], dep["id"]
+            replayed = True
+            wake = await card_tools.activate_and_wake_deployment(work_id, deployment_id)
+        elif deployment_id:
+            raise ValueError("原派驻编号找不到对应的差事账")
+        elif qa_card and row["deployment_args"] != "{}":
+            dep = await function_store.create_deployment(
+                work_id, venue_ref=qa_card, **json.loads(row["deployment_args"]))
+            deployment_id = dep["id"]
+            wake = await card_tools.activate_and_wake_deployment(work_id, deployment_id)
+        else:
+            cards = card_store.iter_card_metas(work_id)
+            if target not in cards:
+                return {"ok": False, "code": "not_found", "qa_id": qa_id,
+                        "why": f"验收对象不存在: {target}"}
+            result = await card_tools._h_create_deploy_card(
+                work_id, plan_card_id,
+                {"function": "qa", "target": target,
+                 "task": f"独立验收 {target}：{acceptance}",
+                 "title": f"统筹验收·{target}", "batch_id": qa_id},
+                cards, bind_deployment=_bind_card, resume_card_id=qa_card)
+            if not result.get("ok"):
+                raise ValueError(result.get("error") or result)
+            qa_card, deployment_id = result["card_id"], result["deployment_id"]
+            wake = result
+        if not wake.get("ok"):
+            raise ValueError(wake.get("error") or wake)
+    except Exception as exc:  # noqa: BLE001 保留已有卡和差事，允许同键续办
+        card_db.write_sync(work_id, lambda conn: conn.execute(
+            "UPDATE coordination_qa SET status='failed', updated_at=?"
+            " WHERE qa_id=? AND qa_card='' AND deployment_id IS NULL",
+            (_now(), qa_id)))
+        return {"ok": False, "code": "qa_dispatch_failed", "qa_id": qa_id,
+                "why": str(exc)}
+
+    def _record_dispatch(conn):
+        _reserve(conn)
+        changed = conn.execute(
+            "UPDATE coordination_qa SET qa_card=?, deployment_id=?, status='dispatched',"
+            " updated_at=? WHERE qa_id=? AND status<>'dispatched'",
+            (qa_card, deployment_id, _now(), qa_id))
+        return bool(changed.rowcount)
+
+    if card_db.write_sync(work_id, _record_dispatch):
+        await coordination_store.add_observation(
+            work_id, plan_card_id, assignment_id=assignment_id,
+            kind="qa_dispatched", status="dispatched", item_id=item_id,
+            detail={"qa_id": qa_id, "qa_card": qa_card,
+                    "target_card": target, "acceptance": acceptance[:300],
+                    "deployment_id": deployment_id})
+    return {"ok": True, "qa_id": qa_id, "replayed": replayed,
+            "qa_card": qa_card, "deployment_id": deployment_id,
+            "wake_status": wake.get("wake_status", "pending")}
+
+async def bind_execution_evidence(
+        work_id: str, target_card: str, *,
+        coordination_msg_id: str, reply_msg_id: str,
+        reply_to: str = "", from_card: str = "",
+        content: str = "", receipt_card: str = "",
+        receipt_session: str = "") -> dict[str, Any]:
+    """[联调任务书工作二] 把目标卡的**正式回报**绑定回原统筹行动。
+
+    宿主核验（模型正文里的卡号/任务号/路径**无绑定效力**）：
+      ① msg_id 在本 work 的 coordination_actions 里唯一命中（原行动）；
+      ② from_card == 该行动的 target_card（错目标拒）；
+      ③ 回执 reply_to 与 msg_id 一致（错行动拒；空 reply_to 用 source 绑定）；
+      ④ 目标会话里该 msg_id 的事件坐标可读（坐标不可读拒）。
+    成功落 coordination_evidence（唯一索引去重：重复回执返回原记录），
+    board_summary 据此推进到「已取得执行证据」。
+    """
+    from ..storage.coordination_store import _now
+    from ..storage import session_facade
+
+    def _lookup(conn) -> dict[str, Any]:
+        coordination_store._ensure(conn)
+        _ensure_actions(conn)
+        _ensure_evidence(conn)
+        rows = conn.execute(
+            "SELECT * FROM coordination_actions WHERE work_id=? AND msg_id=?",
+            (work_id, str(coordination_msg_id))).fetchall()
+        if len(rows) != 1:
+            return {"ok": False, "code": "unlinked",
+                    "why": f"消息号 {coordination_msg_id} 不唯一对应本 work 的统筹行动"}
+        a = dict(rows[0])
+        if str(a.get("target_card") or "") != str(target_card):
+            return {"ok": False, "code": "wrong_target",
+                    "why": "回报来源卡不是该统筹行动的目标卡"}
+        # [返工①] reply_to 必须指回**原收件消息号**——指向别的行动拒
+        if str(reply_to or "") != str(coordination_msg_id):
+            return {"ok": False, "code": "wrong_reply_to",
+                    "why": (f"回执 reply_to={reply_to!r} 未指向原消息号"
+                            f" {coordination_msg_id}")}
+        # 重复回执：同 msg_id + reply_msg_id 唯一
+        dup = conn.execute(
+            "SELECT * FROM coordination_evidence"
+            " WHERE work_id=? AND msg_id=? AND reply_msg_id=?",
+            (work_id, str(coordination_msg_id), str(reply_msg_id))).fetchone()
+        if dup:
+            return {"ok": True, "replayed": True,
+                    "evidence_id": dup["id"], "action_key": a["action_key"]}
+        return {"ok": True, "action": a}
+
+    try:
+        hit = await card_db.run_write(work_id, _lookup)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "code": "error", "why": str(exc)}
+    if not hit.get("ok") or hit.get("replayed"):
+        return hit
+    a = hit["action"]
+    # ④ 坐标可读 + **回执实际存在**：reply_msg_id 必须在目标卡的会话块头
+    # [[card-msg id=...]] 里真实存在（不是调用方编造的串）
+    try:
+        path = session_facade._session_path(work_id, target_card)
+        raw = path.read_text(encoding="utf-8") if path.exists() else ""
+        if str(coordination_msg_id) not in raw:
+            return {"ok": False, "code": "unreadable_evidence",
+                    "why": "原统筹指令消息号在目标会话中不可读"}
+        # 回报消息落在 report_up 的**收件人会话**（父卡/创建者），不在来源卡
+        # ——扫本 work 各卡会话找 [[card-msg id=reply_msg_id]] 真实原件
+        if not str(reply_msg_id):
+            return {"ok": False, "code": "reply_not_found",
+                    "why": "回执消息号为空"}
+        # [返工①] 按**落盘消息自身**核验：块头 type/from/reply_to 必须
+        # 分别是 msg_report / 目标卡 / 原消息号；记录收件会话坐标供打开原件
+        import re as _re
+        marker = _re.compile(
+            r"\[\[card-msg id=" + _re.escape(str(reply_msg_id))
+            + r"\s+type=([^\s\]]+)\s+from=([^\s\]]+)\s+"
+              r"reply_to=([^\]\s]*)")
+        found = False
+        reply_session_card = ""
+        try:
+            from ..storage import session_store
+            sess_dir = session_store.WORKS_DIR / work_id / "sessions"
+            candidates = []
+            if receipt_card:
+                cp = session_facade._session_path(work_id, receipt_card)
+                if cp.exists():
+                    candidates.append(cp)
+            if not candidates and sess_dir.exists():
+                candidates = list(sess_dir.glob("*.md"))
+            for path2 in candidates:
+                m = marker.search(path2.read_text(encoding="utf-8"))
+                if not m:
+                    continue
+                msg_type, msg_from, msg_reply_to = m.group(1), m.group(2), m.group(3)
+                if msg_type != "msg_report":
+                    return {"ok": False, "code": "wrong_reply_type",
+                            "why": f"回执原件类型是 {msg_type}，不是 msg_report"}
+                if msg_from != str(target_card):
+                    return {"ok": False, "code": "wrong_reply_sender",
+                            "why": f"回执原件发件卡 {msg_from} 不是目标卡 {target_card}"}
+                if msg_reply_to != str(coordination_msg_id):
+                    return {"ok": False, "code": "wrong_reply_to",
+                            "why": (f"回执原件 reply_to={msg_reply_to} "
+                                    f"未指向原消息号 {coordination_msg_id}")}
+                reply_session_card = str(receipt_card or path2.stem)
+                found = True
+                break
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "code": "unreadable_evidence", "why": str(exc)}
+        if not found:
+            return {"ok": False, "code": "reply_not_found",
+                    "why": f"回报消息 {reply_msg_id} 不在本 work 会话原件中"}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "code": "unreadable_evidence", "why": str(exc)}
+
+    def _save(conn):
+        _ensure_evidence(conn)
+        conn.execute(
+            "INSERT OR IGNORE INTO coordination_evidence"
+            " (work_id,plan_card_id,assignment_id,action_key,item_id,"
+            "  target_card,msg_id,reply_msg_id,reply_to,from_card,"
+            "  reply_session_card,reply_msg_type,"
+            "  content,evidence_refs,status,created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'verified',?)",
+            (work_id, a["plan_card_id"], a["assignment_id"],
+             a["action_key"], a.get("item_id"), target_card,
+             str(coordination_msg_id), str(reply_msg_id), str(reply_to or ""),
+             str(from_card or ""),
+             str(receipt_card or reply_session_card), "msg_report",
+             str(content or "")[:2000], "[]", _now()))
+    card_db.write_sync(work_id, _save)
+    await coordination_store.add_observation(
+        work_id, a["plan_card_id"], assignment_id=a["assignment_id"],
+        kind="execution_evidence", status="verified",
+        item_id=a.get("item_id"),
+        detail={"action_key": a["action_key"], "msg_id": coordination_msg_id,
+                "reply_msg_id": reply_msg_id, "target_card": target_card,
+                "from_card": from_card})
+    return {"ok": True, "action_key": a["action_key"],
+            "plan_card_id": a["plan_card_id"], "item_id": a.get("item_id"),
+            "replayed": False}
+
+
+def read_execution_evidence(work_id: str, plan_card_id: str,
+                            action_key: str) -> list[dict[str, Any]]:
+    """面板只读回读：某行动的可打开执行证据。"""
+    def _q(conn):
+        try:
+            rows = conn.execute(
+                "SELECT * FROM coordination_evidence"
+                " WHERE work_id=? AND plan_card_id=? AND action_key=?"
+                " ORDER BY created_at",
+                (work_id, plan_card_id, action_key)).fetchall()
+        except Exception:  # noqa: BLE001
+            return []
+        return [dict(r) for r in rows]
+    return card_db.read_sync(work_id, _q, [])
+
+
+def board_summary(work_id: str, plan_card_id: str) -> dict[str, Any]:
+    """面板只读汇总（③）：行动状态、专业答复、QA 结论。"""
+    def _actions(conn) -> list[dict[str, Any]]:
+        try:
+            rows = conn.execute(
+                "SELECT * FROM coordination_actions"
+                " WHERE work_id=? AND plan_card_id=? ORDER BY created_at",
+                (work_id, plan_card_id)).fetchall()
+        except Exception:  # noqa: BLE001
+            return []
+        out = []
+        for r in rows:
+            d = dict(r)
+            status = str(d.get("status") or "")
+            if status == "accepted":
+                label = "待投"
+            elif status == "failed":
+                label = "被拒"
+            elif status in ("committed", "projected"):
+                # [反例②] 三投影未完成（或 projection_verified 未落）⇒ 待补投影
+                done = (d.get("projected_session") and d.get("projected_origin")
+                        and d.get("projected_event")
+                        and d.get("projection_verified"))
+                label = ("已唤醒" if d.get("woke") else "已落信") if done \
+                    else "待补投影"
+            else:
+                label = status
+            if label in ("已落信", "已唤醒"):
+                ev = read_execution_evidence(work_id, plan_card_id,
+                                             str(d.get("action_key") or ""))
+                if ev:
+                    label = "已取得执行证据"
+            out.append({"action_key": d.get("action_key"),
+                        "target_card": d.get("target_card"),
+                        "item_id": d.get("item_id"),
+                        "acceptance": d.get("acceptance") or "（缺项）",
+                        "rev": d.get("rev"), "receipt_id": d.get("receipt_id"),
+                        "msg_id": d.get("msg_id"), "status": label,
+                        "execution_evidence": [
+                            {"reply_msg_id": e["reply_msg_id"],
+                             "from_card": e["from_card"],
+                             "reply_session_card": e["reply_session_card"],
+                             "reply_seq": e["reply_seq"],
+                             "receipt_session": e["reply_session_card"],
+                             "content": e["content"][:300],
+                             "created_at": e["created_at"]}
+                            for e in read_execution_evidence(
+                                work_id, plan_card_id,
+                                str(d.get("action_key") or ""))],
+                        "projected": {"session": bool(d.get("projected_session")),
+                                      "origin": bool(d.get("projected_origin")),
+                                      "event": bool(d.get("projected_event"))},
+                        "woke": bool(d.get("woke"))})
+        return out
+
+    def _questions(conn) -> list[dict[str, Any]]:
+        try:
+            rows = conn.execute(
+                "SELECT * FROM coordination_questions"
+                " WHERE work_id=? AND plan_card_id=? ORDER BY created_at",
+                (work_id, plan_card_id)).fetchall()
+        except Exception:  # noqa: BLE001
+            return []
+        return [{"question_id": d["question_id"],
+                 "function_id": d["function_id"], "item_id": d["item_id"],
+                 "status": d["status"],
+                 "answer": str(d.get("answer") or "")[:400],
+                 "requirements_version": d.get("requirements_version"),
+                 "answer_rev": d.get("answer_rev")}
+                for d in (dict(r) for r in rows)]
+
+    return {"actions": card_db.read_sync(work_id, _actions, []),
+            "questions": card_db.read_sync(work_id, _questions, []),
+            "qa": qa_records(work_id, plan_card_id)}
+
+
+def qa_records(work_id: str, plan_card_id: str) -> list[dict[str, Any]]:
+    """正式回读：事项的 QA 结论（通过/失败/未验证）＋原始证据。"""
+    from ..storage import function_store as _fs
+
+    def _q(conn):
+        try:
+            rows = conn.execute(
+                "SELECT * FROM coordination_qa WHERE work_id=? AND plan_card_id=?"
+                " ORDER BY created_at", (work_id, plan_card_id)).fetchall()
+        except Exception:  # noqa: BLE001
+            return []
+        return [dict(r) for r in rows]
+    rows = card_db.read_sync(work_id, _q, [])
+    out = []
+    for r in rows:
+        r.pop("deployment_args", None)
+        dep = None
+        if r.get("deployment_id"):
+            try:
+                dep = _fs.get_deployment(work_id, int(r["deployment_id"]))
+            except Exception:  # noqa: BLE001
+                dep = None
+        status = str((dep or {}).get("status") or "")
+        conclusion = str(r.get("conclusion") or (dep or {}).get("conclusion") or "")
+        verdict = str(r.get("verdict") or "")
+        # [反例] done 只说明差事跑完，**不是通过**——没有明确结论就未验证
+        if not verdict:
+            qa_card = str(r.get("qa_card") or "")
+            if qa_card:
+                try:
+                    import asyncio as _as
+                    # qa_records 是同步读路径：用会话文件原文判断真实结论
+                    from . import session_facade as _sf
+                    path = _sf._session_path(work_id, qa_card)
+                    raw = path.read_text(encoding="utf-8") if path.exists() else ""
+                    tail = raw[-2000:]
+                    if any(k in tail for k in ("未通过", "验收失败", "verdict=failed")):
+                        verdict = "failed"
+                    elif any(k in tail for k in ("验收通过", "verdict=passed")):
+                        verdict = "passed"
+                except Exception:  # noqa: BLE001
+                    pass
+            if not verdict:
+                verdict = "unverified"
+        out.append({**r, "verdict": verdict, "deployment_status": status,
+                    "wake_status": (dep or {}).get("wake_status", "pending"),
+                    "conclusion": conclusion,
+                    "evidence_refs": json.loads(r.get("evidence_refs") or "[]")})
+    return out
+
+
+async def ingest_qa_report(work_id: str, deployment_id: int,
+                           content: str,
+                           explicit_verdict: str = "") -> dict[str, Any]:
+    """[反例①] 正式 QA 回执（card_tools._h_report_deploy）按**差事编号**
+    桥回原事项：解析通过/失败/未验证与证据，落 coordination_qa。
+    测试直调 qa_verdict 不算正式回执——本函数只由正式入口调用。
+    """
+    from ..storage.coordination_store import _now
+
+    def _find(conn):
+        try:
+            row = conn.execute(
+                "SELECT * FROM coordination_qa WHERE work_id=?"
+                " AND deployment_id=?", (work_id, int(deployment_id))).fetchone()
+        except Exception:  # noqa: BLE001
+            return None
+        return dict(row) if row else None
+    rec = card_db.read_sync(work_id, _find, None)
+    if not rec:
+        return {"ok": False, "why": f"没有差事编号 {deployment_id} 对应的统筹 QA 记录"}
+
+    text = str(content or "")
+    # [反例③] 只认**显式结论**：verdict= / 结论：开头行；说明性文字
+    # （如"验收通过的标准"）不得被当成通过——无明确结论＝未验证。
+    import re as _re
+    explicit = str(explicit_verdict or "").strip().lower()
+    if explicit not in ("passed", "failed", "unverified"):
+        explicit = ""
+    # ① 任意位置的机器枚举 verdict=passed/failed/unverified（全词匹配）
+    if not explicit:
+        m = _re.search(r"\bverdict\s*=\s*(passed|failed|unverified)\b",
+                       text, _re.I)
+        if m:
+            explicit = m.group(1).lower()
+    # ② 中文「结论：」行的**完整枚举**（"通过率尚未统计"不是通过）
+    if not explicit:
+        fail_words = {"failed", "fail", "失败", "不通过", "未通过",
+                      "验收失败", "验收未通过"}
+        pass_words = {"passed", "pass", "通过", "验收通过", "全部通过"}
+        for line in text.splitlines():
+            low = line.strip().lower()
+            if not low.startswith("结论："):
+                continue
+            val = low.split("：", 1)[-1].strip()
+            head = _re.split(r"[。；;，,（(\s—]", val, 1)[0]
+            if head in fail_words:
+                explicit = "failed"
+            elif head in pass_words:
+                explicit = "passed"
+            elif head in ("unverified", "未验证"):
+                explicit = "unverified"
+            break
+    verdict = explicit or "unverified"
+    conclusion = text[:1200]
+
+    def _save(conn):
+        coordination_store._ensure(conn)
+        _ensure_qa(conn)
+        conn.execute(
+            "UPDATE coordination_qa SET verdict=?, conclusion=?,"
+            " status=?, updated_at=? WHERE qa_id=?",
+            (verdict, conclusion,
+             "answered" if verdict != "unverified" else "dispatched",
+             _now(), rec["qa_id"]))
+    card_db.write_sync(work_id, _save)
+    await coordination_store.add_observation(
+        work_id, rec["plan_card_id"], assignment_id=rec["assignment_id"],
+        kind="qa_report", status=verdict, item_id=rec.get("item_id"),
+        detail={"qa_id": rec["qa_id"], "deployment_id": int(deployment_id),
+                "conclusion": conclusion[:500],
+                "source": "formal_report_deploy"})
+    return {"ok": True, "qa_id": rec["qa_id"], "verdict": verdict,
+            "conclusion": conclusion}
+
+
+async def qa_verdict(work_id: str, qa_id: str, *,
+                     verdict: str, conclusion: str,
+                     evidence_refs: Optional[list[str]] = None) -> dict[str, Any]:
+    """真实 QA 回执回传（通过/失败/未验证）写入原事项记录。"""
+    from ..storage.coordination_store import _now
+
+    def _fn(conn):
+        coordination_store._ensure(conn)
+        _ensure_qa(conn)
+        cur = conn.execute(
+            "UPDATE coordination_qa SET verdict=?, conclusion=?,"
+            " evidence_refs=?, status=?, updated_at=? WHERE qa_id=?",
+            (str(verdict), str(conclusion),
+             json.dumps([str(x) for x in (evidence_refs or [])],
+                        ensure_ascii=False), _now(), _now(), qa_id))
+        return cur.rowcount > 0
+    ok = bool(card_db.write_sync(work_id, _fn))
+    return {"ok": ok, "qa_id": qa_id}
+
+
+async def coordination_ask(work_id: str, plan_card_id: str, *,
+                           assignment_id: str, rev: int,
+                           item_id: Optional[str], function_id: str,
+                           question: str, requirements_version: str,
+                           evidence_refs: list[str],
+                           turn_id: str, model_used: str) -> dict[str, Any]:
+    """[下一批 ②] 指定职能的一次**只读**回合：稳定问题标识、职责书授权、
+    入账前授权复核；已答复回读原答案（重试/并发同键）。
+
+    宿主绑定 work/计划卡/任命/读入版本/事项/问题/需求版本/证据引用；
+    专家只拿按当前授权组装的材料，**零工具**（tools=None），正文里的调用
+    指令不触发写入。专家无权改计划、下令或替用户改承诺。
+    """
+    from . import function_room
+    from ..storage import function_store as _fs
+
+    fid = str(function_id or "").strip()
+    text = str(question or "").strip()
+    if not fid.startswith("fn_") or not _fs.function_exists(work_id, fid) \
+            or not text:
+        return {"ok": False, "code": "invalid_function",
+                "why": f"职能不存在或问题为空: {fid}"}
+    # 自问拒绝（统筹本人担任该职能）
+    appt = _current_assignment(work_id, plan_card_id)
+    if not appt or str(appt.get("assignment_id")) != str(assignment_id) \
+            or int(appt.get("rev") or 0) != int(rev) \
+            or appt.get("state") != "active":
+        return {"ok": False, "code": "stale_token",
+                "why": "启动前任命/版本复核未通过"}
+    if str(appt.get("function_id") or "") == fid:
+        return {"ok": False, "code": "self_ask",
+                "why": "统筹本人担任该职能，自问自答由宿主拒绝"}
+    ident = function_room.identity_for(work_id, fid)
+    charter = str((ident.get("charter") or {}).get("text") or "").strip()
+    if not charter:
+        return {"ok": False, "code": "no_charter",
+                "why": f"职能 {fid} 缺职责书（不启动专家回合）"}
+    # 需求版本/证据可见性：引用须本 work + seen（与发令同口径）
+    allowed_refs = []
+    allowed_cards = _allowed_card_ids(work_id, (appt.get("observe_scope")
+                                                or appt.get("grants", {})
+                                                .get("observe") or {}))
+    for ref in evidence_refs:
+        ref_s = str(ref)
+        if not ref_s.startswith(f"event:{work_id}:"):
+            return {"ok": False, "code": "bad_evidence",
+                    "why": f"证据不属于本 work: {ref_s}"}
+        card_id, seq = _ref_card(ref_s), _ref_seq(ref_s)
+        if card_id not in allowed_cards:
+            return {"ok": False, "code": "bad_evidence",
+                    "why": f"证据来源卡不在授权观察范围: {ref_s}"}
+
+        def _seen(conn):
+            try:
+                return bool(conn.execute(
+                    "SELECT 1 FROM coordination_seen WHERE work_id=?"
+                    " AND plan_card_id=? AND assignment_id=? AND card_id=? AND seq=?",
+                    (work_id, plan_card_id, str(assignment_id), card_id, seq)
+                ).fetchone())
+            except Exception:  # noqa: BLE001
+                return False
+        if not card_db.read_sync(work_id, _seen, False):
+            return {"ok": False, "code": "bad_evidence",
+                    "why": f"证据不是本任命的观察事件: {ref_s}"}
+        allowed_refs.append(ref_s)
+    # 稳定标识：**不含版本**（同一问题跨版本重试同键，回读原答复）
+    qhash = _content_hash(work_id, str(assignment_id), str(item_id or ""),
+                          fid, text)
+    question_id = f"q_{qhash[:20]}"
+
+    def _claim(conn) -> dict[str, Any]:
+        coordination_store._ensure(conn)
+        _ensure_questions(conn)
+        row = conn.execute(
+            "SELECT * FROM coordination_questions WHERE question_id=?",
+            (question_id,)).fetchone()
+        if row is not None:
+            d = dict(row)
+            if d["status"] == "answered":
+                # [反例③] 重放前核验原答复所用证据**仍获当前授权**：
+                # 撤权后的旧答复留作历史（问题行不动），但不回流模型上下文
+                refs = json.loads(d.get("evidence_refs") or "[]")
+                cur = _current_assignment(work_id, plan_card_id)
+                allowed = _allowed_card_ids(
+                    work_id, (cur or {}).get("observe_scope") or {})
+                for ref in refs:
+                    cid, seq = _ref_card(str(ref)), _ref_seq(str(ref))
+                    if cid not in allowed:
+                        return {"ok": False, "code": "evidence_revoked",
+                                "why": (f"原答复证据已不在当前授权观察范围: {ref}"
+                                        "（旧答复保留在历史，不回流）")}
+                    hit = conn.execute(
+                        "SELECT 1 FROM coordination_seen WHERE work_id=?"
+                        " AND plan_card_id=? AND assignment_id=? AND card_id=? AND seq=?",
+                        (work_id, plan_card_id, str(assignment_id), cid, seq)
+                    ).fetchone()
+                    if not hit:
+                        return {"ok": False, "code": "evidence_revoked",
+                                "why": (f"原答复证据已不是本任命的观察事件: {ref}"
+                                        "（旧答复保留在历史，不回流）")}
+                return {"ok": True, "question_id": question_id,
+                        "replayed": True, "answer": d["answer"],
+                        "function_id": d["function_id"], "item_id": d["item_id"]}
+            return {"ok": False, "code": "in_flight",
+                    "why": f"问题已在处理中（{d['status']}）"}
+        from ..storage.coordination_store import _now
+        conn.execute(
+            "INSERT INTO coordination_questions"
+            " (question_id,work_id,plan_card_id,assignment_id,rev,item_id,"
+            "  function_id,question,requirements_version,evidence_refs,"
+            "  status,created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,'queued',?)",
+            (question_id, work_id, plan_card_id, str(assignment_id), int(rev),
+             item_id or None, fid, text, str(requirements_version or ""),
+             json.dumps(allowed_refs, ensure_ascii=False), _now()))
+        return {"ok": True, "question_id": question_id, "replayed": False,
+                "function_id": fid, "item_id": item_id}
+
+    try:
+        claim = await card_db.run_write(work_id, _claim)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "code": "error", "why": str(exc)}
+    if not claim.get("ok") or claim.get("replayed"):
+        return claim
+
+    # 只读回合（空工具面）：职责书+问题+需求版本+证据引用
+    system = (f"你是 {ident.get('function_name') or fid}（{fid}），按职责书回答统筹"
+              f"提出的一个问题。职责书：\n{charter}\n\n"
+              "你只能回答问题本身——**没有工具**，不许改计划、不许发令、"
+              "不许替用户改承诺。输出一个 JSON 对象："
+              '{"answer": "结论（含承诺/验收/分歧或技术方案/验证办法）"}')
+    body = (f"事项：{item_id or '（无）'}\n问题：{text}\n"
+            f"需求版本：{requirements_version or '（未标注）'}\n"
+            f"证据引用：{', '.join(allowed_refs[:5]) or '（无）'}")
+    try:
+        result, used = await model_service.call_main(
+            system, body, model_name=str((appt.get("models") or {})
+                                         .get("strong") or ""),
+            tools=None, caller="coordination_expert", work_id=work_id,
+            card_id=plan_card_id,
+            before_send=_make_send_guard(work_id, plan_card_id,
+                                         str(assignment_id), int(rev)))
+        parsed = json.loads(_strip_json_block(str(result.get("content") or "")))
+        answer = str(parsed.get("answer") or "").strip()
+        if not answer:
+            raise ValueError("专家答复为空")
+    except Exception as exc:  # noqa: BLE001
+        from ..storage.coordination_store import _now
+        card_db.write_sync(
+            work_id,
+            lambda c: c.execute(
+                "UPDATE coordination_questions SET status='error' WHERE question_id=?",
+                (question_id,)))
+        await coordination_store.add_observation(
+            work_id, plan_card_id, assignment_id=assignment_id,
+            kind="ask", status="error", item_id=item_id,
+            detail={"question_id": question_id, "function_id": fid,
+                    "why": str(exc)}, model_used=model_used)
+        return {"ok": False, "code": "expert_error", "why": str(exc)}
+
+    # 入账前再核任命/版本；晚到旧版本只存原记录、不覆盖当前事项
+    now_appt = _current_assignment(work_id, plan_card_id)
+    stale = (not now_appt
+             or str(now_appt.get("assignment_id")) != str(assignment_id)
+             or int(now_appt.get("rev") or 0) != int(rev))
+    from ..storage.coordination_store import _now
+
+    def _save(conn) -> None:
+        coordination_store._ensure(conn)
+        _ensure_questions(conn)
+        conn.execute(
+            "UPDATE coordination_questions SET status=?, answer=?,"
+            " answer_rev=?, answered_at=? WHERE question_id=?",
+            ("stale" if stale else "answered", answer, int(rev),
+             _now(), question_id))
+    card_db.write_sync(work_id, _save)
+    await coordination_store.add_observation(
+        work_id, plan_card_id, assignment_id=assignment_id,
+        kind="ask_answered", status="stale" if stale else "answered",
+        item_id=item_id, detail={
+            "question_id": question_id, "function_id": fid,
+            "answer": answer[:500], "answer_rev": rev,
+            "requirements_version": requirements_version,
+            "evidence_refs": allowed_refs},
+        model_used=str(used or model_used))
+    return {"ok": True, "question_id": question_id, "replayed": False,
+            "function_id": fid, "item_id": item_id, "answer": answer,
+            "stale": stale}
+
+
+async def _project_receipt(work_id: str, plan_card_id: str,
+                           action_key: str) -> dict[str, Any]:
+    from ..storage import origin_store, session_facade, session_store
+
+    row = _read_action(work_id, plan_card_id, action_key)
+    if not row or not row["msg_id"]:
+        return {"ok": False, "why": "收件行不存在或未定稿"}
+    target = row["target_card"]
+    actor = row["actor"]
+    msg_id = row["msg_id"]
+
+    def _write_session() -> dict[str, Any]:
+        projection = session_facade.append_directive_sync(
+            work_id, target, actor, _instruction_body(row), msg_id)
+        block = projection.get("block")
+        if not block:
+            raise OSError("会话未返回收件块")
+        block = {**block, "event_type": "msg_directive"}
+        if origin_store.write_blocks_sync(work_id, target, [block]) != 1:
+            raise OSError("原文账未确认写入")
+        return block
+
+    async def _project_session() -> dict[str, Any]:
+        async with session_store._session_lock(work_id, target):
+            return await asyncio.to_thread(_write_session)
+
+    try:
+        # 协程被取消时，写线程仍持有会话锁，直到落盘完成。
+        task = asyncio.create_task(_project_session())
+        try:
+            block = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+        event = await session_facade._emit_block_event(
+            work_id, target, block, "msg_directive",
+            origin={"from_card": actor, "msg_id": msg_id}, once_per_message=True)
+        if not event:
+            raise OSError("事件流未确认写入")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[coordination] 收件投影待重试: %s", exc)
+        return {"ok": False, "why": str(exc)}
+    return {"ok": True}
+
+
+_active_wakes: set[tuple[str, str]] = set()
+
+
+def _wake_gate(conn, action: dict[str, Any]) -> tuple[bool, str]:
+    work_id, plan_card = action["work_id"], action["plan_card_id"]
+    ok, _, gate = _gates(
+        work_id, plan_card, action["assignment_id"], action["rev"],
+        action["target_card"], json.loads(action["evidence_refs"]), conn=conn,
+        item_id=action.get("item_id") or "")
+    if not ok:
+        return False, gate["why"]
+    if gate["function_id"] != action["actor"]:
+        return False, "原任命职能身份不符"
+    code, why = _directive_permission(work_id, action["actor"], action["target_card"])
+    return not code, why
+
+
+def _wake_status_tx(conn, action: dict[str, Any], status: str, why: str = "") -> None:
+    coordination_store.add_observation_tx(
+        conn, action["work_id"], action["plan_card_id"],
+        assignment_id=action["assignment_id"], kind="instruction_woke", status=status,
+        detail={"receipt_id": action["receipt_id"], "action_key": action["action_key"],
+                "woke": status == "woke", "why": why})
+
+
+def _admit_wake(work_id: str, plan_card_id: str, action_key: str, target: str) -> bool:
+    """目标属主在实际接收唤醒时，原子确认原任命和行动键。"""
+    def _fn(conn):
+        row = conn.execute(
+            "SELECT * FROM coordination_actions WHERE work_id=? AND plan_card_id=?"
+            " AND action_key=? AND target_card=? AND projection_verified=1 AND woke=0",
+            (work_id, plan_card_id, action_key, target)).fetchone()
+        if not row:
+            return False
+        action = dict(row)
+        ok, why = _wake_gate(conn, action)
+        if not ok:
+            _wake_status_tx(conn, action, "denied", why)
+            return False
+        conn.execute(
+            "UPDATE coordination_actions SET woke=1, updated_at=? WHERE action_key=?",
+            (coordination_store._now(), action_key))
+        _wake_status_tx(conn, action, "woke")
+        return True
+
+    return bool(card_db.write_sync(work_id, _fn))
+
+
+def _directive_permission(work_id: str, actor: str, target: str) -> tuple[str, str]:
+    from ..permissions import policy
+
+    cards = card_store.iter_card_metas(work_id)
+    if not actor or not policy.can(actor, target, policy.SWITCH_READ, cards):
+        return "role_denied", f"角色授面拒绝：职能 {actor} 无权向 {target} 发指令"
+    try:
+        policy.check_linked(actor, target, cards)
+    except PermissionError as exc:
+        return "no_link", str(exc)
+    return "", ""
+
+
+async def coordination_deliver(work_id: str, plan_card_id: str, *,
+                               assignment_id: str, rev: int,
+                               action_key: str) -> dict[str, Any]:
+    """由目标属主提交唯一收件，再用原消息号补写和唤醒。"""
+    from . import message_runner
+    from ..infra import loops, procs
+
+    action = _read_action(work_id, plan_card_id, action_key)
+    if not action:
+        return {"ok": False, "code": "not_found", "why": "行动键不存在（先受理）"}
+    target = action["target_card"]
+    if procs.is_web() or (procs.is_runner()
+                          and procs.owner_index_of(work_id, target) != procs.runner_index()):
+        result = await procs.forward_ctl(work_id, target, "/ctl/coordination_deliver", {
+            "work_id": work_id, "card_id": plan_card_id, "assignment_id": assignment_id,
+            "rev": rev, "action_key": action_key,
+        })
+        if "error" in result:
+            # [反例①] 属主暂不可达：受理行保持 accepted，登记待投账——
+            # recover_deliveries 按原行动键重投（不新建行动、不换消息号）
+            from ..storage.coordination_store import _now
+            await coordination_store.add_observation(
+                work_id, plan_card_id, assignment_id=assignment_id,
+                kind="instruction_pending_delivery", status="queued",
+                detail={"action_key": action_key,
+                        "why": str(result["error"]),
+                        "owner": str(procs.owner_index_of(work_id, target))})
+            return {"ok": False, "code": "owner_unreachable",
+                    "why": result["error"]}
+        return result
+    lane = loops.runner_lane_for(work_id, target) or loops.main_loop()
+    if lane is not None and lane is not asyncio.get_running_loop():
+        return await message_runner.await_spawned(message_runner._spawn_tracked(
+            coordination_deliver(work_id, plan_card_id, assignment_id=assignment_id,
+                                 rev=rev, action_key=action_key),
+            work_id=work_id, card_id=target))
+
+    def _tx(conn):
+        if "projection_verified" not in action:
+            _ensure_actions(conn)
+        row = dict(conn.execute(
+            "SELECT * FROM coordination_actions WHERE id=?", (action["id"],)).fetchone())
+        row["replayed"] = bool(row["msg_id"])
+        if row["replayed"]:
+            if not row["actor"]:
+                original = conn.execute(
+                    "SELECT function_id FROM coordination_appointments WHERE work_id=?"
+                    " AND plan_card_id=? AND assignment_id=?",
+                    (work_id, plan_card_id, row["assignment_id"])).fetchone()
+                if not original:
+                    return {"ok": False, "code": "projection_failed", "why": "无法核实原发令身份"}
+                row["actor"] = original["function_id"]
+                conn.execute("UPDATE coordination_actions SET actor=? WHERE id=?",
+                             (row["actor"], row["id"]))
+            return row
+        if (row["assignment_id"], row["rev"]) != (assignment_id, rev):
+            return {"ok": False, "code": "stale_token", "why": "令牌与原行动不符"}
+        ok, code, gate = _gates(
+            work_id, plan_card_id, row["assignment_id"], row["rev"], target,
+            json.loads(row["evidence_refs"]), conn=conn,
+            item_id=row["item_id"] or "")
+        if not ok:
+            conn.execute("UPDATE coordination_actions SET status='failed', updated_at=? WHERE id=?",
+                         (coordination_store._now(), row["id"]))
+            return {"ok": False, "code": code, "why": gate["why"]}
+        actor = gate["function_id"]
+        code, why = _directive_permission(work_id, actor, target)
+        if code:
+            return {"ok": False, "code": code, "why": why}
+        row.update(status="committed", actor=actor, msg_id=f"cmsg-{uuid.uuid4().hex[:12]}",
+                   receipt_id=f"rcp_{uuid.uuid4().hex[:12]}")
+        conn.execute(
+            "UPDATE coordination_actions SET status=?, actor=?, msg_id=?, receipt_id=?,"
+            " updated_at=? WHERE id=?",
+            (row["status"], row["actor"], row["msg_id"], row["receipt_id"],
+             coordination_store._now(), row["id"]))
+        return row
+
+    try:
+        claim = await card_db.run_write(work_id, _tx)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[coordination] 收件事务异常: %s", exc)
+        return {"ok": False, "code": "error", "why": str(exc)}
+    if claim.get("ok") is False:
+        return claim
+
+    reply = {"ok": True, "receipt_id": claim["receipt_id"], "msg_id": claim["msg_id"],
+             "target_card": target, "actor": claim["actor"], "item_id": claim["item_id"] or "",
+             "body": _instruction_body(claim), "replayed": claim["replayed"], "woke": bool(claim["woke"])}
+    if not claim["projection_verified"]:
+        projection = await _project_receipt(work_id, plan_card_id, action_key)
+        if not projection["ok"]:
+            return {**reply, "ok": False, "code": "projection_failed", "why": projection["why"]}
+
+        def _finish(conn):
+            updated = conn.execute(
+                "UPDATE coordination_actions SET status='projected', projection_verified=1,"
+                " projected_session=1, projected_origin=1, projected_event=1, updated_at=?"
+                " WHERE action_key=? AND projection_verified=0",
+                (coordination_store._now(), action_key))
+            if not updated.rowcount:
+                return
+            # 已有回执的旧行先核实缺失投影，再保留原投递账。
+            if claim["status"] == "projected" and conn.execute(
+                    "SELECT 1 FROM coordination_observations WHERE work_id=? AND plan_card_id=?"
+                    " AND kind='instruction_delivered' AND json_extract(detail, '$.action_key')=?",
+                    (work_id, plan_card_id, action_key)).fetchone():
+                return
+            coordination_store.add_observation_tx(
+                conn, work_id, plan_card_id, assignment_id=claim["assignment_id"],
+                kind="instruction_delivered", status="delivered", item_id=claim["item_id"],
+                detail={"receipt_id": claim["receipt_id"], "action_key": action_key,
+                        "target_card": target, "msg_id": claim["msg_id"],
+                        "late": claim["replayed"]})
+
+        try:
+            await card_db.run_write(work_id, _finish)
+        except Exception as exc:  # noqa: BLE001
+            return {**reply, "ok": False, "code": "projection_failed", "why": str(exc)}
+
+    def _check_wake(conn):
+        row = dict(conn.execute(
+            "SELECT * FROM coordination_actions WHERE id=?", (claim["id"],)).fetchone())
+        if row["woke"]:
+            return "woke"
+        ok, why = _wake_gate(conn, row)
+        if not ok:
+            _wake_status_tx(conn, row, "denied", why)
+            return "denied"
+        return "pending"
+
+    key = (work_id, action_key)
+    if key in _active_wakes:
+        return {**reply, "wake_claimed_by_other": True}
+    _active_wakes.add(key)
+    try:
+        wake_status = card_db.write_sync(work_id, _check_wake)
+        if wake_status != "pending":
+            return {**reply, "woke": wake_status == "woke", "wake_denied": wake_status == "denied"}
+
+        def _admit() -> bool:
+            return _admit_wake(work_id, plan_card_id, action_key, target)
+
+        try:
+            # 普通 direct 使用同一唤醒入口。带行动键时由接收方确认唤醒，
+            # 调用方断连或未收到回执也不会让原行动再次起轮。
+            await message_runner.deliver_now(
+                work_id, target,
+                text=f"你收到一条来自统筹职能 {claim['actor']} 的指令，正文已在上文（卡间指令）。",
+                steer_text=f"统筹职能 {claim['actor']} 给你发来指令：\n{reply['body']}\n请按其执行，完成后用 report_up 汇报。",
+                source_kind="directive",
+                source={"kind": "card_msg", "from": claim["actor"], "require_report": True,
+                        "coordination_msg_id": claim["msg_id"]},
+                admission=_admit, action_key=action_key)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[coordination] 落信成功但唤醒待重试: %s", exc)
+        def _settle_attempt(conn):
+            row = dict(conn.execute(
+                "SELECT * FROM coordination_actions WHERE id=?", (claim["id"],)).fetchone())
+            if row["woke"]:
+                return "woke"
+            ok, why = _wake_gate(conn, row)
+            if not ok:
+                _wake_status_tx(conn, row, "denied", why)
+                return "denied"
+            queued = conn.execute(
+                "SELECT 1 FROM coordination_observations WHERE work_id=? AND plan_card_id=?"
+                " AND kind='instruction_woke' AND status='queued'"
+                " AND json_extract(detail, '$.action_key')=?",
+                (work_id, plan_card_id, action_key)).fetchone()
+            if not queued:
+                _wake_status_tx(conn, row, "queued")
+            return "queued"
+
+        wake_status = card_db.write_sync(work_id, _settle_attempt)
+        reply["woke"] = wake_status == "woke"
+        if wake_status == "denied":
+            reply["wake_denied"] = True
+        return reply
+    finally:
+        _active_wakes.discard(key)
+
+
+async def recover_deliveries(work_id: str) -> None:
+    """服务 tick 补齐已提交收件，以及仍有原授权的未确认唤醒。"""
+    def _pending(conn):
+        if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='coordination_actions'"
+                ).fetchone():
+            return []
+        if not any(col["name"] == "projection_verified"
+                   for col in conn.execute("PRAGMA table_info(coordination_actions)")):
+            return None
+        return conn.execute(
+            "SELECT a.plan_card_id,a.assignment_id,a.rev,a.action_key FROM coordination_actions a"
+            " LEFT JOIN coordination_appointments p ON p.assignment_id=a.assignment_id"
+            " AND p.work_id=a.work_id AND p.plan_card_id=a.plan_card_id"
+            " WHERE a.work_id=? AND a.status IN ('accepted','committed','projected') AND ("
+            " a.projection_verified=0 OR (a.woke=0 AND p.state='active'"
+            " AND p.mode='live' AND p.rev=a.rev)) ORDER BY a.updated_at,a.id",
+            (work_id,)).fetchall()
+
+    pending = card_db.read_sync(work_id, _pending, [])
+    if pending is None:
+        await card_db.run_write(work_id, _ensure_actions)
+        pending = card_db.read_sync(work_id, _pending, [])
+    for row in pending:
+        await coordination_deliver(work_id, row["plan_card_id"],
+                                   assignment_id=row["assignment_id"], rev=row["rev"],
+                                   action_key=row["action_key"])
+
+
+def _instruction_body(row: Any) -> str:
+    """收件正文（事项/依据/指令）——权威行与重放共用同一拼装。"""
+    body = (f"【事项 {row['item_id']}】\n" if row["item_id"] else "")
+    body += row["instruction"]
+    acceptance = str(row.get("acceptance") or "").strip()
+    body += f"\n验收判据:{acceptance}" if acceptance else "\n验收判据:（缺项）"
+    try:
+        refs = json.loads(row["evidence_refs"] or "[]")
+    except (TypeError, ValueError):
+        refs = []
+    if refs:
+        body += f"\n依据：{', '.join(refs[:3])}"
+    return body
 
 
 def _ref_card(coord: str) -> str:
@@ -885,24 +2237,6 @@ def _ref_seq(coord: str) -> int:
         return int(parts[3]) if len(parts) >= 4 else -1
     except ValueError:
         return -1
-
-
-async def _deliver_instruction(work_id: str, plan_card_id: str,
-                               function_id: str, receipt_id: str,
-                               target_card: str, item_id: Optional[str],
-                               instruction: str,
-                               evidence_refs: list[str]) -> None:
-    """落信：以统筹身份写**受理卡**的会话（回复统筹的引用＝回执）。"""
-    from ..storage import session_facade
-    prefix = f"【统筹发令·{function_id}｜{receipt_id}】"
-    if item_id:
-        prefix += f"（事项 {item_id}）"
-    if evidence_refs:
-        prefix += f"（依据 {', '.join(evidence_refs[:3])}）"
-    await session_facade.append_card_message(
-        work_id, target_card, from_card=plan_card_id,
-        text=f"{prefix} {instruction[:1500]}",
-        msg_type="msg_notify")
 
 
 def _make_send_guard(work_id: str, plan_card_id: str,
@@ -976,8 +2310,21 @@ async def _log_hop(work_id: str, sid: str, plan_card_id: str, text: str,
         logger.warning("[coordination] 跳留痕失败 card=%s: %s", plan_card_id, exc)
 
 
-async def _read_coord_history(work_id: str, sid: str, allowed: set[str]) -> str:
+def _coord_history_lines(blocks: list[dict], allowed: set[str]) -> list[str]:
     """旧块仅留审计。模型只续用宿主知道来源且仍在授权范围内的记录。"""
+    lines = []
+    for block in blocks:
+        scope = block.get("coordination_scope")
+        cards = scope.get("card_ids") if isinstance(scope, dict) else None
+        body = str(block.get("content") or "").strip()
+        if (body and isinstance(cards, list)
+                and scope.get("kind") != "user_chat"
+                and all(isinstance(cid, str) and cid in allowed for cid in cards)):
+            lines.append(f"- {body[:400]}")
+    return lines
+
+
+async def _read_coord_history(work_id: str, sid: str, allowed: set[str]) -> str:
     from ..storage import session_facade
 
     try:
@@ -985,15 +2332,102 @@ async def _read_coord_history(work_id: str, sid: str, allowed: set[str]) -> str:
     except Exception as exc:
         logger.debug("[coordination] 读专属会话历史失败 sid=%s: %s", sid, exc)
         return ""
-    lines = []
-    for block in blocks:
-        scope = block.get("coordination_scope")
-        cards = scope.get("card_ids") if isinstance(scope, dict) else None
-        body = str(block.get("content") or "").strip()
-        if (body and isinstance(cards, list)
-                and all(isinstance(cid, str) and cid in allowed for cid in cards)):
-            lines.append(f"- {body[:400]}")
-    return "\n".join(lines)
+    return "\n".join(_coord_history_lines(blocks, allowed))
+
+
+def _user_chat_blocks(blocks: list[dict], assignment_id: str) -> list[dict]:
+    return [block for block in blocks
+            if block.get("actor") in ("human", "assistant")
+            and (scope := block.get("coordination_scope"))
+            and isinstance(scope, dict)
+            and scope.get("kind") == "user_chat"
+            and scope.get("assignment_id") == assignment_id]
+
+
+async def read_user_chat(work_id: str, plan_card_id: str) -> list[dict]:
+    from ..storage import session_facade
+
+    panel = coordination_store.panel(work_id, plan_card_id)
+    if not panel.get("assignment_id"):
+        return []
+    blocks = await session_facade.read(work_id, _session_key(plan_card_id))
+    return _user_chat_blocks(blocks, panel["assignment_id"])
+
+
+async def run_user_chat(work_id: str, plan_card_id: str, *, assignment_id: str,
+                        expected_rev: int, content: str) -> None:
+    """Use the appointed strong route for conversation in the plan session."""
+    from ..storage import session_facade
+
+    error = coordination_store.CoordinationError
+    content = content.strip()
+    if not content:
+        raise error("validation", "请输入消息")
+    appt = _current_assignment(work_id, plan_card_id, require_active=True)
+    if not appt:
+        raise error("denied", "请先任命或恢复统筹")
+    if appt["assignment_id"] != assignment_id or appt["rev"] != expected_rev:
+        raise error("conflict", "统筹任命或计划版本已变化，请刷新后发送")
+
+    sid = _session_key(plan_card_id)
+    owner = f"coord_chat:{uuid.uuid4().hex}"
+    if not session_facade.turn_try_acquire(work_id, sid, owner):
+        raise error("conflict", "统筹正在回复上一条消息")
+    guard = _make_send_guard(work_id, plan_card_id, assignment_id, expected_rev)
+    try:
+        allowed = _allowed_card_ids(work_id, appt["observe_scope"])
+        await _ensure_session_registered(work_id, plan_card_id, sid, appt["function_id"])
+        blocks = await session_facade.read(work_id, sid)
+        prior = []
+        for block in _user_chat_blocks(blocks, assignment_id)[-20:]:
+            sources = block["coordination_scope"].get("card_ids")
+            if isinstance(sources, list) and all(cid in allowed for cid in sources):
+                prior.append({"role": "user" if block["actor"] == "human" else "assistant",
+                              "content": str(block["content"])[:4000]})
+        instructions = (
+            "你是项目统筹，正在与用户讨论这份计划。用自然语言回复。"
+            "根据所给计划和查证记录回答，缺少证据时说明。"
+            "可以讨论调整方案，但本次对话不会保存计划、发令或创建卡片。"
+        )
+        system = _turn_system(work_id, appt, instructions)
+        # [2026-11-23 · 计划板] 条目走 turn_tail 当轮板投影——不再把
+        # 旧事项列表拼进 system（同轮只出一份当前板）。
+        _plan_view = {k: v for k, v in plan_for_model(appt, allowed).items()
+                      if k != "items"}
+        system += "\n\n当前计划\n" + json.dumps(_plan_view, ensure_ascii=False)
+        history = _coord_history_lines(blocks, allowed)[-20:]
+        if history:
+            system += "\n\n已有统筹记录\n" + "\n".join(history)
+        try:
+            result, model = await model_service.call_main(
+                system, content, prior_messages=prior or None,
+                tools=None, model_name=appt["models"]["strong"],
+                caller="coordination_chat", work_id=work_id, card_id=plan_card_id,
+                turn_tail=_board_tail(appt, allowed),
+                before_send=guard)
+        except Exception as exc:
+            try:
+                await guard()
+            except RuntimeError as stale:
+                raise error("conflict", str(stale)) from exc
+            logger.warning("[coordination] 对话调用失败 card=%s: %s", plan_card_id, exc)
+            raise error("model_unavailable", "强模型暂未返回，请重试") from exc
+        try:
+            await guard()
+        except RuntimeError as exc:
+            raise error("conflict", str(exc)) from exc
+        answer = str(result.get("content") or "").strip()
+        if not answer:
+            raise error("model_unavailable", "强模型没有返回可显示的回复")
+        scope = {"kind": "user_chat", "assignment_id": assignment_id,
+                 "card_ids": sorted(allowed)}
+        await session_facade.append_many(work_id, sid, [
+            {"actor": "human", "content": content, "coordination_scope": scope},
+            {"actor": "assistant", "content": answer, "coordination_scope": scope,
+             "model": model},
+        ])
+    finally:
+        session_facade.turn_release(work_id, sid, owner)
 
 
 def authorized_wake_reason(work_id: str, appt: dict[str, Any],
@@ -1091,6 +2525,9 @@ async def run_strong_first_turn(work_id: str, plan_card_id: str, *,
         if reason:
             pack["user"] += "\n" + json.dumps(reason, ensure_ascii=False)
         current = plan_for_model(appt, allowed_now)
+        # [2026-11-23 · 计划板] 条目走当轮 turn_tail 板投影——预拼的整份
+        # 计划不再附一份旧事项列表（同轮只出一份当前板）。
+        current = {k: v for k, v in current.items() if k != "items"}
         review_context = appt.get("last_review") or {}
         review_sources = review_context.get("source_cards")
         if not isinstance(review_sources, list) or not set(review_sources).issubset(allowed_now):
@@ -1121,11 +2558,16 @@ async def run_strong_first_turn(work_id: str, plan_card_id: str, *,
         pack["user"] = (f"== 上一轮统筹会话记录（从专属会话读回）==\n"
                         f"{coord_history}\n\n" + pack["user"])
 
+    # [2026-11-23 · 计划板] 当轮板快照：每跳出站 turn_tail 带**一份**
+    # （改板成功后按保存回执 rev 换新——见 coord_plan_board 分支）。
+    tail = _board_tail(appt, allowed_now)
+
     # 查证预算：2×卡数（每卡查证两件）＋8 跳冗余——统筹轮是宿主自含循环
     # （非卡回合，卡回合零闸纪律不适用），预算防模型失控烧钱，有结构依据。
     budget = max(16, 2 * len(cards) + 8)
     hops: list[dict[str, Any]] = []       # 每跳审计：action/参数/结果摘要
     reads: dict[str, dict[str, Any]] = {}
+    board_requirement_reads: dict[str, dict] = {}
     review = None
     # 会话历史累积：[{role:user,材料},{role:assistant,out},{role:user,结果}…]
     history: list[dict[str, str]] = [{"role": "user", "content": pack["user"]}]
@@ -1212,6 +2654,9 @@ async def run_strong_first_turn(work_id: str, plan_card_id: str, *,
                 model_name=strong_route, tools=None,
                 caller="coordination_strong", work_id=work_id,
                 card_id=plan_card_id,
+                # [2026-11-23 · 计划板] 每次出站带一份当轮板（续跳同款；
+                # 改板后换新 rev 快照）
+                turn_tail=tail,
                 # [2026-11-21 · 用户令] 发送边界守卫：每跳出站同样过网关
                 # 队列放行后的最后复核（与弱模型同一机制）。
                 before_send=_make_send_guard(work_id, plan_card_id,
@@ -1249,9 +2694,33 @@ async def run_strong_first_turn(work_id: str, plan_card_id: str, *,
                 status, err_text = "parsed", ""
             break
 
+        if parsed.get("plan") is not None and \
+                parsed.get("instruction") is not None:
+            if is_review:
+                status, err_text = "unparsed", "独立回看轮只读，拒绝组合发令"
+                break
+            combo = await _combined_submit(
+                work_id, plan_card_id, assignment_id=aid, rev=snap_rev,
+                turn_id=turn_id, hop=hop, plan_raw=parsed.get("plan"),
+                instr_raw=parsed.get("instruction"),
+                note=str(parsed.get("note") or ""),
+                model_used=model_used, usage=usage_acc,
+                allowed_now=allowed_now)
+            status = combo["status"]
+            err_text = str((combo.get("detail") or {}).get("error") or "")
+            combo_result = combo
+            hops.append({"hop": hop, "action": "coord_submit_combined",
+                         **{k: v for k, v in combo.items()
+                            if k in ("saved_rev", "instruction",
+                                     "receipt_id", "msg_id")}})
+            break
+
         if parsed.get("plan") is not None:
             # 提交路径：完整校验（空计划/劣质形状不记成功）
-            plan, plan_err = _validate_submitted_plan(parsed.get("plan"))
+            visible = coordination_board.visible_items(
+                _current_assignment(work_id, plan_card_id), allowed_now)
+            plan, plan_err = _validate_submitted_plan(
+                parsed.get("plan"), registered_items=visible)
             if plan is None:
                 status = "unparsed"
                 err_text = f"第 {hop} 跳提交被拒：{plan_err}"
@@ -1261,17 +2730,19 @@ async def run_strong_first_turn(work_id: str, plan_card_id: str, *,
             status = "parsed"
             err_text = ""
             hops.append({"hop": hop, "action": "coord_submit_plan",
-                         "items": len(plan.get("items") or []),
+                         "items": len(visible),
                          "standards": len(plan.get("wake_standards") or [])})
             break
 
         action = str(parsed.get("action") or "")
         if action not in ("coord_read_card", "coord_read_events",
-                          "coord_submit_instruction", "coord_ask_function"):
+                          "coord_submit_instruction", "coord_ask_function",
+                          "coord_qa_request", "coord_plan_board"):
             status = "unparsed"
             err_text = (f"第 {hop} 跳指令无效: {action!r}"
                         "（只接受 coord_read_card/coord_read_events/"
-                        "coord_submit_instruction/coord_ask_function/提交 plan）")
+                        "coord_submit_instruction/coord_ask_function/"
+                        "coord_qa_request/coord_plan_board/提交 plan）")
             break
         # ② 查证前复核（同三核对）＋**授权集合每次现算**——权限收窄即时生效，
         # 旧回合读不到刚撤的卡；被拒结果如实回给模型（不给编造空间）。
@@ -1285,9 +2756,77 @@ async def run_strong_first_turn(work_id: str, plan_card_id: str, *,
         if not isinstance(args, dict):
             status, err_text = "unparsed", "查证参数必须是 JSON 对象"
             break
+        # [2026-11-21 · 用户令反例②] 独立回看轮**只读**——发令/问询一律拒绝
+        if is_review and action in ("coord_submit_instruction",
+                                    "coord_ask_function", "coord_qa_request"):
+            status = "unparsed"
+            err_text = "独立回看轮是只读回看，不允许发令/问询（零写入）"
+            break
+        if action == "coord_plan_board":
+            # [2026-11-23 · 计划板] 读写同一工具：宿主把任命/读入版本/授权
+            # 绑到调用——read 默认未完成项、显式 item_id 可读已完成；
+            # apply 整批原子保存，回执给新 rev。
+            op = str(args.get("op") or "read")
+            if op == "read":
+                offset, limit = args.get("offset"), args.get("limit", 20)
+                if (offset is not None and type(offset) is not int) or type(limit) is not int:
+                    out = {"error": "offset 和 limit 必须为整数"}
+                else:
+                    out = coordination_board.read_board(
+                        now_appt2, live_allowed,
+                        item_id=str(args.get("item_id") or "") or None, offset=offset, limit=limit)
+                    if out.get("item"):
+                        out.update(coordination_store.board_item_receipts(
+                            work_id, plan_card_id, aid, out["item"]["item_id"], live_allowed))
+                result_txt = ("计划板读取结果：\n"
+                              + json.dumps(out, ensure_ascii=False))
+            elif op == "apply":
+                if is_review:
+                    status, err_text = "unparsed", \
+                        "独立回看轮只读计划板——apply 一律拒绝"
+                    break
+                try:
+                    rec = await coordination_store.board_apply(
+                        work_id, plan_card_id, assignment_id=aid,
+                        expected_rev=snap_rev,
+                        changes=args.get("changes"),
+                        reason=str(args.get("reason") or ""), by=f"model:{model_used}",
+                        source_cards=live_allowed, requirement_reads=board_requirement_reads)
+                except coordination_store.CoordinationError as exc:
+                    # 冲突/校验失败都如实回给模型（整批零写入——让它
+                    # 按当前版本重读后重试，不误报成功）
+                    result_txt = (
+                        f"计划板保存被拒（{exc.code}）：{exc.message}\n"
+                        + json.dumps(exc.extra, ensure_ascii=False))
+                    hops.append({"hop": hop, "action": "coord_plan_board",
+                                 "op": "apply", "code": exc.code})
+                else:
+                    # 用保存回执的新 rev 刷新本轮材料与版本闸——
+                    # 后续 _recheck/send_guard 以新读入版本为准。
+                    snap_rev = int(rec["rev"])
+                    appt = _current_assignment(work_id, plan_card_id)
+                    tail = _board_tail(appt, live_allowed)
+                    result_txt = (
+                        f"计划板已保存（rev.{snap_rev}）：\n"
+                        + json.dumps(rec, ensure_ascii=False))
+                    await _hop_log(
+                        f"改板 {rec['changed']} → rev.{snap_rev}", "计划板")
+                    hops.append({"hop": hop, "action": "coord_plan_board",
+                                 "op": "apply", "rev": snap_rev,
+                                 "changed": rec["changed"],
+                                 "allocated": rec["allocated"]})
+            else:
+                result_txt = (f"coord_plan_board 的 op 只接受 read/apply："
+                              f"{op!r}")
+                hops.append({"hop": hop, "action": "coord_plan_board",
+                             "op": op, "code": "validation"})
+            history.append({"role": "assistant", "content": content})
+            current_user = result_txt + "\n继续按协议输出下一个 JSON。"
+            history.append({"role": "user", "content": current_user})
+            continue
         if action == "coord_submit_instruction":
-            # [任务四] 发令动作：走同步受理点（授权/证据/幂等全核对），
-            # 受理成功 ⇒ 落信＋审计＋**本轮终结**（每轮最多一条指令）。
+            # [任务四 · 返工] 受理（只给稳定行动键）→ 落信（同事务重验授权、
+            # 唯一收件、正式 direct 通信面）→ 三账分离；受理后本轮终结。
             intake = await coordination_intake(
                 work_id, plan_card_id, assignment_id=aid,
                 rev=snap_rev, turn_id=turn_id,
@@ -1295,76 +2834,95 @@ async def run_strong_first_turn(work_id: str, plan_card_id: str, *,
                 target_card=str(args.get("target_card") or ""),
                 instruction=str(args.get("instruction") or ""),
                 evidence_refs=[str(x) for x in
-                               (args.get("evidence_refs") or [])])
+                               (args.get("evidence_refs") or [])],
+                action_seq=hop,
+                acceptance=str(args.get("acceptance") or ""),
+                items_allowed={it["item_id"] for it in
+                               coordination_board.visible_items(now_appt2, live_allowed)})
             if not intake.get("ok"):
                 status = "unparsed"
-                err_text = (f"第 {hop} 跳发令被拒（{intake.get('code')}）："
+                err_text = (f"第 {hop} 跳发令受理被拒（{intake.get('code')}）："
                             f"{intake.get('why')}")
                 break
-            receipt_id = intake["receipt_id"]   # 落信已由 intake 统一完成
-            await coordination_store.add_observation(
-                work_id, plan_card_id, assignment_id=aid,
-                kind="instruction", status="delivered",
-                item_id=str(args.get("item_id") or "") or None,
-                evidence_refs=[str(x) for x in
-                               (args.get("evidence_refs") or [])],
-                detail={"receipt_id": receipt_id,
-                        "target_card": args.get("target_card"),
-                        "instruction": str(args.get("instruction") or "")[:500],
-                        "turn_id": turn_id, "replayed": intake.get("replayed",
-                                                                  False)},
-                model_used=model_used, usage=usage_acc)
-            await _hop_log(f"发令受理 {receipt_id} → {args.get('target_card')}",
+            # 受理账已由 coordination_intake 落（落信/唤醒由 deliver 分账）
+            delivered = await coordination_deliver(
+                work_id, plan_card_id, assignment_id=aid, rev=snap_rev,
+                action_key=intake["action_key"])
+            if not delivered.get("ok"):
+                status = "unparsed"
+                err_text = (f"第 {hop} 跳发令落信失败（{delivered.get('code')}）："
+                            f"{delivered.get('why')}（可按原动作重试）")
+                break
+            receipt_id = delivered["receipt_id"]
+            await _hop_log(f"发令落信 {receipt_id} → {args.get('target_card')}",
                            "发令", cards={str(args.get("target_card") or "")})
             hops.append({"hop": hop, "action": "coord_submit_instruction",
                          "receipt_id": receipt_id,
-                         "replayed": intake.get("replayed", False)})
+                         "action_key": intake["action_key"],
+                         "replayed": delivered.get("replayed", False),
+                         "woke": delivered.get("woke", False)})
             status = "parsed"
             err_text = ""
             return {"status": "parsed", "receipt_id": receipt_id,
                     "model_used": model_used, "session": sid,
-                    "hops": len(hops),
-                    "instruction": intake}
+                    "hops": len(hops), "instruction": delivered}
+        if action == "coord_qa_request":
+            qa = await coordination_qa_request(
+                work_id, plan_card_id, assignment_id=aid, rev=snap_rev,
+                item_id=args.get("item_id"),
+                target_card=str(args.get("target_card") or ""),
+                acceptance=str(args.get("acceptance") or ""),
+                evidence_refs=[str(x) for x in
+                               (args.get("evidence_refs") or [])])
+            if not qa.get("ok"):
+                status = "unparsed"
+                err_text = (f"第 {hop} 跳 QA 派驻被拒（{qa.get('code')}）："
+                            f"{qa.get('why')}")
+                break
+            hops.append({"hop": hop, "action": "coord_qa_request",
+                         "qa_id": qa["qa_id"],
+                         "replayed": qa.get("replayed", False)})
+            history.append({"role": "assistant",
+                            "content": content})
+            current_user = (f"QA 已派驻：{qa['qa_id']}（差事 {qa.get('qa_card')}）。"
+                            "继续按协议输出下一个 JSON。")
+            history.append({"role": "user", "content": current_user})
+            continue
         if action == "coord_ask_function":
-            # [任务四] 问专家：向职能卡发问询（不算发令；职能必须存在）
-            fid_ask = str(args.get("function_id") or "").strip()
-            q = str(args.get("question") or "").strip()
-            from ..storage import function_store as _fs
-            if not fid_ask.startswith("fn_") or not _fs.function_exists(
-                    work_id, fid_ask):
-                out_text = f"问询被拒：{fid_ask} 不是有效的职能。"
-                await coordination_store.add_observation(
-                    work_id, plan_card_id, assignment_id=aid,
-                    kind="ask", status="refused",
-                    detail={"function_id": fid_ask, "why": out_text},
-                    model_used=model_used, usage=usage_acc)
-                hops.append({"hop": hop, "action": "coord_ask_function",
-                             "refused": True})
+            # [下一批 ②] 指定职能的只读回合 + 答复回原事项
+            ask = await coordination_ask(
+                work_id, plan_card_id, assignment_id=aid, rev=snap_rev,
+                item_id=args.get("item_id"),
+                function_id=str(args.get("function_id") or ""),
+                question=str(args.get("question") or ""),
+                requirements_version=str(args.get("requirements_version") or ""),
+                evidence_refs=[str(x) for x in
+                               (args.get("evidence_refs") or [])],
+                turn_id=turn_id, model_used=model_used)
+            if not ask.get("ok"):
+                err_text = (f"第 {hop} 跳问询未完成（{ask.get('code')}）："
+                            f"{ask.get('why')}")
+                if ask.get("code") in ("invalid_function", "self_ask",
+                                       "no_charter", "bad_evidence",
+                                       "stale_token"):
+                    status = "unparsed"
+                    break
+                # 专家模型故障不影响统筹本轮继续
                 history.append({"role": "assistant", "content": content})
-                current_user = f"问询结果：\n{out_text}\n\n继续按协议输出。"
+                current_user = f"问询未完成：{err_text}\n继续按协议输出。"
                 history.append({"role": "user", "content": current_user})
+                hops.append({"hop": hop, "action": "coord_ask_function",
+                             "code": ask.get("code")})
                 continue
-            try:
-                from ..storage import session_facade
-                await session_facade.append_card_message(
-                    work_id, fid_ask, from_card=plan_card_id,
-                    text=f"【统筹问询·{appt.get('function_id')}｜{aid}】{q[:800]}",
-                    msg_type="msg_notify")
-                ask_ok = True
-            except Exception as exc:  # noqa: BLE001
-                ask_ok = False
-                logger.warning("[coordination] 问询落信失败: %s", exc)
-            await coordination_store.add_observation(
-                work_id, plan_card_id, assignment_id=aid,
-                kind="ask", status="delivered" if ask_ok else "error",
-                detail={"function_id": fid_ask,
-                        "question": q[:400], "turn_id": turn_id},
-                model_used=model_used, usage=usage_acc)
             hops.append({"hop": hop, "action": "coord_ask_function",
-                         "function_id": fid_ask})
+                         "question_id": ask["question_id"],
+                         "function_id": ask["function_id"],
+                         "replayed": ask.get("replayed", False)})
+            # 答复随下一跳回到统筹上下文（回原事项由问题行+账本承载）
             history.append({"role": "assistant", "content": content})
-            current_user = ("问询已送出（专家回复将以事件回流）。继续按协议"
-                            "输出下一个 JSON（查证/问专家/发令/提交）。")
+            current_user = (f"职能 {ask['function_id']} 的答复"
+                            f"（问题 {ask['question_id']}）：\n{ask['answer']}\n"
+                            "答复已回写原事项。继续按协议输出下一个 JSON。")
             history.append({"role": "user", "content": current_user})
             continue
         out_text = _exec_coord_read(work_id, action, args, live_allowed)
@@ -1382,6 +2940,9 @@ async def run_strong_first_turn(work_id: str, plan_card_id: str, *,
                           "version": result_data.get("requirements_version", {}),
                           "event_seqs": [e["seq"] for e in result_data.get("events", [])],
                           "detail": out_text[:400] if not result_data else ""}
+            if action == "coord_read_card" and result_data.get("requirements"):
+                board_requirement_reads[ref] = {
+                    **reads[ref], "requirements": result_data["requirements"]}
         await _hop_log(f"查证 {action} → {out_text[:400]}", "查证结果",
                        cards={read_card_id} if read_card_id else set())
         history.append({"role": "assistant", "content": content})
@@ -1408,6 +2969,10 @@ async def run_strong_first_turn(work_id: str, plan_card_id: str, *,
             model_used=model_used, usage=usage_acc,
             detail={"trigger": trigger, "hops": hops, **closed})
         return {"status": "parsed" if closed["ok"] else "skipped", **closed}
+
+    if "combo_result" in locals():
+        return {"status": "parsed", "session": sid,
+                "hops": len(hops), "combined": combo_result}
 
     # 落账前复查：任命仍是在任本人且活跃（查证期间暂停 ⇒ 计划不写入）
     appt_now = _current_assignment(work_id, plan_card_id)

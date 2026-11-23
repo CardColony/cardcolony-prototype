@@ -388,6 +388,31 @@
         ]
       }
     },
+    "hop_budget": {
+      "label": "模型跳次预算收口",
+      "group": "回合",
+      "source": "message_runner",
+      "channel": "card",
+      "triggerable": false,
+      "fields": {
+        "part": [],
+        "optional": [
+          "pair_id",
+          "session_id",
+          "logical_hop",
+          "status",
+          "limit",
+          "used",
+          "sent",
+          "terminal",
+          "exhausted"
+        ],
+        "payload": [
+          "seats",
+          "attempts"
+        ]
+      }
+    },
     "context": {
       "label": "上下文装配",
       "group": "回合",

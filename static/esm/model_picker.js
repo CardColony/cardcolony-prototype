@@ -253,7 +253,13 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
     try {
       /* [懒加载 2026-11-20] 这里**不再**拉整份模型目录 —— 徽标只要生效模型，
          那个由 /effective 带回（带显示名）。目录留到开面板时再拉。 */
-      await reload();
+      /* [任务三·合源] 徽标生效模型是后台状态读——首读延到可读点后；
+         切卡(ui:card-changed)与开面板路径不受影响（闸已解）。
+         [世代校验] 谓词校 work——排队期间换项目 ⇒ 跳过；卡粒度不用校：
+         reload() 执行时读 curCard（ui:card-changed 已随行），请求
+         天然指向当前卡。 */
+      await API.deferStatusRead(() => reload(),
+        () => !window.__WORK_ID__ || window.__WORK_ID__ === workId);
       // 草稿态：把上次选过、还没落库的那个模型读回来（刷新不丢）
       if (isDraft()) {
         try {

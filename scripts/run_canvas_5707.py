@@ -99,6 +99,42 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 # 与 main.py 一致：静态资源回源校验（否则改样式看的是旧文件）。
 install_asset_cache(app)
 
+# [任务三·扇入实验] ECO_ROLE=web 时挂转发中间件（is_web() 闸内——
+# 单进程 all 角色下是空操作，5707 原实例行为不变）。
+from src.infra import procs as _procs  # noqa: E402
+_procs.install_web_proxy(app)
+
+# [任务三·扇入实验] 伪「在跑」注入：ECO_5707_FAKE_RUNNING="w:c,w2:c2@30"
+# 让 fan-in 在真实拓扑上见到活跃条目；@N 表示 N 秒后自动转 done
+# （模拟「健康的 A 完成」——配合杀另一片，验「A 清除、B 待校准」）。
+# 只在本实验脚本生效，生产 main.py/runner_main.py 无此口。
+_fake = os.environ.get("ECO_5707_FAKE_RUNNING") or ""
+if _fake.strip():
+    from src.api import progress as _progress
+    import threading as _th
+
+    for _tok in _fake.split(","):
+        _tok = _tok.strip()
+        if ":" not in _tok:
+            continue
+        _w, _rest = _tok.split(":", 1)
+        _c, _, _ttl = _rest.partition("@")
+        # 形态：w:c（立即在跑，永不结）｜w:c@D（D 秒后完成）｜
+        #       w:c@S+D（S 秒后开始跑、S+D 秒后完成——断线期变化的演员）
+        _start_at, _, _dur = _ttl.partition("+")
+        _start_s = float(_start_at) if _start_at else 0.0
+        if _dur:
+            _th.Timer(_start_s, lambda w=_w, c=_c:
+                      _progress.set_stage(w, c, "started", "lab-fake")).start()
+            _th.Timer(_start_s + float(_dur), lambda w=_w, c=_c:
+                      _progress.set_stage(w, c, "done", "lab-fake-done")).start()
+        elif _ttl:      # w:c@D：立即开跑，D 秒后完成
+            _progress.set_stage(_w, _c, "started", "lab-fake")
+            _th.Timer(_start_s, lambda w=_w, c=_c:
+                      _progress.set_stage(w, c, "done", "lab-fake-done")).start()
+        else:
+            _progress.set_stage(_w, _c, "started", "lab-fake")
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:

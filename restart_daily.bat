@@ -13,6 +13,11 @@ set BASE_PORT=5701
 set ECO_RUNNER_BASE_PORT=%BASE_PORT%
 set /a LAST=%ECO_RUNNER_COUNT%-1
 
+rem ---- backup storage roots on E: mechanical disk (2026-11-22 disk relief) ----
+rem    keep in sync with start.bat; pure ASCII only.
+if not defined ECO_SNAPSHOT_ROOT set ECO_SNAPSHOT_ROOT=E:\AI_station_backups\data_snapshots
+if not defined ECO_DB_QUAR_ROOT set ECO_DB_QUAR_ROOT=E:\AI_station_backups\db_quarantine
+
 set LOG=logs\service_restart.log
 if not exist logs mkdir logs
 echo manual stop> logs\.manual_stop
@@ -61,7 +66,7 @@ rem ---- 2) start: venv, runners first then web, all minimized + stdout to logs 
 call .venv\Scripts\activate.bat
 
 for /l %%i in (0,1,%LAST%) do (
-    start "CardColony-runner%%i" /min cmd /c "set ECO_ROLE=runner&& set ECO_RUNNER_COUNT=%ECO_RUNNER_COUNT%&& set ECO_RUNNER_INDEX=%%i&& set ECO_RUNNER_URL=&& set ECO_RUNNER_URLS=&& set ECO_PORT=&& python runner_main.py %%i >> logs\runner%%i_stdout.log 2>&1"
+    start "CardColony-runner%%i" /min cmd /c "set ECO_ROLE=runner&& set ECO_RUNNER_COUNT=%ECO_RUNNER_COUNT%&& set ECO_RUNNER_INDEX=%%i&& set ECO_RUNNER_URL=&& set ECO_RUNNER_URLS=&& set ECO_PORT=&& set ECO_STDOUT_LOG=logs\runner%%i_stdout.log&& python runner_main.py %%i >> logs\runner%%i_boot.log 2>&1"
     echo started runner%%i >> %LOG%
 )
 
@@ -80,10 +85,10 @@ echo [%date% %time%] WARN: runner ports not all up, continuing >> %LOG%
 :runners_up
 
 rem condense dedicated process: sole owner of condensation (probe 5710)
-start "CardColony-condense" /min cmd /c "set ECO_ROLE=condense&& set ECO_RUNNER_COUNT=%ECO_RUNNER_COUNT%&& set ECO_RUNNER_URL=&& set ECO_RUNNER_URLS=&& set ECO_PORT=&& python condense_main.py >> logs\condense_stdout.log 2>&1"
+start "CardColony-condense" /min cmd /c "set ECO_ROLE=condense&& set ECO_RUNNER_COUNT=%ECO_RUNNER_COUNT%&& set ECO_RUNNER_URL=&& set ECO_RUNNER_URLS=&& set ECO_PORT=&& set ECO_STDOUT_LOG=logs\condense_stdout.log&& python condense_main.py >> logs\condense_boot.log 2>&1"
 echo started condense >> %LOG%
 
-start "CardColony-web" /min cmd /c "set ECO_ROLE=web&& set ECO_RUNNER_COUNT=%ECO_RUNNER_COUNT%&& set ECO_RUNNER_URL=&& set ECO_RUNNER_URLS=&& set ECO_PORT=&& python main.py >> logs\service_stdout.log 2>&1"
+start "CardColony-web" /min cmd /c "set ECO_ROLE=web&& set ECO_RUNNER_COUNT=%ECO_RUNNER_COUNT%&& set ECO_RUNNER_URL=&& set ECO_RUNNER_URLS=&& set ECO_PORT=&& set ECO_STDOUT_LOG=logs\service_stdout.log&& python main.py >> logs\service_boot.log 2>&1"
 
 rem ---- 3) verify: max ~30s, .server.pid present + 5700 listening ----
 set OK=0
@@ -103,7 +108,7 @@ if %OK%==1 (
 )
 
 rem ---- 4) watchdog back up + clear flag ----
-start "CardColony-watchdog" /min cmd /c "python watchdog.py >> logs\watchdog_stdout.log 2>&1"
+start "CardColony-watchdog" /min cmd /c "set ECO_STDOUT_LOG=logs\watchdog_stdout.log&& python watchdog.py >> logs\watchdog_boot.log 2>&1"
 del logs\.manual_stop >nul 2>&1
 echo [%date% %time%] watchdog restarted, flag cleared >> %LOG%
 endlocal

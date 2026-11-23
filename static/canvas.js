@@ -20,6 +20,7 @@
  *      applyViewState（视图变换），不存在改 state 后自行重绘或漏重绘的路径。
  */
 import { API } from "./esm/api.js?v=57";
+import { mergeCanvasRunning } from "./esm/state_layers.js?v=33";
 import { escapeHtml } from "./esm/util.js?v=30";
 // 右栏"读全文"用与对话页同一份 Markdown 渲染（不另造一套）
 import { renderMarkdown } from "./esm/md.js?v=31";
@@ -170,8 +171,135 @@ const WORK_ID = window.__WORK_ID__;
   // （getSummary/lazyLoadVisibleSummaries，V1 名单内）沿用本直呼名，不直摸 state。
   const summaryCache = new Map();
   state.async.summaryCache = summaryCache;
-  // card_id -> card DOM 元素
+  // card_id -> card DOM 元素（**实际挂载集**——逻辑可见集在 lastProjection.visibleIds，
+  // 两者已分离：屏外卡只留索引/坐标/尺寸账，不挂 DOM。批三·视口挂载窗）
   const nodeMap = new Map();
+
+  // ==================== 视口挂载窗（批三·大画布）====================
+  // 不变量：
+  //   ① 逻辑图（cards/links/expanded/layout/sizes）永远全量在账——搜索、屏外
+  //      定位、连线几何、框选命中都读它，与挂载无关；
+  //   ② nodeMap 只装「视口＋余量」内与保活名单里的卡；移出窗口只卸 DOM 与
+  //      其上监听（createNode 的监听随节点回收，document 级监听本就拖拽期独有）；
+  //   ③ 尺寸账三级：实测（挂载中）→ _sizeCache（挂过）→ 220×86 估算；
+  //      新挂载卡实测与估算不符时补一次投影修正，正在阅读的位置不动。
+  const _sizeCache = {};            // cid -> {w,h} 最近一次实测
+  const _MOUNT_MARGIN = 420;        // 视口边缘余量（世界坐标单位）
+  const _keepAliveIds = new Set();  // 选中/就地展开/焦点/拖拽中——不按几何卸载
+  let _vpW = 0, _vpH = 0;           // 容器实测尺寸缓存（ResizeObserver 维护）
+
+  function _readVpSize() {
+    if (!viewport) return;
+    _vpW = viewport.clientWidth;
+    _vpH = viewport.clientHeight;
+  }
+
+  // 视口矩形换算到世界坐标（含余量）。相机在 state.view 上，输入事件同步更新
+  // state ⇒ 同一帧内连续输入的累计位移天然保序；DOM 写只在 rAF 收口处发生。
+  function _worldRect(margin) {
+    const z = state.view.zoom || 1;
+    const m = margin == null ? _MOUNT_MARGIN : margin;
+    return {
+      x0: (-state.view.panX) / z - m,
+      y0: (-state.view.panY) / z - m,
+      x1: (-state.view.panX + _vpW) / z + m,
+      y1: (-state.view.panY + _vpH) / z + m,
+    };
+  }
+
+  function _rectsHit(a, b) {
+    return a.x1 > b.x0 && a.x0 < b.x1 && a.y1 > b.y0 && a.y0 < b.y1;
+  }
+
+  // 卡在投影里的世界矩形（布局坐标＋尺寸账）；没有布局记录返回 null
+  function _projRectOf(cid, projection) {
+    const p = projection && projection.layout ? projection.layout[cid] : null;
+    if (!p) return null;
+    const s = (projection.sizes && projection.sizes[cid]) || _sizeCache[cid] || { w: 220, h: 86 };
+    return { x0: p.x, y0: p.y, x1: p.x + s.w, y1: p.y + s.h };
+  }
+
+  // 「这张卡在画布上吗」＝逻辑可见集成员（展开规则推导），与是否挂载无关。
+  // 展开祖先/聚焦/子卡出现判据都用它——nodeMap.has 只是「DOM 现在挂着吗」。
+  function _isLogicallyVisible(cid) {
+    return !!(lastProjection && lastProjection.visibleIds && lastProjection.visibleIds.has(cid));
+  }
+
+  function _recomputeKeepAlive() {
+    _keepAliveIds.clear();
+    for (const id of state.view.selected) _keepAliveIds.add(id);
+    if (state.view.openCells) for (const id of state.view.openCells) _keepAliveIds.add(id);
+    const ae = document.activeElement;
+    if (ae && ae.closest) {
+      const n = ae.closest(".card-node");
+      if (n && n.dataset.id) _keepAliveIds.add(n.dataset.id);
+    }
+    for (const id of _draggingCids) _keepAliveIds.add(id);   // dragState/dragGroup 是节点闭包内变量，模块侧用这份镜像
+  }
+
+  // 目标挂载集＝（投影可见集 ∩ 视口余量窗）∪（保活 ∩ 投影可见集）
+  function _mountSetFor(projection) {
+    _recomputeKeepAlive();
+    const rect = _worldRect(_MOUNT_MARGIN);
+    const out = new Set();
+    for (const cid of projection.visibleIds) {
+      const r = _projRectOf(cid, projection);
+      if (r && _rectsHit(r, rect)) out.add(cid);
+    }
+    for (const id of _keepAliveIds) {
+      if (projection.visibleIds.has(id)) out.add(id);
+    }
+    return out;
+  }
+
+  // 相机提交点：transform 写 + 挂载窗跟随。输入路径走 scheduleViewSync（一帧
+  // 至多一次）；renderCanvas/reflowAll 等结构性路径末尾同步调一次——那时
+  // 挂载窗刚按新投影建过，这里只是无差额的核对，成本≈0。
+  function _viewSyncNow() {
+    applyTransform();
+    if (!lastProjection) return;
+    _syncMounted();
+    _syncEdges();
+    _syncGroups();
+  }
+
+  // [批三] 拖拽中卡的镜像集合（dragState/dragGroup 在 bindNodeEvents 闭包里，
+  // 模块侧读不到）——保活名单与「拖拽中的卡不许被挂载窗卸掉」都靠它。
+  const _draggingCids = new Set();
+
+  let _viewSyncQueued = false;
+  function scheduleViewSync() {
+    if (_viewSyncQueued) return;
+    _viewSyncQueued = true;
+    requestAnimationFrame(() => {
+      _viewSyncQueued = false;
+      _viewSyncNow();
+    });
+  }
+
+  // [批三] 挂载窗观测口（与 __cvLastPulse/__cvRunning 同族的排障记录仪）
+  window.__cvMount = function () {
+    return {
+      vw: _vpW, vh: _vpH, zoom: state.view.zoom,
+      mounted: nodeMap.size,
+      visible: lastProjection ? lastProjection.visibleIds.size : -1,
+      edgesMounted: _edgeEls.size, edgesCatalog: _edgeCatalog.length,
+      rect: _worldRect(0), keepAlive: _keepAliveIds.size,
+    };
+  };
+  // [批三] 屏外定位验收口：走与搜索/导航同一入口（选中＋聚焦），
+  // 目标是未挂载卡时验证「投影坐标定位 → 挂载窗补挂 → 落进视口」链路。
+  window.__cvFocus = function (cid) {
+    selectOnly(cid);
+    focusCard(cid);
+    return _isLogicallyVisible(cid);
+  };
+  // [批三·修] 实时更新验收口：与 SSE 事件同一入口（scheduleLiveApply），
+  // 屏外卡的 updated/created 在虚拟化下的回归验证用。
+  window.__cvLive = function (cid, payload) {
+    scheduleLiveApply(cid, payload);
+    return true;
+  };
 
   // [R1] 当前正在拖拽的节点所对应的「卸载器」（模块级；同一时刻只可能有一次拖拽）。
   // 拖拽监听器只在拖拽期间存在——原来挂在 bindNodeEvents 函数体里无条件执行，等于每建
@@ -1023,22 +1151,40 @@ const WORK_ID = window.__WORK_ID__;
     return unit;
   }
 
-  // [phase8.6-B] 实测节点尺寸；取不到时回退 220×86
+  // [phase8.6-B] 实测节点尺寸；取不到时回退 220×86。
+  // [批三] 实测同时写尺寸账：卡卸载后 _sizeCache 仍留有真实尺寸，
+  // 屏外卡布局照走实测值，不回落估算（spec：屏外布局复用已测尺寸）。
   function measureSizes() {
     const sizes = {};
     for (const [cid, node] of nodeMap) {
-      sizes[cid] = {
+      const s = {
         w: node.offsetWidth || 220,
         h: node.offsetHeight || 86,
       };
+      sizes[cid] = s;
+      if (node.offsetWidth) _sizeCache[cid] = s;
     }
     return sizes;
+  }
+
+  // [批三] 投影的完整尺寸账：挂载中的卡实测（1 次强制布局，纪律同 measureSizes），
+  // 屏外卡用 _sizeCache 实测残账，从未挂载过的卡用 220×86 估算。
+  // 估算只在"这张卡还没进过视口"时发生——进入视口实测后如与估算不符，
+  // _syncMounted 里触发一次修正重排（正在阅读的位置不动，只重算坐标）。
+  function _mergedSizes(visibleIds) {
+    const out = {};
+    for (const cid of visibleIds) {
+      const node = nodeMap.get(cid);
+      if (node && node.offsetWidth) out[cid] = { w: node.offsetWidth, h: node.offsetHeight };
+      else out[cid] = _sizeCache[cid] || { w: 220, h: 86 };
+    }
+    return out;
   }
 
   function nodeSize(cid) {
     const node = nodeMap.get(cid);
     if (node && node.offsetWidth) return { w: node.offsetWidth, h: node.offsetHeight };
-    return { w: 220, h: 86 };
+    return _sizeCache[cid] || { w: 220, h: 86 };
   }
 
   // [画布第三步 T2] 调用点随投影链退役（renderCanvas/reflowLayout 改吃 projection 内
@@ -1364,7 +1510,9 @@ const WORK_ID = window.__WORK_ID__;
   // 透传口径由投影 visibleIds 替代——两者差＝无卡数据的 viewRoot 占位，renderEdges
   // 各循环均有 layout/node 判空守卫，行为等价（V3 透传豁免口径同步收口）。
   function reflowLayout(projection, vm) {
-    if (!nodeMap.size) return;
+    /* [终轮修] 不再以 nodeMap.size 为闸：零挂载（相机在空白区）时
+       投影仍会重算——卡位循环对空 Map 自然 no-op，但边目录必须照新
+       投影刷新，否则目录留在旧投影上与可见集分叉。 */
     const adjusted = projection.layout;
     for (const [cid, node] of nodeMap) {
       const p = adjusted[cid];
@@ -1418,14 +1566,19 @@ const WORK_ID = window.__WORK_ID__;
   // 于是「别处的卡」既不用重排，也不用从零重建连线，端点坐标仍然是对的。
   // 只在全量渲染与全量重算两处写入（renderCanvas / reflowAll），增量路径只补丁。
   let lastProjection = null;
+  // [批三] 与 lastProjection 同源的视图模型快照——_syncMounted 增量挂载
+  // （createNode 要 vm.cardsById/recentEvents 等）和 _syncEdges 增量挂边都用它。
+  let lastViewModel = null;
 
   // [画布第三步 T2] 改吃投影＋视图模型：可见集来自 computeVisibleSet（T08-1-4 规则
   // 逐字搬出、单一来源——V3），计算链收进 computeProjection；pin＝投影输入
   // {viewRoot,cards,links,positions,expanded,cardMap,childMap}，由动作层入口
   // （renderAll）装配，本函数不摸 state（V1）。
   function renderCanvas(pin, vm) {
-    // [T08-3-4] 记录重绘前已在场的卡：重绘后仅对新增卡做淡入
-    const prevIds = new Set(nodeMap.keys());
+    // [T08-3-4] 记录重绘前已在场的卡：重绘后仅对新增卡做淡入。
+    // [批三]「在场」＝逻辑可见集——屏外未挂载的卡不是"新出现"，
+    // 重绘后再进视口不该重播淡入。
+    const prevIds = new Set(lastProjection ? lastProjection.visibleIds : nodeMap.keys());
     // 清除旧节点（保留 svg）
     for (const [cid, node] of nodeMap) node.remove();
     nodeMap.clear();
@@ -1462,7 +1615,17 @@ const WORK_ID = window.__WORK_ID__;
         if (e && e.card_id && !_evByCard.has(e.card_id)) _evByCard.set(e.card_id, e);
       }
       const frag = document.createDocumentFragment();
-      for (const cid of visibleIds) {
+      // [批三·视口挂载窗] 逻辑可见集与实际挂载集分离：
+      //   ① 先用尺寸账（实测残账＋估算）投影一次，得全图坐标；
+      //   ② 只挂载「视口＋余量」与保活名单内的卡；
+      //   ③ 挂载后实测——若与投影假设不符，补一次投影修正（有界两趟，
+      //      与 E3 两阶段同纪律；尺寸账热时第二趟零发生）。
+      const sizesSeed = _mergedSizes(visibleIds);
+      projection = computeProjection({ ...pin, sizes: sizesSeed });
+      lastProjection = projection;
+      lastViewModel = vm;
+      const mountSet = _mountSetFor(projection);
+      for (const cid of mountSet) {
         const card = vm.cardsById[cid];
         if (!card) continue;
         if (card.card_type === "rule") continue;   // [规则卡 2026-10-16] 规则卡不上画布——它是吸附屏幕右侧的常驻卡（workspace.js 规则面板即其呈现）
@@ -1493,9 +1656,21 @@ const WORK_ID = window.__WORK_ID__;
       // layoutTree 内部测量＋此处＋renderEdges 各一次——E1 已参数化第一处、
       // renderEdges 改吃本处尺寸表）。
       applyLODClasses(vm.zoom, true);
-      projection = computeProjection({ ...pin, sizes: measureSizes() });
+      // [批三] 实测只覆盖挂载卡；与首趟投影的尺寸假设比对，有出入才补第二趟
+      // （尺寸账热时整条跳过——mountSet 内全部是缓存命中）。
+      const measured = measureSizes();
+      let drift = false;
+      for (const cid of mountSet) {
+        const s1 = measured[cid];
+        const s0 = sizesSeed[cid];
+        if (s1 && (!s0 || Math.abs(s1.w - s0.w) > 1 || Math.abs(s1.h - s0.h) > 1)) {
+          drift = true;
+          break;
+        }
+      }
+      if (drift) projection = computeProjection({ ...pin, sizes: _mergedSizes(visibleIds) });
       lastProjection = projection;   // [画布重构 2.1] 供 renderSubtree 打补丁（连线的全画布基底）
-      for (const cid of visibleIds) {
+      for (const cid of mountSet) {
         const node = nodeMap.get(cid);
         const p = projection.layout[cid];
         if (node && p) {
@@ -1521,7 +1696,7 @@ const WORK_ID = window.__WORK_ID__;
     renderFunctionLayer(projection);
     renderBreadcrumb(projection.breadcrumb);
     applySelectionClasses();
-    applyTransform();
+    _viewSyncNow();   // transform＋挂载窗＋连线在场集一次核对（刚建过窗，通常零差额）
     lazyLoadVisibleSummaries(vm.cardsById);
 
     // 恢复"就地展开"的卡：重建节点后重新挂上对话（否则发完消息自己合上）
@@ -2231,6 +2406,7 @@ const WORK_ID = window.__WORK_ID__;
         : null;
       // 用 click 事件处理选择；拖拽单独监听 mousedown+move
       dragState = {
+        cardId: card.card_id,   // [批三] 保活名单用：拖拽中的卡不参与几何卸载
         startX: e.clientX, startY: e.clientY,
         nodeLeft: parseFloat(node.style.left), nodeTop: parseFloat(node.style.top),
         moved: false,
@@ -2243,6 +2419,10 @@ const WORK_ID = window.__WORK_ID__;
         rects: null, rectsZoom: 0, rectsPanX: 0, rectsPanY: 0,
         dropEl: null, dropId: null,
       };
+      // [批三] 拖拽保活镜像：拖动期间这些卡不许被挂载窗几何卸载
+      _draggingCids.clear();
+      if (dragGroup) for (const g of dragGroup) _draggingCids.add(g.id);
+      else _draggingCids.add(card.card_id);
       // [R1] 只在拖拽期间挂 document 监听器（松手即卸，见 detachDragListeners）
       document.addEventListener("mousemove", onDragMove);
       document.addEventListener("mouseup", onDragUp);
@@ -2251,33 +2431,46 @@ const WORK_ID = window.__WORK_ID__;
       e.stopPropagation(); // 防止触发画布平移
     });
 
+    let _dragRaf = 0;
     function onDragMove(e) {
       if (!dragState) return;
       const dx = (e.clientX - dragState.startX) / state.view.zoom;
       const dy = (e.clientY - dragState.startY) / state.view.zoom;
       if (!dragState.moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
       dragState.moved = true;
-      if (dragGroup) {
-        for (const g of dragGroup) {
-          g.node.classList.add("dragging");
-          g.node.style.top = (g.top + dy) + "px";   // 横向锁定（同上）
+      // [批三·按帧合并] 手势的最新坐标先记账，DOM 写（卡位移+吸附+落点高亮）
+      // 一帧至多一次；mouseup 前 dragState=null ⇒ 挂起的帧自然作废，
+      // 最终落点判定用 mouseup 事件自己的坐标（不受节流影响）。
+      dragState._mx = e.clientX;
+      dragState._my = e.clientY;
+      dragState._dy = dy;
+      if (_dragRaf) return;
+      _dragRaf = requestAnimationFrame(() => {
+        _dragRaf = 0;
+        if (!dragState) return;
+        const dy2 = dragState._dy;
+        if (dragGroup) {
+          for (const g of dragGroup) {
+            g.node.classList.add("dragging");
+            g.node.style.top = (g.top + dy2) + "px";   // 横向锁定（同上）
+          }
+        } else {
+          node.classList.add("dragging");
+          // [画布 2026-10-18 · 拖拽＝调顺序] **横向锁定，只允许纵向移动**。
+          //
+          // 这是树形布局的性质：横向位置＝层级（由 parent 决定，不是用户摆的），
+          // 纵向位置＝同级之间的顺序（用户可以调）。
+          // 原来拖拽是自由的 x/y，实测后果：两张卡被拖过之后，同层 8 张卡的 x
+          // 变成 456 / 623 / 943，横向散开、主干线接不上——用户的原话是"卡片无序摆放"。
+          // 现在横向永远对齐列，拖拽表达的是"这张卡排在这一层的第几位"。
+          const w = node.offsetWidth || 220, h = node.offsetHeight || 120;
+          const snap = computeSnap(card.card_id, dragState.nodeLeft, dragState.nodeTop + dy2, w, h);
+          node.style.top = (dragState.nodeTop + dy2 + snap.dy) + "px";
+          showGuides(null, snap.vy);
         }
-      } else {
-        node.classList.add("dragging");
-        // [画布 2026-10-18 · 拖拽＝调顺序] **横向锁定，只允许纵向移动**。
-        //
-        // 这是树形布局的性质：横向位置＝层级（由 parent 决定，不是用户摆的），
-        // 纵向位置＝同级之间的顺序（用户可以调）。
-        // 原来拖拽是自由的 x/y，实测后果：两张卡被拖过之后，同层 8 张卡的 x
-        // 变成 456 / 623 / 943，横向散开、主干线接不上——用户的原话是"卡片无序摆放"。
-        // 现在横向永远对齐列，拖拽表达的是"这张卡排在这一层的第几位"。
-        const w = node.offsetWidth || 220, h = node.offsetHeight || 120;
-        const snap = computeSnap(card.card_id, dragState.nodeLeft, dragState.nodeTop + dy, w, h);
-        node.style.top = (dragState.nodeTop + dy + snap.dy) + "px";
-        showGuides(null, snap.vy);
-      }
-      // [换父 2026-10-20] 拖动中实时判定落点：指到哪张卡就高亮哪张卡
-      _updateDropTarget(e.clientX, e.clientY);
+        // [换父 2026-10-20] 拖动中实时判定落点：指到哪张卡就高亮哪张卡
+        _updateDropTarget(dragState._mx, dragState._my);
+      });
     }
 
     function onDragUp(e) {
@@ -2304,6 +2497,7 @@ const WORK_ID = window.__WORK_ID__;
       }
       dragGroup = null;
       dragState = null;
+      _draggingCids.clear();   // [批三] 松手：拖拽保活释放
       // [R1] 松手即卸——用同一命名函数引用（onDragMove/onDragUp 是函数声明，引用稳定；
       // 若写成匿名箭头函数则 removeEventListener 卸不掉）
       detachDragListeners();
@@ -2453,6 +2647,7 @@ const WORK_ID = window.__WORK_ID__;
         _clearDropHighlight();
         dragState = null;
       }
+      _draggingCids.clear();   // [批三] 兜底路径同样释放拖拽保活
       if (activeDragDetach === detachDragListeners) activeDragDetach = null;
       console.info("[R1] 拖拽监听器 卸载");
     }
@@ -2562,15 +2757,24 @@ const WORK_ID = window.__WORK_ID__;
   // 因为 mousedown 根本没到卡片）。所以选中后要把视野左移，保证卡在可见区内。
   function ensureCardVisible(cid) {
     const node = nodeMap.get(cid);
-    if (!node) return;
     const panel = document.getElementById("rulePanel");
     const panelW = (panel && panel.classList.contains("is-open")) ? panel.offsetWidth : 0;
     if (!panelW) return;
     const vp = viewport.getBoundingClientRect();
-    const r = node.getBoundingClientRect();
+    // [批三] 目标可能尚未挂载（选中后挂载窗下一帧才补）——用投影坐标算屏幕位。
+    let right;
+    if (node) {
+      right = node.getBoundingClientRect().right;
+    } else {
+      const proj = lastProjection;
+      const p = proj && proj.layout ? proj.layout[cid] : null;
+      if (!p) return;
+      const s = (proj.sizes || {})[cid] || _sizeCache[cid] || { w: 220, h: 86 };
+      right = vp.left + (p.x + s.w) * state.view.zoom + state.view.panX;
+    }
     const safeRight = vp.right - panelW - 16;
-    if (r.right <= safeRight) return;
-    const dx = Math.round(r.right - safeRight);
+    if (right <= safeRight) return;
+    const dx = Math.round(right - safeRight);
     applyViewState({ panX: state.view.panX - dx });
     scheduleSaveView();
   }
@@ -2742,8 +2946,12 @@ const WORK_ID = window.__WORK_ID__;
   function pruneSelectionToVisible() {
     if (!state.view.selected || !state.view.selected.size) return 0;
     const before = state.view.selected.size;
+    // [批三]「在场」＝逻辑可见集（lastProjection.visibleIds），不是挂载集——
+    // 选中卡滚出视口只卸 DOM，选中资格不能跟着卸（否则 Delete 语义反而回到
+    // 本节要修的病根：删了看不见但本该在场的卡，或反向丢选中）。
+    const logical = (lastProjection && lastProjection.visibleIds) || nodeMap;
     for (const id of [...state.view.selected]) {
-      if (!nodeMap.has(id)) state.view.selected.delete(id);
+      if (!logical.has(id)) state.view.selected.delete(id);
     }
     const after = state.view.selected.size;
     if (after !== before) {
@@ -3291,14 +3499,33 @@ const WORK_ID = window.__WORK_ID__;
     location.assign("/work/" + WORK_ID + "/card/" + cardId);
   }
 
+  // [批三] 全图内容包围盒——按逻辑可见集（投影 layout+sizes），与挂载无关。
+  // fitToContent/fitView/展开后视野校验都要「整棵树」的账，挂载窗只是呈现子集。
+  function _contentBBox() {
+    const proj = lastProjection;
+    if (!proj || !proj.layout) return null;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const cid of proj.visibleIds) {
+      const p = proj.layout[cid];
+      if (!p) continue;
+      const s = (proj.sizes || {})[cid] || _sizeCache[cid] || { w: 220, h: 86 };
+      x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
+      x1 = Math.max(x1, p.x + s.w); y1 = Math.max(y1, p.y + s.h);
+    }
+    return Number.isFinite(x0) ? { x0, y0, x1, y1 } : null;
+  }
+
   // 聚焦到选中卡（画布内"飞过去"）：不改变视图根，只把视口对准它。
   function focusCard(cardId, opts) {
-    const node = nodeMap.get(cardId);
-    if (!node) return;
-    const x = parseFloat(node.style.left) || 0;
-    const y = parseFloat(node.style.top) || 0;
-    const w = node.offsetWidth || 220;
-    const h = node.offsetHeight || 120;
+    // [批三] 定位读投影不读 DOM：目标可以是屏外未挂载卡——相机跳过去后
+    // _viewSyncNow 按挂载窗补挂，屏外定位照旧成立（spec S4）。
+    const proj = lastProjection;
+    if (!proj || !proj.visibleIds.has(cardId)) return;
+    const p = proj.layout[cardId];
+    if (!p) return;
+    const x = p.x, y = p.y;
+    const s = (proj.sizes || {})[cardId] || _sizeCache[cardId] || { w: 220, h: 86 };
+    const w = s.w, h = s.h;
     // 键盘连续导航时不改缩放（否则每按一次方向键视野就跳一下）
     const z = (opts && opts.keepZoom) ? state.view.zoom : Math.max(state.view.zoom, 0.9);
     const vw = viewport.clientWidth, vh = viewport.clientHeight;
@@ -3354,16 +3581,20 @@ const WORK_ID = window.__WORK_ID__;
       // 只关心「这张卡 + 它刚展开的直接子卡」这一簇：视野跟着**正在操作的分支**走，
       // 而不是把整张图缩到能装下（那会把用户正在看的卡缩没——实测全展开时 fit 到 48%）。
       const cluster = [cardId, ...(state.index.childMap[cardId] || []).map((c) => c.card_id)];
-      const boxes = cluster.map((id) => nodeMap.get(id)).filter(Boolean);
-      if (!boxes.length) return;
+      // [批三] 读投影账：刚展开的子卡可能落在屏外未挂载——那正是本检查要发现的。
+      const proj = lastProjection;
+      if (!proj) return;
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      for (const n of boxes) {
-        const x = parseFloat(n.style.left) || 0;
-        const y = parseFloat(n.style.top) || 0;
-        minX = Math.min(minX, x); minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x + (n.offsetWidth || 220));
-        maxY = Math.max(maxY, y + (n.offsetHeight || 120));
+      let anyBox = false;
+      for (const id of cluster) {
+        const p = proj.layout[id];
+        if (!p) continue;
+        const s = (proj.sizes || {})[id] || _sizeCache[id] || { w: 220, h: 120 };
+        minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+        maxX = Math.max(maxX, p.x + s.w); maxY = Math.max(maxY, p.y + s.h);
+        anyBox = true;
       }
+      if (!anyBox) return;
       const z0 = state.view.zoom;
       const vx0 = (0 - state.view.panX) / z0, vy0 = (0 - state.view.panY) / z0;
       const vx1 = (viewport.clientWidth - state.view.panX) / z0;
@@ -3411,17 +3642,10 @@ const WORK_ID = window.__WORK_ID__;
   //   ③ 四周留 pad，视觉上不贴边。
   //   返回值多一个 zoom 字段，调用方一并写回视图态。
   function fitView(zoom, pad = 56) {
-    const nodes = [...world.querySelectorAll(".card-node")];
-    if (!nodes.length) return null;
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const n of nodes) {
-      const x = parseFloat(n.style.left) || 0;
-      const y = parseFloat(n.style.top) || 0;
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x + n.offsetWidth);
-      maxY = Math.max(maxY, y + n.offsetHeight);
-    }
+    // [批三] 整幅适配必须看全图（逻辑可见集），不是挂载窗——读投影账。
+    const bb = _contentBBox();
+    if (!bb) return null;
+    const minX = bb.x0, minY = bb.y0, maxX = bb.x1, maxY = bb.y1;
     const vw = viewport.clientWidth || 1, vh = viewport.clientHeight || 1;
     const availW = Math.max(80, vw - pad * 2);
     const availH = Math.max(80, vh - pad * 2);
@@ -3445,7 +3669,7 @@ const WORK_ID = window.__WORK_ID__;
   // 否则同一同步任务里 offsetHeight 还是旧值）→ 重算，最多迭代 3 次。
   // ══════════════════════════════════════════════════════════════════════════
   function fitToContent() {
-    if (!nodeMap.size) return false;
+    if (!lastProjection || !lastProjection.visibleIds.size) return false;
     // [画布 2026-10-18] 整幅适配＝**根卡居中 + 固定 90%**。
     //
     // 不用"按 bbox 居中"：实测 work_001 上算出的 panY 让卡片跑到视口外（y=-64），
@@ -3455,19 +3679,11 @@ const WORK_ID = window.__WORK_ID__;
     // 0.9 是量出来的：骨架档 9 个节点（根 70 + 8×56 + 8×40 间距）≈ 838px，
     // 0.9 下 754px，落在可用高度 840 内；标题 13×0.9 ≈ 11.7px、结论 11×0.9 ≈ 9.9px。
     const Z = 0.9;
-    // 按**当前 DOM 的实际 bbox** 居中（此时已经渲染成骨架档，尺寸是真的）。
+    // 按**逻辑全图 bbox** 居中（投影账，含屏外卡——适配的语义就是「看全」）。
     // 不要用根卡居中：根卡在左、子卡在右，居中根卡会让整体偏左、右侧空一大片。
-    const nodes = [...world.querySelectorAll(".card-node")];
-    if (!nodes.length) return false;
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const n of nodes) {
-      const x = parseFloat(n.style.left) || 0;
-      const y = parseFloat(n.style.top) || 0;
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x + n.offsetWidth);
-      maxY = Math.max(maxY, y + n.offsetHeight);
-    }
+    const _bb0 = _contentBBox();
+    if (!_bb0) return false;
+    const minX = _bb0.x0, minY = _bb0.y0, maxX = _bb0.x1, maxY = _bb0.y1;
     // [画布 2026-10-19] 用满可用空间，并且**跑两遍**。
     //
     // 一遍不够：第一次量到的 bbox 是"当前档位"的卡高，应用 zoom 后档位可能变、
@@ -3479,14 +3695,9 @@ const WORK_ID = window.__WORK_ID__;
     const availH = Math.max(80, viewport.clientHeight - pad * 2);
     let z = 0.9;
     for (let pass = 0; pass < 2; pass++) {
-      const ns = [...world.querySelectorAll(".card-node")];
-      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-      for (const n of ns) {
-        const nx = parseFloat(n.style.left) || 0, ny = parseFloat(n.style.top) || 0;
-        x0 = Math.min(x0, nx); y0 = Math.min(y0, ny);
-        x1 = Math.max(x1, nx + n.offsetWidth); y1 = Math.max(y1, ny + n.offsetHeight);
-      }
-      if (!Number.isFinite(x0)) break;
+      const bb = _contentBBox();
+      if (!bb) break;
+      const x0 = bb.x0, y0 = bb.y0, x1 = bb.x1, y1 = bb.y1;
       const fitZ = Math.min(availW / Math.max(1, x1 - x0), availH / Math.max(1, y1 - y0));
       // [画布 2026-10-19] 不再有 0.9 硬线。
       // 原来的理由是"卡多时缩到看不清，不如让人滚动"——但那条理由只在**文字没有
@@ -3512,17 +3723,20 @@ const WORK_ID = window.__WORK_ID__;
 
   // ── 只适配指定的几张卡（"自上次以来变过的"）──
   function fitToCards(ids, Z = 0.9) {
-    const nodes = (ids || []).map((id) => nodeMap.get(id)).filter(Boolean);
-    if (!nodes.length) return false;
+    // [批三] 同样读投影账：目标卡可能在屏外未挂载，坐标照常有。
+    const proj = lastProjection;
+    if (!proj) return false;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const n of nodes) {
-      const x = parseFloat(n.style.left) || 0;
-      const y = parseFloat(n.style.top) || 0;
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x + n.offsetWidth);
-      maxY = Math.max(maxY, y + n.offsetHeight);
+    let any = false;
+    for (const id of (ids || [])) {
+      const p = proj.layout[id];
+      if (!p) continue;
+      const s = (proj.sizes || {})[id] || _sizeCache[id] || { w: 220, h: 86 };
+      minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x + s.w); maxY = Math.max(maxY, p.y + s.h);
+      any = true;
     }
+    if (!any) return false;
     const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
     applyViewState({
       zoom: Z,
@@ -3760,23 +3974,45 @@ const WORK_ID = window.__WORK_ID__;
 
     const { visibleIds, layout, sizes } = projection;
     // 与连线共用同一份几何：线的端点就是框的左缘中点
-    const boxes = computeChildGroups(visibleIds, layout, sizes, childMap)
+    // [批三] 盒账入册，按视口增量挂/卸（_syncGroups）——几何是全量算的，
+    // DOM 只在视口＋余量内存在。
+    _groupBoxes = computeChildGroups(visibleIds, layout, sizes, childMap)
       .map((g) => [g.x0, g.y0, g.x1 - g.x0, g.y1 - g.y0]);
+    _groupLayer = layer;
+    _syncGroups();
+  }
 
-    while (groupEls.length < boxes.length) {
+  // [批三] 分组框的挂载窗差分（与 _syncEdges/_syncMounted 同制）：
+  // 元素池复用不重建；不在场的框 el.remove() 真正脱离 DOM（释放呈现），
+  // 回窗时从池里取回重挂。
+  let _groupBoxes = [];
+  let _groupLayer = null;
+  function _syncGroups() {
+    const layer = _groupLayer;
+    if (!layer) return;
+    const rect = _worldRect(_MOUNT_MARGIN);
+    const present = [];
+    for (let i = 0; i < _groupBoxes.length; i++) {
+      const [x, y, w, h] = _groupBoxes[i];
+      if (x + w > rect.x0 && x < rect.x1 && y + h > rect.y0 && y < rect.y1) present.push(i);
+    }
+    while (groupEls.length < present.length) {
       const el = document.createElement("div");
       el.className = "cv-group";
-      layer.appendChild(el);
       groupEls.push(el);
     }
-    while (groupEls.length > boxes.length) groupEls.pop().remove();
-    for (let i = 0; i < boxes.length; i++) {
-      const [x, y, w, h] = boxes[i];
+    for (let i = 0; i < groupEls.length; i++) {
       const el = groupEls[i];
-      el.style.left = x + "px";
-      el.style.top = y + "px";
-      el.style.width = w + "px";
-      el.style.height = h + "px";
+      if (i < present.length) {
+        const [x, y, w, h] = _groupBoxes[present[i]];
+        if (el.style.left !== x + "px") el.style.left = x + "px";
+        if (el.style.top !== y + "px") el.style.top = y + "px";
+        if (el.style.width !== w + "px") el.style.width = w + "px";
+        if (el.style.height !== h + "px") el.style.height = h + "px";
+        if (!el.isConnected) layer.appendChild(el);
+      } else if (el.isConnected) {
+        el.remove();
+      }
     }
   }
 
@@ -3906,21 +4142,34 @@ const WORK_ID = window.__WORK_ID__;
     const pcG = document.createElementNS(SVGNS, "g");
     pcG.setAttribute("data-edge-group", "parent-child");
     edgesSvg.appendChild(pcG);
-    const pcFrag = document.createDocumentFragment();
+    // [批三·连线局部化] 边不再全量落 DOM——renderEdges 只建**目录**
+    // （eid/包围盒/元素工厂/宿主组），实际挂载由 _syncEdges 按视口差集增减：
+    // 屏外边释放呈现、穿窗边照常挂载、两端都在屏外的边只要路径穿窗也保留。
+    const catalog = [];
+    let _segIdx = 0;
     for (const seg of elbowSegs) {
-      // [画布商业化 2026-10-18] 线权重下调：层级由「尺寸 + 明度 + 分组框」表达，
-      // 连线只是辅助线索。1.8px 亮蓝在多卡画布上会抢走全部注意力（实测像一团电线）。
-      const path = makeEdgePath(seg.x1, seg.y1, seg.x2, seg.y2, "#4a6ea8", "1.2", seg);
-      // [画布商业化 2026-10-17] 按父卡深度递减线宽与不透明度：全展开时 200+ 条边
-      // 同权重会糊成一片（截图实测）。近根的主干保持醒目，深层枝节退为背景。
-      const d = depthOf[seg.from] || 0;
-      if (d >= 2) { path.setAttribute("stroke-width", "1"); path.setAttribute("opacity", "0.4"); }
-      else if (d >= 1) { path.setAttribute("stroke-width", "1.1"); path.setAttribute("opacity", "0.6"); }
-      else { path.setAttribute("opacity", "0.7"); }
-      pcFrag.appendChild(path);
+      const eid = "pc:" + (_segIdx++) + ":" + seg.from + ">" + seg.to;
+      catalog.push({
+        eid, group: pcG,
+        bbox: {
+          x0: Math.min(seg.x1, seg.x2) - 200, y0: Math.min(seg.y1, seg.y2) - 40,
+          x1: Math.max(seg.x1, seg.x2) + 200, y1: Math.max(seg.y1, seg.y2) + 40,
+        },
+        make: () => {
+          // [画布商业化 2026-10-18] 线权重下调：层级由「尺寸 + 明度 + 分组框」表达，
+          // 连线只是辅助线索。1.8px 亮蓝在多卡画布上会抢走全部注意力（实测像一团电线）。
+          const path = makeEdgePath(seg.x1, seg.y1, seg.x2, seg.y2, "#4a6ea8", "1.2", seg);
+          // [画布商业化 2026-10-17] 按父卡深度递减线宽与不透明度：全展开时 200+ 条边
+          // 同权重会糊成一片（截图实测）。近根的主干保持醒目，深层枝节退为背景。
+          const d = depthOf[seg.from] || 0;
+          if (d >= 2) { path.setAttribute("stroke-width", "1"); path.setAttribute("opacity", "0.4"); }
+          else if (d >= 1) { path.setAttribute("stroke-width", "1.1"); path.setAttribute("opacity", "0.6"); }
+          else { path.setAttribute("opacity", "0.7"); }
+          return path;
+        },
+      });
     }
-    pcG.appendChild(pcFrag);
-    console.info(`[T08] 父子线：绘制 ${elbowSegs.length} 条（可见卡 ${visibleIds.size} 张）`);
+    console.info(`[T08] 父子线：目录 ${elbowSegs.length} 条（可见卡 ${visibleIds.size} 张）`);
 
     // ══════════════════════════════════════════════════════════════════════
     // [画布 2026-10-19 · 用户令] 连线分三层，各自回答不同的问题：
@@ -3948,29 +4197,39 @@ const WORK_ID = window.__WORK_ID__;
         && visibleIds.has(m.from_card) && visibleIds.has(m.to_card)
         && layout[m.from_card] && layout[m.to_card];
     });
+    let _commIdx = 0;
     for (const m of fresh) {
-      const p1 = layout[m.from_card], p2 = layout[m.to_card];
-      const s1 = nodeSize(m.from_card), s2 = nodeSize(m.to_card);
-      const x1 = p1.x + s1.w / 2, y1 = p1.y + s1.h / 2;
-      const x2 = p2.x + s2.w / 2, y2 = p2.y + s2.h / 2;
-      // 曲线而不是直线：通信线要能穿过中间的卡而不被误读成父子线
-      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2 - Math.min(90, Math.abs(x2 - x1) * 0.22 + 30);
-      const path = document.createElementNS(SVGNS, "path");
-      path.setAttribute("d", `M ${x1} ${y1} Q ${mx} ${my} ${x2} ${y2}`);
-      path.setAttribute("class", "cv-comm-line");
-      path.setAttribute("fill", "none");
-      path.setAttribute("stroke", "#5b8cff");
-      path.setAttribute("stroke-width", "1.8");
-      path.setAttribute("stroke-dasharray", "7 6");
-      path.setAttribute("stroke-linecap", "round");
-      commG.appendChild(path);
-      // 端点：收件方一个实心点，表示"信落到这里"
-      const dot = document.createElementNS(SVGNS, "circle");
-      dot.setAttribute("cx", x2); dot.setAttribute("cy", y2);
-      dot.setAttribute("r", "4");
-      dot.setAttribute("class", "cv-comm-dot");
-      dot.setAttribute("fill", "#5b8cff");
-      commG.appendChild(dot);
+      const eid = "cm:" + (_commIdx++) + ":" + m.from_card + ">" + m.to_card;
+      catalog.push({
+        eid, group: commG,
+        bbox: _edgeBBox(layout, m.from_card, m.to_card, sizes, 150),
+        make: () => {
+          const p1 = layout[m.from_card], p2 = layout[m.to_card];
+          const s1 = nodeSize(m.from_card), s2 = nodeSize(m.to_card);
+          const x1 = p1.x + s1.w / 2, y1 = p1.y + s1.h / 2;
+          const x2 = p2.x + s2.w / 2, y2 = p2.y + s2.h / 2;
+          // 曲线而不是直线：通信线要能穿过中间的卡而不被误读成父子线
+          const mx = (x1 + x2) / 2, my = (y1 + y2) / 2 - Math.min(90, Math.abs(x2 - x1) * 0.22 + 30);
+          const g = document.createElementNS(SVGNS, "g");
+          const path = document.createElementNS(SVGNS, "path");
+          path.setAttribute("d", `M ${x1} ${y1} Q ${mx} ${my} ${x2} ${y2}`);
+          path.setAttribute("class", "cv-comm-line");
+          path.setAttribute("fill", "none");
+          path.setAttribute("stroke", "#5b8cff");
+          path.setAttribute("stroke-width", "1.8");
+          path.setAttribute("stroke-dasharray", "7 6");
+          path.setAttribute("stroke-linecap", "round");
+          g.appendChild(path);
+          // 端点：收件方一个实心点，表示"信落到这里"
+          const dot = document.createElementNS(SVGNS, "circle");
+          dot.setAttribute("cx", x2); dot.setAttribute("cy", y2);
+          dot.setAttribute("r", "4");
+          dot.setAttribute("class", "cv-comm-dot");
+          dot.setAttribute("fill", "#5b8cff");
+          g.appendChild(dot);
+          return g;
+        },
+      });
     }
 
     // ── 第三层：关系线组（默认不画，按钮开）──
@@ -3980,17 +4239,27 @@ const WORK_ID = window.__WORK_ID__;
     edgesSvg.appendChild(relG);
 
     // 普通关系线（[phase8.6-B] 锚点 = 实测尺寸的卡中心）
+    let _lnkIdx = 0;
     for (const r of vm.links) {
       if (!visibleIds.has(r.source) || !visibleIds.has(r.target)) continue;
-      const p1 = layout[r.source], p2 = layout[r.target];
-      if (!p1 || !p2) continue;
-      const isForeshFulfill = r.source && vm.cardsById[r.source] &&
-        vm.cardsById[r.source].card_type === "假设" && (r.type || "").includes("兑现");
-      const color = isForeshFulfill ? "#f85149" : "#8b949e";
-      const sw = isForeshFulfill ? "2" : "1.5";
-      const dash = isForeshFulfill ? "" : "5 4";   // 假设兑现保持实线（语义强），其余弱关联用虚线
-      const s1 = nodeSize(r.source), s2 = nodeSize(r.target);
-      addLine(p1.x + s1.w / 2, p1.y + s1.h / 2, p2.x + s2.w / 2, p2.y + s2.h / 2, color, sw, dash, relG);
+      if (!layout[r.source] || !layout[r.target]) continue;
+      const eid = "ln:" + (_lnkIdx++) + ":" + r.source + ">" + r.target;
+      catalog.push({
+        eid, group: relG,
+        bbox: _edgeBBox(layout, r.source, r.target, sizes, 40),
+        make: () => {
+          const p1 = layout[r.source], p2 = layout[r.target];
+          const isForeshFulfill = r.source && vm.cardsById[r.source] &&
+            vm.cardsById[r.source].card_type === "假设" && (r.type || "").includes("兑现");
+          const color = isForeshFulfill ? "#f85149" : "#8b949e";
+          const sw = isForeshFulfill ? "2" : "1.5";
+          const dash = isForeshFulfill ? "" : "5 4";   // 假设兑现保持实线（语义强），其余弱关联用虚线
+          const s1 = nodeSize(r.source), s2 = nodeSize(r.target);
+          const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+          addLine(p1.x + s1.w / 2, p1.y + s1.h / 2, p2.x + s2.w / 2, p2.y + s2.h / 2, color, sw, dash, g);
+          return g;
+        },
+      });
     }
 
     // 假设悬空红线（无兑现边）
@@ -4001,58 +4270,172 @@ const WORK_ID = window.__WORK_ID__;
       if (!pos) continue;
       const hasFulfill = vm.links.some(r => r.source === cid && (r.type || "").includes("兑现") && visibleIds.has(r.target));
       if (!hasFulfill) {
-        // 从卡右缘向右下画 80px 折线，端点空心圆（[phase8.6-B] 右缘中点实测）
-        const sz = nodeSize(cid);
-        const startX = pos.x + sz.w, startY = pos.y + sz.h / 2;
-        const midX = startX + 80, midY = startY + 40;
-        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        path.setAttribute("d", `M ${startX} ${startY} L ${midX} ${startY} L ${midX} ${midY}`);
-        path.setAttribute("stroke", "#f85149");
-        path.setAttribute("stroke-width", "2");
-        path.setAttribute("stroke-dasharray", "6 4");
-        path.setAttribute("fill", "none");
-        path.setAttribute("opacity", "0.75");
-        relG.appendChild(path);   // [画布 2026-10-19] 归入第三层，随关系线开关一起显隐
-        const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-        circle.setAttribute("cx", midX);
-        circle.setAttribute("cy", midY);
-        circle.setAttribute("r", "5");
-        circle.setAttribute("stroke", "#f85149");
-        circle.setAttribute("stroke-width", "1.5");
-        circle.setAttribute("fill", "none");
-        relG.appendChild(circle);
+        catalog.push({
+          eid: "hy:" + cid, group: relG,
+          bbox: { x0: pos.x, y0: pos.y, x1: pos.x + 400, y1: pos.y + 200 },
+          make: () => {
+            // 从卡右缘向右下画 80px 折线，端点空心圆（[phase8.6-B] 右缘中点实测）
+            const sz = nodeSize(cid);
+            const startX = pos.x + sz.w, startY = pos.y + sz.h / 2;
+            const midX = startX + 80, midY = startY + 40;
+            const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+            const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+            path.setAttribute("d", `M ${startX} ${startY} L ${midX} ${startY} L ${midX} ${midY}`);
+            path.setAttribute("stroke", "#f85149");
+            path.setAttribute("stroke-width", "2");
+            path.setAttribute("stroke-dasharray", "6 4");
+            path.setAttribute("fill", "none");
+            path.setAttribute("opacity", "0.75");
+            g.appendChild(path);   // [画布 2026-10-19] 归入第三层，随关系线开关一起显隐
+            const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+            circle.setAttribute("cx", midX);
+            circle.setAttribute("cy", midY);
+            circle.setAttribute("r", "5");
+            circle.setAttribute("stroke", "#f85149");
+            circle.setAttribute("stroke-width", "1.5");
+            circle.setAttribute("fill", "none");
+            g.appendChild(circle);
+            return g;
+          },
+        });
       }
     }
 
     // 跨视图关系🔗徽章
     for (const cid of visibleIds) {
-      const card = vm.cardsById[cid];
-      if (!card) continue;
       const node = nodeMap.get(cid);
       if (!node) continue;
-      // 移除旧徽章
-      const oldBadge = node.querySelector(".cross-link-badge");
-      if (oldBadge) oldBadge.remove();
-      // 检查是否有指向视图外目标的关系
-      const hasCrossLink = vm.links.some(r => r.source === cid && !visibleIds.has(r.target));
-      if (hasCrossLink) {
-        const badge = document.createElement("span");
-        badge.className = "cross-link-badge";
-        badge.textContent = "🔗";
-        badge.onclick = (e) => {
-          e.stopPropagation();
-          // 找到第一个跨视图目标，打开其工作区
-          const crossRel = vm.links.find(r => r.source === cid && !visibleIds.has(r.target));
-          if (crossRel) location.assign("/work/" + WORK_ID + "/card/" + crossRel.target);
-        };
-        // [画布 2026-10-19] 徽章挂进底栏，不再挂在卡片外沿。
-        // 原来 append 到 node 上、样式是 top:-8px;right:-8px，等于刻意伸出卡外 8px。
-        // 卡与卡之间只有 20px 间距，伸出去就压到邻居；全量验收里它被判成"超框"
-        // （L100 R4 T-3 B-19）。🔗 表达的是"这张卡有关系指向当前视图之外"，
-        // 和 ←N（被引用数）、▸N（子卡数）是同一类信息，本来就该并排放在底栏。
-        (node.querySelector(".cv-card-row") || node).appendChild(badge);
+      _addCrossBadge(cid, node, vm, visibleIds);
+    }
+
+    // [批三] 目录落定 → 首次按视口挂载（本帧只挂相交的边，屏外边不进 DOM）。
+    // innerHTML="" 已清空旧 DOM ⇒ 旧挂载登记一并作废重建。
+    _edgeEls.clear();
+    _edgeCatalog = catalog;
+    _syncEdges();
+  }
+
+  // ══ 跨视图🔗徽章（批三：renderEdges 与 _syncMounted 共用）══
+  // 新挂载卡走 createNode 重建 DOM——徽章不在模板里，必须在挂卡时按同一规则补。
+  function _addCrossBadge(cid, node, vm, visibleIds) {
+    const old = node.querySelector(".cross-link-badge");
+    if (old) old.remove();
+    const hasCrossLink = vm.links.some(r => r.source === cid && !visibleIds.has(r.target));
+    if (!hasCrossLink) return;
+    const badge = document.createElement("span");
+    badge.className = "cross-link-badge";
+    badge.textContent = "🔗";
+    badge.onclick = (e) => {
+      e.stopPropagation();
+      const crossRel = vm.links.find(r => r.source === cid && !visibleIds.has(r.target));
+      if (crossRel) location.assign("/work/" + WORK_ID + "/card/" + crossRel.target);
+    };
+    // [画布 2026-10-19] 徽章挂进底栏，不再挂在卡片外沿——原 top:-8px 会压邻居。
+    (node.querySelector(".cv-card-row") || node).appendChild(badge);
+  }
+
+  // ══ 连线增量挂载（批三·大画布）══
+  // _edgeCatalog：renderEdges 重建的边目录（eid 稳定按「类型:序号:端点」）。
+  // _edgeEls：eid → 已挂元素。_syncEdges 只做「目标在场集 − 已挂集」的差分：
+  // 命中包围盒⇒挂，不命中⇒卸——两端都在屏外但路径穿窗的边照常命中；
+  // 完全离屏的边释放呈现，回窗按目录里的最新几何重建（端点位置变⇒投影
+  // 失效⇒renderEdges 重建目录，工厂闭包里是新一轮坐标）。
+  const _edgeEls = new Map();
+  let _edgeCatalog = [];
+
+  function _edgeBBox(layout, a, b, sizes, pad) {
+    const p1 = layout[a], p2 = layout[b];
+    if (!p1 || !p2) return { x0: 0, y0: 0, x1: -1, y1: -1 };   // 永不命中
+    const s1 = sizes[a] || { w: 220, h: 86 }, s2 = sizes[b] || { w: 220, h: 86 };
+    const x1 = p1.x + s1.w / 2, y1 = p1.y + s1.h / 2;
+    const x2 = p2.x + s2.w / 2, y2 = p2.y + s2.h / 2;
+    return {
+      x0: Math.min(x1, x2) - pad, y0: Math.min(y1, y2) - pad,
+      x1: Math.max(x1, x2) + pad, y1: Math.max(y1, y2) + pad,
+    };
+  }
+
+  function _syncEdges() {
+    if (!_edgeCatalog.length) {
+      for (const [, el] of _edgeEls) el.remove();
+      _edgeEls.clear();
+      return;
+    }
+    const rect = _worldRect(_MOUNT_MARGIN);
+    for (const e of _edgeCatalog) {
+      const hit = _rectsHit(e.bbox, rect);
+      const el = _edgeEls.get(e.eid);
+      if (hit && !el) {
+        const n = e.make();
+        // 新挂的父子线要接上当前高亮态（选中某卡时，回窗的关联线应亮着进来）
+        if (_highlightCid && n.dataset && n.dataset.edge === "parent-child") {
+          const rel = n.dataset.from === _highlightCid || n.dataset.to === _highlightCid;
+          n.classList.add(rel ? "hot" : "dim");
+        }
+        e.group.appendChild(n);
+        _edgeEls.set(e.eid, n);
+      } else if (!hit && el) {
+        el.remove();
+        _edgeEls.delete(e.eid);
       }
     }
+  }
+
+  // ══ 卡片增量挂载（批三·大画布）══
+  // 目标挂载集 − nodeMap 的差分：进窗的建（建完实测→尺寸账→不合就修正重排）、
+  // 出窗的卸。保活名单（选中/就地展开/焦点/拖拽）不参与几何卸载。
+  function _syncMounted() {
+    if (!lastProjection || !world) return;
+    const want = _mountSetFor(lastProjection);
+    for (const [cid, node] of [...nodeMap]) {
+      if (!want.has(cid)) { node.remove(); nodeMap.delete(cid); }
+    }
+    // [批三·修] 视图模型每次重取：rebuildCardMap() 会**换掉** index.cardMap/
+    // childMap 对象，lastViewModel 里的旧引用 ⇒ 屏外卡改名后回窗挂出旧标题
+    // （实测回归）。collectViewModel 全是引用字段，重建成本≈0。
+    const vm = lastViewModel = collectViewModel();
+    const dOf = lastProjection.depthOf || {};
+    const fresh = [];
+    for (const cid of want) {
+      if (nodeMap.has(cid)) continue;
+      const card = vm.cardsById[cid];
+      if (!card || card.card_type === "rule") continue;
+      const node = createNode(card, { x: 0, y: 0 }, vm, dOf[cid] || 0);
+      const p = lastProjection.layout[cid];
+      if (p) { node.style.left = p.x + "px"; node.style.top = p.y + "px"; }
+      node.classList.add(_lodApplied || "l1");
+      node.classList.toggle("is-selected", state.view.selected.has(cid));
+      world.appendChild(node);
+      nodeMap.set(cid, node);
+      fresh.push(cid);
+    }
+    if (!fresh.length) return;
+    // 新挂卡补跨视图🔗徽章（renderEdges 里的同款规则——徽章不在 createNode 模板内）
+    for (const cid of fresh) {
+      const n = nodeMap.get(cid);
+      if (n) _addCrossBadge(cid, n, vm, lastProjection.visibleIds);
+    }
+    // 新挂载：实测写尺寸账；与投影假设不合（首次进窗用了估算值）⇒ 修正重排一次。
+    // 节流：scheduleReflow 自带防抖，连续扫过多张新卡也只重排一回。
+    let drift = false;
+    for (const cid of fresh) {
+      const node = nodeMap.get(cid);
+      if (!node) continue;
+      const w = node.offsetWidth || 0, h = node.offsetHeight || 0;
+      if (w) _sizeCache[cid] = { w, h };
+      const assumed = (lastProjection.sizes || {})[cid];
+      if (w && assumed && (Math.abs(w - assumed.w) > 1 || Math.abs(h - assumed.h) > 1)) drift = true;
+    }
+    applyLiveStates();
+    applySelectionClassesLite();
+    // 键盘导航穿过屏外卡：选中卡刚挂载而 DOM 焦点不在任何卡上 ⇒ 焦点交给它，
+    // 否则方向键导航走一半就丢了 focus 行（spec：键盘导航保住焦点行）。
+    const _selIds = [...state.view.selected];
+    if (_selIds.length === 1 && fresh.includes(_selIds[0])) {
+      const ae = document.activeElement;
+      if (!ae || !ae.closest || !ae.closest(".card-node")) focusSelectedCard();
+    }
+    if (drift) scheduleReflow();
   }
 
   function addLine(x1, y1, x2, y2, color, sw, dash, parent) {
@@ -4108,7 +4491,9 @@ const WORK_ID = window.__WORK_ID__;
   }
 
   // 悬停/选中某张卡时，高亮它的关联线、压暗其余线（"聚焦一条关系"的视觉反馈）
+  let _highlightCid = "";
   function highlightEdges(cardId) {
+    _highlightCid = cardId || "";
     const paths = edgesSvg.querySelectorAll("path[data-edge='parent-child']");
     if (!paths.length) return;
     for (const el of paths) {
@@ -4442,24 +4827,31 @@ const WORK_ID = window.__WORK_ID__;
     let lastW = viewport ? viewport.clientWidth : 0;
     let lastH = viewport ? viewport.clientHeight : 0;
     let timer = 0;
+    // [批三] 视口尺寸账 + ResizeObserver：侧栏开合/窗口缩放都让容器变化——
+    // 挂载窗与命中几何要按新容器重新校验（spec：容器尺寸变化重新校验可见范围）。
+    _readVpSize();
+    if (viewport && typeof ResizeObserver === "function") {
+      new ResizeObserver(() => { _readVpSize(); scheduleViewSync(); }).observe(viewport);
+    }
     window.addEventListener("resize", () => {
       clearTimeout(timer);
       timer = setTimeout(() => {
         if (!viewport) return;
         const w = viewport.clientWidth, h = viewport.clientHeight;
-        if (!w || !h || !lastW || !lastH) { lastW = w; lastH = h; return; }
+        if (!w || !h || !lastW || !lastH) { lastW = w; lastH = h; _readVpSize(); return; }
         const z = state.view.zoom || 1;
         const cx = (lastW / 2 - state.view.panX) / z;
         const cy = (lastH / 2 - state.view.panY) / z;
         state.view.panX = w / 2 - cx * z;
         state.view.panY = h / 2 - cy * z;
         lastW = w; lastH = h;
+        _readVpSize();
         // [画布 2026-10-19 · 自查] 顶栏的 compact 判据是 innerWidth < 1400，
         // 但原来只在 renderProjectStat 里算一次 ⇒ **拉窗口不会重算**：
         // 从 1600 缩到 1280，顶栏还是完整版，挤出边界；反过来则白占空间。
         // 这里跟着窗口尺寸重算一次（同一次防抖里，成本可忽略）。
         renderProjectStat();
-        applyTransform();
+        _viewSyncNow();   // 容器变了：transform＋挂载窗＋连线在场集全部重新校验
         scheduleSaveView();
       }, 120);
     });
@@ -4531,7 +4923,10 @@ const WORK_ID = window.__WORK_ID__;
     state.view.panX = mx - wx * z;
     state.view.panY = my - wy * z;
     state.view.zoom = z;
-    applyTransform();
+    // [批三·按帧合并] 输入顺序与累计位移由「每事件同步写 state」保住；
+    // DOM 写（transform+挂载窗+连线差分）一帧至多一次，锚点数学按最新
+    // state 逐事件推进，连续滚轮不会丢帧也不会乱序。
+    scheduleViewSync();
     // [画布商业化 2026-10-17] 摘要加载不再挂在每次缩放上：缩放不改变可见集，
     // 摘要只与"节点出现"有关（渲染/展开时已加载）。原实现每次 wheel 遍历全部
     // 节点做 Map 查询，是缩放掉帧的第二个来源。
@@ -4575,7 +4970,7 @@ const WORK_ID = window.__WORK_ID__;
     // Shift+滚轮：横向滚动（长文本卡横向查看时用）
     if (e.shiftKey) {
       state.view.panX -= (e.deltaY || e.deltaX);
-      applyTransform();
+      scheduleViewSync();
       scheduleSaveView();
       return;
     }
@@ -4583,7 +4978,7 @@ const WORK_ID = window.__WORK_ID__;
     // 默认：纵向滚动
     state.view.panY -= e.deltaY;
     state.view.panX -= e.deltaX;
-    applyTransform();
+    scheduleViewSync();
     scheduleSaveView();
   }, { passive: false });
 
@@ -4640,10 +5035,12 @@ const WORK_ID = window.__WORK_ID__;
 
   document.addEventListener("mousemove", (e) => {
     if (panState) {
+      // [批三·按帧合并] 位移累计在 state（每事件同步），DOM 写一帧至多一次。
+      // 原实现为省 LOD 重算直写 transform；_viewSyncNow 的 LOD 有档位缓存
+      // （同档早退），平移不跨档 ⇒ 同样的便宜，另带挂载窗与连线差分。
       state.view.panX = panState.panX + (e.clientX - panState.startX);
       state.view.panY = panState.panY + (e.clientY - panState.startY);
-      // 平移期间直接写 transform，不走 applyTransform（省掉 LOD 重算，60fps 更稳）
-      world.style.transform = `translate(${state.view.panX}px, ${state.view.panY}px) scale(${state.view.zoom})`;
+      scheduleViewSync();
       return;
     }
     if (marqueeState) {
@@ -4669,15 +5066,30 @@ const WORK_ID = window.__WORK_ID__;
       const z = state.view.zoom;
       const cachedSizes = (lastProjection && lastProjection.sizes) || null;
       const hit = [];
-      for (const [cid, node] of nodeMap) {
-        const nx = parseFloat(node.style.left) || 0;
-        const ny = parseFloat(node.style.top) || 0;
-        const sx = nx * z + state.view.panX;
-        const sy = ny * z + state.view.panY;
-        const cs = cachedSizes && cachedSizes[cid];
-        const sw = (cs ? cs.w : (node.offsetWidth || 220)) * z;
-        const sh = (cs ? cs.h : (node.offsetHeight || 120)) * z;
-        if (sx < x + w && sx + sw > x && sy < y + h && sy + sh > y) hit.push(cid);
+      // [批三] 命中按**逻辑可见集＋投影坐标**——与挂载无关（框选矩形必在视口内，
+      // 但挂载窗同步有帧级时差，投影才是真值）；尺寸照旧读缓存，零 DOM 查询。
+      const lay = lastProjection && lastProjection.layout;
+      if (lay) {
+        for (const cid of lastProjection.visibleIds) {
+          const p = lay[cid];
+          if (!p) continue;
+          const sx = p.x * z + state.view.panX;
+          const sy = p.y * z + state.view.panY;
+          const cs = cachedSizes && cachedSizes[cid];
+          const sw = (cs ? cs.w : 220) * z;
+          const sh = (cs ? cs.h : 120) * z;
+          if (sx < x + w && sx + sw > x && sy < y + h && sy + sh > y) hit.push(cid);
+        }
+      } else {
+        for (const [cid, node] of nodeMap) {
+          const nx = parseFloat(node.style.left) || 0;
+          const ny = parseFloat(node.style.top) || 0;
+          const sx = nx * z + state.view.panX;
+          const sy = ny * z + state.view.panY;
+          const sw = (node.offsetWidth || 220) * z;
+          const sh = (node.offsetHeight || 120) * z;
+          if (sx < x + w && sx + sw > x && sy < y + h && sy + sh > y) hit.push(cid);
+        }
       }
       const next = new Set(marqueeState.base);
       for (const id of hit) next.add(id);
@@ -4702,7 +5114,7 @@ const WORK_ID = window.__WORK_ID__;
       const tapAdditive = panState.tapAdditive;
       panState = null;
       viewport.classList.remove("panning");
-      applyTransform();       // 平移结束补一次 LOD（拖动中故意不重算）
+      _viewSyncNow();         // 平移结束终态队齐（LOD 补算＋挂载窗＋连线在场集）
       scheduleSaveView();
       if (moved < 3) {
         if (tapCard) setSelection([tapCard], !!tapAdditive);
@@ -4925,7 +5337,8 @@ const WORK_ID = window.__WORK_ID__;
     if (mod && (e.key === "k" || e.key === "K")) { e.preventDefault(); openPalette(); return; }
     if (mod && (e.key === "a" || e.key === "A")) {
       e.preventDefault();
-      setSelection([...nodeMap.keys()]);
+      // [批三]「全选可见卡」按逻辑可见集——挂载窗只是呈现子集，全选不该漏屏外卡。
+      setSelection(lastProjection ? [...lastProjection.visibleIds] : [...nodeMap.keys()]);
       return;
     }
 
@@ -5261,7 +5674,7 @@ const WORK_ID = window.__WORK_ID__;
       openCtxMenu(e.clientX, e.clientY, [
         { act: "new", label: "新建卡片", run: () => openNewCardDialog(null) },
         { act: "fit", label: "整幅适配", kbd: "⌘0", run: () => doFitAll() },
-        { act: "all", label: "全选可见卡", kbd: "⌘A", run: () => setSelection([...nodeMap.keys()]) },
+        { act: "all", label: "全选可见卡", kbd: "⌘A", run: () => setSelection(lastProjection ? [...lastProjection.visibleIds] : [...nodeMap.keys()]) },
         { sep: true },
         { act: "reorg", label: "整理布局（清钉住）", run: () => reorganizeBtn && reorganizeBtn.click() },
         { act: "trash", label: "回收站（找回已删除的卡）", run: () => openTrash() },
@@ -5711,7 +6124,9 @@ const WORK_ID = window.__WORK_ID__;
     // 画布同步：**先展开祖先链再飞过去**。
     // 否则跳到一张折叠在深处的卡时，画布上根本没有它的节点（nodeMap 里没有），
     // focusCard 静默失败——右栏在讲这张卡，画布却停在原处，两边对不上。
-    if (!nodeMap.has(it.cardId)) {
+    // [批三]「画布上没有」按逻辑可见集判——屏外未挂载的卡不需要展祖先，
+    // focusCard 会把它带进视口（挂载窗同步补挂）。
+    if (!_isLogicallyVisible(it.cardId)) {
       const guard = new Set();
       let cur = (state.index.cardMap[it.cardId] || {}).parent;
       while (cur && !guard.has(cur) && state.index.cardMap[cur]) {
@@ -5937,7 +6352,7 @@ const WORK_ID = window.__WORK_ID__;
     const cid = _pendingSelect;
     _pendingSelect = "";
     if (!state.index.cardMap[cid]) return;
-    if (!nodeMap.has(cid)) {
+    if (!_isLogicallyVisible(cid)) {   // [批三] 逻辑可见集判，不是挂载集
       const guard = new Set();
       let cur = (state.index.cardMap[cid] || {}).parent;
       while (cur && !guard.has(cur) && state.index.cardMap[cur]) {
@@ -6004,10 +6419,19 @@ const WORK_ID = window.__WORK_ID__;
 
   // 统一重算入口（不重建节点）：拖动落定／摘要回填／LOD 换档后的避让重算
   function reflowAll() {
-    if (!nodeMap.size) return;
-    const projection = computeProjection({ ...collectProjectionInput(), sizes: measureSizes() });
+    /* [终轮修] 能否重排看「投影是否已初始化」，不看挂载数——零挂载时
+       nodeMap 为空但投影照常可算（布局吃的是 state.data.cards 权威表），
+       否则 live 新增子卡只进索引、永远进不了投影（实测复验的边界）。 */
+    if (!lastProjection) return;
+    const pin = collectProjectionInput();
+    // [批三] 尺寸账混合：挂载卡实测＋屏外卡 _sizeCache/估算——屏外卡也要参与
+    // 全量布局（它们占位置），只是不占 DOM。测量仍只有挂载卡一次强制布局。
+    const { visibleIds } = computeVisibleSet(pin.viewRoot, pin.childMap, pin.expanded);
+    const projection = computeProjection({ ...pin, sizes: _mergedSizes(visibleIds) });
     lastProjection = projection;   // [画布重构 2.1] 与 renderCanvas 同源，全量重算后刷新缓存
-    reflowLayout(projection, collectViewModel());
+    lastViewModel = collectViewModel();
+    reflowLayout(projection, lastViewModel);
+    _viewSyncNow();   // 重排后挂载窗/连线在场集按新投影核对一遍（通常零差额）
     scheduleAutoFit();
   }
 
@@ -6068,7 +6492,7 @@ const WORK_ID = window.__WORK_ID__;
     if (Number.isFinite(patch.panX)) state.view.panX = patch.panX;
     if (Number.isFinite(patch.panY)) state.view.panY = patch.panY;
     if (Number.isFinite(patch.zoom)) state.view.zoom = patch.zoom;
-    applyTransform();
+    _viewSyncNow();   // 相机提交点：transform＋挂载窗＋连线差分一次到位
   }
 
   // 未读态写入口（异步桶唯一写入点；refreshUnread 经此落账——V1 名单内不直摸 state）
@@ -6684,23 +7108,51 @@ const WORK_ID = window.__WORK_ID__;
     renderProjectStat();
   }
 
+  let pulseRequest = 0;
+  let pulseApplied = 0;
+
   async function pollPulse() {
+    try {
+      window.__cvPulseN = (window.__cvPulseN || 0) + 1;
+      window.__cvHidden = document.hidden;
+    } catch (e) { /* 零阻断 */ }
     if (document.hidden) return;
+    const seq = ++pulseRequest;
     const d = await API.getPulse(WORK_ID, 30);
+    if (seq < pulseApplied) return;
+    try {
+      /* [任务三·观测口] 最后一次 pulse 响应摘要——区分「请求失败冻结」
+         与「合并逻辑留错」。 */
+      window.__cvLastPulse = {
+        t: Date.now(), ok: !!d,
+        miss: d && d.coverage && d.coverage.missing,
+        run: d && (d.running || []).map((x) => x.card_id + "@" + x._runner),
+      };
+    } catch (e) { /* 零阻断 */ }
     if (!d) return;
+    pulseApplied = seq;
     state.async.pulse = d;
     const prev = state.async.running || new Map();
-    const next = new Map();
-    for (const r of (d.running || [])) next.set(r.card_id, r);
-    // [画布 2026-10-19 · 手感] 刚发出去、服务端还没写进 progress 的那几秒，
-    // 本地乐观标记要留住——否则用户点完发送，卡片先亮一下、3 秒后又灭，
-    // 看起来像"没发出去"。服务端一旦报出真状态就覆盖它（真数据优先）。
-    for (const [cid, r] of prev) {
-      if (r && r.__local && !next.has(cid)) next.set(cid, r);
-    }
+    // [任务三·合源 §3.2.3] 部分覆盖（coverage.missing 非空）时按属主合并：
+    // 已应答属主名下如实覆盖（含完成清除），失联属主名下条目保留待校准
+    // ——否则 runner 掉线会把它的在跑卡一并误清（同 nav 侧 mergeRunningSet）。
+    // [画布 2026-10-19 · 手感] 完整覆盖时也保留本地乐观标记（刚发出去、服务端
+    // 还没写进 progress 的那几秒）——真数据到手即覆盖（真数据优先）。
+    const missing = (d.coverage && d.coverage.missing) || [];
+    const next = mergeCanvasRunning(prev, d.running || [], missing);
     state.async.running = next;
     applyLiveStates();
     renderActivity(d.recent || []);
+    try {
+      /* [任务三·观测口] 与 nav 侧 __navIsRunning 同族——E2E 探针据此
+         核对接收到的运行态条目（含 _runner 属主标），区分「保留待校准」
+         与「误清/误留」。 */
+      window.__cvRunning = () =>
+        [...(state.async.running || new Map()).entries()]
+          .map(([cid, r]) => ({ cid, _runner: r && r._runner,
+                                __local: !!(r && r.__local),
+                                stage: r && r.stage }));
+    } catch (e) { /* 零阻断 */ }
   }
 
   // ── 项目动态抽屉（活动流）─────────────────────────────────────────────────
@@ -7045,14 +7497,22 @@ const WORK_ID = window.__WORK_ID__;
       const pcard = state.index.cardMap[parentId];
       if (pcard) refreshCardNode(parentId, pcard);
     }
-    // 新卡若其父卡在场且已展开，它应当**出现**（增量入口：只动父卡这一单元）。
-    if (kind === "created" && parentId && nodeMap.has(parentId)
-        && state.view.expanded.has(parentId)) {
-      renderSubtree(parentId);
-      _assertNoGhostNodes();
+    // 新卡若其父卡已展开，它应当**出现**：
+    //   父卡在场 ⇒ 增量入口（只动父卡这一单元）；
+    //   父卡展开但屏外未挂载 ⇒ 结构已变——必须重算投影，让子卡进
+    //   visibleIds/layout（否则进索引不进投影，永远挂不上。实测回归：
+    //   nodeMap.has(parentId) 当「结构未变」的判据在全挂载时代等价，
+    //   虚拟化后它是「在场」不是「可见」）。
+    if (kind === "created" && parentId && state.view.expanded.has(parentId)) {
+      if (nodeMap.has(parentId)) {
+        renderSubtree(parentId);
+        _assertNoGhostNodes();
+      } else {
+        reflowAll();
+      }
       return true;
     }
-    // 新卡若父卡不在画布上（或没展开）⇒ 画布结构没变，数据更新即可。
+    // 新卡父卡未展开 ⇒ 画布结构没变，数据更新即可。
     return false;
   }
 
@@ -7144,6 +7604,7 @@ const WORK_ID = window.__WORK_ID__;
         if (_workEsDropped) {
           _workEsDropped = false;
           reloadCanvas({ silent: true }).catch(() => { /* 补齐失败零阻断 */ });
+          pollPulse().catch(() => { /* 周期校准继续兜底 */ });
         }
       };
       es.onerror = () => {

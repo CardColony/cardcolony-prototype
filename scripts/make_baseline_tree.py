@@ -65,6 +65,10 @@ REVERT_TO_BASE = [
     "static/esm/nav_system.js",
     "static/esm/main.js",
     "static/esm/main_chat.js",
+    # [累计对照·批二] 装配器（延迟归并/批尾配对/位次界/组重放全在这份）
+    "static/esm/assembler.js",
+    # [累计对照·批三] mergeRunningSet 与 temp.running 消费口径
+    "static/esm/state_layers.js",
 ]
 
 

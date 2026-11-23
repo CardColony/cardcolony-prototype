@@ -40,7 +40,11 @@ export function createCardMsgRenderer({ getToLabel } = {}) {
 
     const div = document.createElement("div");
     div.className = "msg cmsg" + (hdr ? (CARD_MSG_CLS[hdr.type] ? " " + CARD_MSG_CLS[hdr.type] : "") : " bad");
-    if (hdr) div.dataset.cm = hdr.type;
+    if (hdr) {
+      div.dataset.cm = hdr.type;
+      // [隔离联验] 消息身份锚：供「打开原件」在浏览器里定位到该条消息
+      if (hdr.id) div.dataset.msgId = hdr.id;
+    }
 
     const bar = document.createElement("div");
     bar.className = "bar";

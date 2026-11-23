@@ -225,6 +225,8 @@ class LlmRuntime:
             try:
                 iterator = registration.adapter.stream(options).__aiter__()
             except BaseException as exc:  # noqa: BLE001
+                if _is_control_rejection(exc):
+                    raise   # 控制结果（预算/权限发送前拒）穿透——非终帧失败
                 failed = True
                 yield _failure_chunk(exc, options.signal)
                 return
@@ -236,6 +238,8 @@ class LlmRuntime:
                     completed = True
                     return
                 except BaseException as exc:  # noqa: BLE001
+                    if _is_control_rejection(exc):
+                        raise   # 同上：控制结果不得归一成 error 终帧
                     completed = True
                     failed = True
                     yield _failure_chunk(exc, options.signal)
@@ -266,6 +270,12 @@ class LlmRuntime:
             self.stats.record(options.model, tokens, latency_ms, success)
         except Exception:  # noqa: BLE001 统计绝不影响主流程
             pass
+
+
+def _is_control_rejection(exc: BaseException) -> bool:
+    """[批七·控制穿透] 发送前拒绝类异常（同跳预算耗尽/续接待核实）：
+    归一成 error 终帧会被当模型失败重试——必须按原名穿透给调用方。"""
+    return type(exc).__name__ in ("HopBudgetExhausted", "HopBudgetUnverified")
 
 
 # ---------------------------------------------------------------------------

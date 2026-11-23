@@ -78,6 +78,67 @@ def _appoint_kwargs(**over):
     return kw
 
 
+async def test_chat_uses_updated_strong_route_and_retains_conversation(sandbox, monkeypatch, client):
+    from src.api import model_service
+    from src.storage import session_facade
+
+    wid, _, fids = await _seeded_work(monkeypatch)
+    plan = await _mk_card(wid, "对话计划")
+    appointed = await coordination_store.appoint(
+        wid, plan, function_id=fids["pm"], **_appoint_kwargs())
+    aid = appointed["appointment"]["assignment_id"]
+    calls = []
+
+    async def reply(system, content, **kwargs):
+        await kwargs["before_send"]()
+        calls.append((content, kwargs["model_name"], kwargs["prior_messages"]))
+        assert kwargs["tools"] is None
+        return {"content": "当前计划仍在核查。"}, kwargs["model_name"]
+
+    monkeypatch.setattr(model_service, "call_main", reply)
+    endpoint = f"/api/works/{wid}/cards/{plan}/coordination"
+    assert (await client.get(f"{endpoint}/chat")).json() == {"messages": []}
+    assert calls == []
+    changed = await client.post(endpoint, json={
+        "op": "set_models", "assignment_id": aid, "expected_rev": 0,
+        "models": {"strong": "weak-test-route", "weak": "strong-test-route"},
+    })
+    assert changed.status_code == 200 and changed.json()["rev"] == 1
+    panel = (await client.get(endpoint)).json()
+    assert panel["models"] == {"strong": "weak-test-route", "weak": "strong-test-route"}
+    assert calls == []
+
+    async def send(content, rev):
+        return await client.post(f"{endpoint}/chat", json={
+            "assignment_id": aid, "expected_rev": rev, "content": content,
+        })
+
+    assert (await send("过期问题", 0)).status_code == 409
+    assert (await send("计划进展怎么样？", 1)).status_code == 200
+    assert (await send("还需要什么证据？", 1)).status_code == 200
+    assert calls[0] == ("计划进展怎么样？", "weak-test-route", None)
+    assert calls[1][2] == [
+        {"role": "user", "content": "计划进展怎么样？"},
+        {"role": "assistant", "content": "当前计划仍在核查。"},
+    ]
+    history = (await client.get(f"{endpoint}/chat")).json()["messages"]
+    assert [item["actor"] for item in history] == ["human", "assistant", "human", "assistant"]
+    assert all("计划进展怎么样？" not in str(block.get("content"))
+               for block in await session_facade.read(wid, plan))
+    assert coordination_store.panel(wid, plan)["rev"] == 1
+    assert len(calls) == 2
+
+    async def pause_before_reply(system, content, **kwargs):
+        await kwargs["before_send"]()
+        await coordination_store.control_op(
+            wid, plan, assignment_id=aid, expected_rev=1, op="pause")
+        return {"content": "迟到回复"}, kwargs["model_name"]
+
+    monkeypatch.setattr(model_service, "call_main", pause_before_reply)
+    assert (await send("中途暂停", 1)).status_code == 409
+    assert (await client.get(f"{endpoint}/chat")).json()["messages"] == history
+
+
 # ---------------------------------------------------------------- T1 任命＋不干扰
 
 async def test_appoint_pm_and_pm_still_usable(sandbox, monkeypatch):

@@ -145,6 +145,36 @@ export function createAssembler() {
        texts   —— 前补文本缓冲（思考/席位思考按段序插到既有内容**之前**）；
        segs    —— 前补贡献段缓冲（同上）。 */
   let _pre = null;
+  /* [热路径·配对分账] 工具行两类持久索引（跨批维护，免每页扫 order）：
+       _openCalls —— call 已装且未闭合的节点键（回执配对候选）
+       _orphans   —— call==null && result 的孤儿回执键（等调用认领）
+       _posBoundByRes/ByOwner —— 双索引：按位次绑定（无 id）的回执账，
+         rPk/pkO 分桶；随后前插的调用位次更优时按受影响 pk 组整组重放。
+       _toolByPk  —— pk → Set(key)：本 ts 组全部 tool 节点（组重放的候选表） */
+  let _openCalls = new Set();
+  let _orphans = new Set();
+  let _posBoundByRes = new Map();
+  let _posBoundByOwner = new Map();
+  let _toolByPk = new Map();
+
+  /** 位次绑定回执的双索引记账。ent={o,rPk,rSeq,resRun,brief}。 */
+  function _posAdd(owner, rPk, rSeq, resRun, brief) {
+    const e = { o: owner, rPk, rSeq, resRun, brief: !!brief };
+    (_posBoundByRes.get(rPk) || _posBoundByRes.set(rPk, []).get(rPk)).push(e);
+    const pkO = tsKey(owner);
+    (_posBoundByOwner.get(pkO) || _posBoundByOwner.set(pkO, []).get(pkO)).push(e);
+    return e;
+  }
+  function _posDel(e) {
+    for (const [k, m] of [[e.rPk, _posBoundByRes], [tsKey(e.o), _posBoundByOwner]]) {
+      const ents = m.get(k);
+      if (ents) {
+        const i = ents.indexOf(e);
+        if (i >= 0) ents.splice(i, 1);
+        if (!ents.length) m.delete(k);
+      }
+    }
+  }
 
   /** 把 node.key 按 tsKey 插进 order 的时隙（从尾向前找第一个 ≤ 它的位置）。
       无 ts 的节点锚定**当前尾部**（纯追加语义，保持服务端落盘序）——
@@ -181,6 +211,7 @@ export function createAssembler() {
     /* 快路径：整批都早于已装首节点 ⇒ 直接前拼，免逐元素比对。 */
     if (!order.length || pend[pend.length - 1].pk < tsKey(byKey.get(order[0]))) {
       order = pend.map((p) => p.node.key).concat(order);
+      for (const p of pend) _pre.addedKeys.push(p.node.key);
       _pre.pending = [];
       structRev++;
       return;
@@ -188,7 +219,10 @@ export function createAssembler() {
     const merged = new Array(order.length + pend.length);
     let pi = 0, oi = 0, mi = 0;
     while (pi < pend.length || oi < order.length) {
-      if (oi >= order.length) { merged[mi++] = pend[pi++].node.key; continue; }
+      if (oi >= order.length) {
+        merged[mi++] = pend[pi].node.key; _pre.addedKeys.push(pend[pi].node.key); pi++;
+        continue;
+      }
       if (pi >= pend.length) { merged[mi++] = order[oi++]; continue; }
       const p = pend[pi];
       _pre.scanned++;
@@ -196,7 +230,7 @@ export function createAssembler() {
       /* 同 pk：批内新节点插到「非本批」既有之前、本批已归并者之后——
          与原逐条插入的 created 判据等价（中途 flush 过后次序仍不倒插）。 */
       if (p.pk < ct || (p.pk === ct && !_pre.created.has(order[oi]))) {
-        merged[mi++] = p.node.key; pi++;
+        merged[mi++] = p.node.key; _pre.addedKeys.push(p.node.key); pi++;
       } else merged[mi++] = order[oi++];
     }
     /* 批内已被撤下的 pending（purgeFrom 先 flush 后删，正常到不了这；
@@ -212,6 +246,10 @@ export function createAssembler() {
     node.ord = ++ord;
     node.rev = 1;
     byKey.set(node.key, node);
+    if (node.kind === "tool") {
+      const pk = tsKey(node);
+      (_toolByPk.get(pk) || _toolByPk.set(pk, new Set()).get(pk)).add(node.key);
+    }
     if (_pre) _pre.created.add(node.key);
     place(node);
     return node;
@@ -407,73 +445,202 @@ export function createAssembler() {
   /** tool_result 的配对目标：tool_call_id 精确优先，其次最近未闭合调用行。
    *  [5715] 限定**同一个 run**（原来不限 ⇒ 后一个 run 的 result 配到前一个 run 的
    *  call 上 ⇒ 工具与内容张冠李戴，刷新后读不出「谁调了什么、结果是什么」）。 */
-  function toolTargetOf(d, runId) {
-    /* [热路径] 不 flush：pending 批内节点（本页已装、位次未定）同样可配对——
-       按「时序更早」语义它们只可能是候选中的次选，order 扫描优先，
-       未命中再倒扫 pending（数组小、O(页内) 不 O(历史)）。 */
+  function toolTargetOf(d, runId, bound) {
+    /* _openCalls 同时收录已挂节点与刚进入 pending 的调用。
+       前插时按原记录位次排除后置调用，同一时间戳以最早记录为先。 */
     const id = d && (d.tool_call_id || d.call_id);
-    const pend = _pre && _pre.pending;
-    if (id) {
-      for (let i = order.length - 1; i >= 0; i--) {
-        const n = byKey.get(order[i]);
-        if (!n || n.kind !== "tool" || !n.call) continue;
-        if (runId && n.run_id && n.run_id !== runId) continue;   // 跨 run 不认
-        if ((n.call.tool_call_id || n.call.call_id) === id) return n;
-      }
-      if (pend) for (let i = pend.length - 1; i >= 0; i--) {
-        const n = pend[i].node;
-        if (!n || n.kind !== "tool" || !n.call) continue;
-        if (runId && n.run_id && n.run_id !== runId) continue;
-        if ((n.call.tool_call_id || n.call.call_id) === id) return n;
-      }
-    }
-    for (let i = order.length - 1; i >= 0; i--) {
-      const n = byKey.get(order[i]);
-      if (!n || n.kind !== "tool" || n.closed) continue;
-      if (runId && n.run_id && n.run_id !== runId) continue;   // 跨 run 不认
-      return n;
-    }
-    if (pend) for (let i = pend.length - 1; i >= 0; i--) {
-      const n = pend[i].node;
-      if (!n || n.kind !== "tool" || n.closed) continue;
+    const preferRecordOrder = Boolean(bound || id);
+    let best = null;
+    for (const k of _openCalls) {
+      if (_pre) _pre.pairScan++;
+      const n = byKey.get(k);
+      if (!n || n.kind !== "tool" || !n.call || n.closed) continue;
       if (runId && n.run_id && n.run_id !== runId) continue;
-      return n;
+      if (id && (n.call.tool_call_id || n.call.call_id) !== id) continue;
+      const pk = tsKey(n);
+      const seq = n.seq || 0;
+      if (bound && (pk > bound.pk || (pk === bound.pk && seq >= bound.seq))) continue;
+      if (!best || pk > best.pk || (preferRecordOrder && pk === best.pk && seq < best.seq)) {
+        best = { n, pk, seq };
+      }
     }
-    return null;
+    return best ? best.n : null;
   }
 
-  /** 前插反向配对：结果在已装窗口（``call===null`` 的孤儿行）而调用在旧页
-      ⇒ 按 tool_call_id 精确找该行；缺 call_id 的旧记录按全量重建的对偶语义
-      兜底——重建是「结果配最近未闭合的前置调用」，前插即「调用配 seq 紧随其后的
-      首个未认领孤儿结果」（孤儿被认领后 call 非空，自然不再二次命中）。 */
-  function _preResultTarget(d, runId, seq) {
-    /* [热路径] 不 flush：孤儿结果在 pending 里同样要被调用认领——
-       pending 位次全部先于 order，先扫 pending 再扫 order 保「首个 seq>call」序。 */
-    const id = d && (d.tool_call_id || d.call_id);
-    if (_pre) {
-      let best = null;
-      for (const p of _pre.pending) {
-        const n = p.node;
-        if (!n || n.kind !== "tool" || n.call || !n.result) continue;
-        if (runId && n.run_id && n.run_id !== runId) continue;
-        if (id) {
-          if ((n.result.tool_call_id || n.result.call_id) === id) return n;
-        } else if (toInt(n.seq, 0) > seq &&
-                   (!best || p.pk < best.pk || (p.pk === best.pk && p.seq < best.seq))) {
-          best = p;                                  // 位次最前的候选孤儿
+  /** 批尾配对重算：全量重建的「回执绑最佳**前置**未闭调用」语义。
+     [切点无关·组重放] 单步抢回修不完链式失配（A 抢 R1 ⇒ B 重开 ⇒
+     C 上的 R2 也要重排）——改为：算出**受影响 pk 组**，把组内全部
+     调用/回执按**记录 seq 序**重放（种子池＝pk 更小的未闭调用），
+     只把归属有变化的节点落账。id 回执按 id 配对（同重建 id 分支），
+     无 id 按「pk 最大、平局 seq 最小」位次规则——与重建同源。 */
+  function _prePairOrphans(touched) {
+    const rseq = (n) => n.seq || 0;
+    /* 1) 收集受影响 pk 组 */
+    const pendCalls = [], pendRes = [];
+    for (const p of _pre.pending) {
+      _pre.pairScan++;
+      const n = p.node;
+      if (!n || n.kind !== "tool") continue;
+      if (n.call && !n.closed) pendCalls.push({ n, pk: p.pk });
+      else if (!n.call && n.result) pendRes.push({ n, pk: p.pk });
+    }
+    if (!pendCalls.length && !pendRes.length) return;
+    const affected = new Set();
+    for (const c of pendCalls) affected.add(c.pk);
+    for (const r of pendRes) affected.add(r.pk);
+    let maxCpk = -Infinity;
+    for (const c of pendCalls) maxCpk = Math.max(maxCpk, c.pk);
+    /* 跨 pk：位次绑定的宿主被某新调用位次超过 ⇒ 其回执所在组可能重排 */
+    for (const [pkO, ents] of _posBoundByOwner) {
+      if (pkO > maxCpk) continue;
+      for (const e of ents) {
+        _pre.pairScan++;
+        const o = e.o;
+        if (!o || !o.closed || !o.result || byKey.get(o.key) !== o) continue;
+        for (const c of pendCalls) {
+          const outr = c.pk > pkO || (c.pk === pkO && rseq(c.n) < rseq(o));
+          const pre = e.rPk > c.pk || (e.rPk === c.pk && e.rSeq > rseq(c.n));
+          if (outr && pre &&
+              !(c.n.run_id && o.run_id && c.n.run_id !== o.run_id)) {
+            affected.add(e.rPk); break;
+          }
         }
       }
-      if (best) return best.node;
     }
-    for (let i = 0; i < order.length; i++) {
-      const n = byKey.get(order[i]);
-      if (!n || n.kind !== "tool" || n.call || !n.result) continue;
-      if (runId && n.run_id && n.run_id !== runId) continue;
-      if (id) {
-        if ((n.result.tool_call_id || n.result.call_id) === id) return n;
-      } else if (toInt(n.seq, 0) > seq) return n;
+    /* 孤儿所在组：新调用可能认领它们 */
+    if (pendCalls.length) for (const k of _orphans) {
+      _pre.pairScan++;
+      const n = byKey.get(k);
+      if (n) affected.add(tsKey(n));
     }
-    return null;
+    for (const pk of affected) _rePairUnit(pk, touched);
+  }
+
+  /** 单个 pk 组的重放：组内调用+回执按 seq 序、与全量重建同规则。 */
+  function _rePairUnit(pk, touched) {
+    const rseq = (n) => n.seq || 0;
+    const callId = (n) => n && n.call && (n.call.tool_call_id || n.call.call_id);
+    const recs = [];   // {seq, call|res, owner?, orph?, bent?, pent?}
+    /* 组内调用与孤儿回执（order 侧） */
+    const tset = _toolByPk.get(pk);
+    if (tset) for (const k of Array.from(tset)) {
+      _pre.pairScan++;
+      const n = byKey.get(k);
+      if (!n) { tset.delete(k); continue; }   // 惰性剪除死键
+      if (n.kind !== "tool") continue;
+      /* pending 侧同键已在下方 pending 循环收取——去重防双入列
+         （否则同一调用占两个候选位 ⇒ 第二条回执覆盖第一条）。 */
+      if (_pre.created.has(k)) continue;
+      if (n.call) recs.push({ seq: rseq(n), call: n });
+      else if (n.result) recs.push({ seq: rseq(n), res: n.result,
+        orph: n, resRun: n.run_id });
+    }
+    /* 本批 pending 同组记录 */
+    for (const p of _pre.pending) {
+      if (p.pk !== pk) continue;
+      _pre.pairScan++;
+      const n = p.node;
+      if (!n || n.kind !== "tool") continue;
+      if (n.call) recs.push({ seq: rseq(n), call: n });
+      else if (n.result) recs.push({ seq: rseq(n), res: n.result,
+        orph: n, pent: p, resRun: n.run_id });
+    }
+    /* 位次绑定回执：宿主同 pk 的经 _toolByPk 入列（调用记录）；
+       宿主更小 pk 的解绑后进 _openCalls ⇒ 种子池自然带上。 */
+    for (const e of (_posBoundByRes.get(pk) || [])) {
+      _pre.pairScan++;
+      const o = e.o;
+      if (!o || !o.closed || !o.result || byKey.get(o.key) !== o) continue;
+      recs.push({ seq: e.rSeq, res: o.result, owner: o, bent: e,
+        resRun: e.resRun, brief: e.brief });
+    }
+    if (!recs.length) return;
+    recs.sort((a, b) => a.seq - b.seq);
+    /* 2) 解绑本组全部位次绑定（静默——归属有变才 rev++ 落账） */
+    for (const e of (_posBoundByRes.get(pk) || []).slice()) {
+      const o = e.o;
+      if (!o || !o.closed || !o.result || byKey.get(o.key) !== o) continue;
+      e.wasBound = true;
+      o.result = null; o.closed = false; o.type = "tool_call";
+      o.data = o.call; o._resultSeq = undefined; o._resultBrief = undefined;
+      _openCalls.add(o.key);
+      _posDel(e);
+    }
+    /* 3) 种子池＝pk<组 的未闭调用，(pk 降序,seq 升序)。
+       _openCalls 已包含 pending 调用，每个调用只入池一次，避免后续回执覆盖前一条。 */
+    const seed = [], unitPool = [];
+    for (const k of _openCalls) {
+      _pre.pairScan++;
+      const n = byKey.get(k);
+      if (!n || n.kind !== "tool" || !n.call || n.closed) continue;
+      const npk = tsKey(n);
+      if (npk < pk) seed.push({ n, pk: npk, seq: rseq(n) });
+    }
+    seed.sort((a, b) => (b.pk - a.pk) || (a.seq - b.seq));
+    /* 4) seq 序重放 */
+    const dead = new Set();
+    for (const r of recs) {
+      if (r.call) {
+        /* 未闭调用入候选（id 绑定的闭合调用不入）——owner 被解绑后重开，
+           以自身 seq 位次进入 unitPool。 */
+        if (!r.call.closed) unitPool.push({ n: r.call, pk, seq: r.seq });
+        continue;
+      }
+      /* res：id 优先（同重建 id 分支），无 id 取首位合法候选
+         ——unitPool 按 seq 升序、seed 已排 (pk 降,seq 升)。 */
+      const rid = r.res && (r.res.tool_call_id || r.res.call_id);
+      let owner = null;
+      for (const c of unitPool) {
+        if (c.used) continue;
+        if (r.resRun && c.n.run_id && r.resRun !== c.n.run_id) continue;
+        if (rid ? callId(c.n) === rid : true) { owner = c; break; }
+      }
+      if (!owner) for (const c of seed) {
+        if (c.used) continue;
+        if (r.resRun && c.n.run_id && r.resRun !== c.n.run_id) continue;
+        if (rid ? callId(c.n) === rid : true) { owner = c; break; }
+      }
+      if (!owner) {
+        /* 无候选：位次绑定的退回原宿主（宿主必在池里，正常到不了这） */
+        if (r.owner && r.owner.closed === false) {
+          const o = r.owner;
+          o.result = r.res; o.closed = true; o.type = "tool_result";
+          o.data = r.res;
+          o._resultSeq = r.seq; o._resultBrief = r.brief;
+          _openCalls.delete(o.key);
+          _posAdd(o, pk, r.seq, r.resRun, r.brief);
+        }
+        continue;
+      }
+      owner.used = true;
+      const cn = owner.n;
+      const changed = (cn !== r.owner);
+      /* 孤儿行删除（被调用吸收——重建形态） */
+      if (r.orph) {
+        dead.add(r.orph.key);
+        byKey.delete(r.orph.key);
+        _orphans.delete(r.orph.key);
+        const tk = _toolByPk.get(pk);
+        if (tk) tk.delete(r.orph.key);
+        if (r.pent) _pre.pending = _pre.pending.filter((p) => p !== r.pent);
+        _pre.created.delete(r.orph.key);
+      }
+      cn.result = r.res; cn.closed = true; cn.type = "tool_result";
+      cn.data = r.res;
+      cn._resultSeq = r.orph ? r.orph._resultSeq : r.seq;
+      cn._resultBrief = r.orph ? r.orph._resultBrief : r.brief;
+      if (!rid) _posAdd(cn, pk, r.seq, r.resRun, cn._resultBrief);
+      if (changed) {
+        cn.rev++; touched.add(cn.key);
+        if (r.owner) { r.owner.rev++; touched.add(r.owner.key); }
+      }
+      _openCalls.delete(cn.key);
+      _pre.pairs = (_pre.pairs || 0) + 1;
+    }
+    if (dead.size) {
+      order = order.filter((k) => !dead.has(k));
+      structRev++;
+    }
   }
 
   /** 软删：revoke{from_seq:F} 撤下此刻已装配的 seq>=F 节点。
@@ -497,7 +664,9 @@ export function createAssembler() {
     });
     if (keepKeys.length === order.length) return;
     const keep = new Set(keepKeys);
-    for (const k of Array.from(byKey.keys())) if (!keep.has(k)) byKey.delete(k);
+    for (const k of Array.from(byKey.keys())) if (!keep.has(k)) {
+      byKey.delete(k); _openCalls.delete(k); _orphans.delete(k);
+    }
     order = keepKeys;
     pendingBuckets = new Map();
     if (_pre) { _pre.frontier = null; _pre.lastPk = -Infinity; }  // order 变了，游标作废
@@ -678,50 +847,41 @@ export function createAssembler() {
     if (kind === "tool") {
       const merge = REGISTRY[type].merge;
       if (merge === "call") {
-        /* [前插·跨页配对] 调用在旧页、结果已在已装窗口 ⇒ 孤儿行被认领。
-           与全量重建**同形态**：节点键/seq/ts 换调用的（重建时节点生在调用处），
-           行从结果处拔起按调用 ts 重落位——顺序、节点数、详情键三者对齐重建。 */
-        if (_pre) {
-          const hit = _preResultTarget(data, runId, seq);
-          if (hit) {
-            byKey.delete(hit.key);
-            order = order.filter((k) => k !== hit.key);
-            _pre.pending = _pre.pending.filter((p) => p.node !== hit);
-            hit.key = base.key;                    // keyOf(ns, 调用seq, "tool")
-            hit.seq = seq;
-            hit.ts = String(rec.ts || "");
-            /* 字段级对齐重建：节点身份字段取自调用记录（ns/run/round/model/
-               _brief），data/type/result/closed/_result* 已是结果侧原样。 */
-            hit.ns = ns; hit.run_id = runId; hit.round = base.round;
-            hit.model = base.model; hit._brief = base._brief;
-            hit.call = data;
-            hit.rev++;
-            byKey.set(hit.key, hit);
-            _pre.created.add(hit.key);             // 新键 ⇒ added（旧键随 order 差集卸载）
-            place(hit);
-            return hit;
-          }
-        }
-        return push(Object.assign({}, base, { call: data, result: null, closed: false }));
+        /* [前插·跨页配对] 调用不再到场即抢孤儿——批尾 ``_prePairOrphans``
+           统一按重建语义「回执绑最近前置未闭调用」配对（否则
+           「调用A→调用B→回执B→回执A」跨页时 A 会抢走 B 的回执）。 */
+        const _cn = push(Object.assign({}, base, { call: data, result: null, closed: false }));
+        _openCalls.add(_cn.key);
+        return _cn;
       }
-      const target = toolTargetOf(data, runId);
+      // 旧页回执只配原记录位次在它之前的调用。
+      const bound = _pre ? { pk: tsKey(rec), seq } : undefined;
+      const target = toolTargetOf(data, runId, bound);
       if (target) {
         target.result = data;
         target.closed = true;
+        _openCalls.delete(target.key);
         target.type = "tool_result";
         target.data = data;
         /* [窄投影] result 字段被预览化时记下取回键——展开时按它补全文。 */
         target._resultSeq = seq;
         target._resultBrief = !!rec._brief;
         target.rev++;
+        /* [切点无关] 仅**位次绑定**的回执可被抢回（id 绑定是终局）——
+           记入 _posBound 双索引；随后前插出现位次更优的调用时由
+           ``_rePairUnit`` 整组重放改绑。 */
+        if (!(data.tool_call_id || data.call_id))
+          _posAdd(target, tsKey(rec), seq, runId, !!rec._brief);
         return target;
       }
       /* 孤儿结果（调用未装/不在本批）：详情回取键现在就带上——旧页调用随后
          前插认领时只换位置和 call 字段，_resultSeq/_resultBrief 不再丢。 */
-      return push(Object.assign({}, base, {
+      const _on = push(Object.assign({}, base, {
         call: null, result: data, closed: true,
         _resultSeq: seq, _resultBrief: !!rec._brief,
       }));
+      _orphans.add(_on.key);
+      return _on;
     }
 
     if (kind === "seats") {
@@ -805,7 +965,7 @@ export function createAssembler() {
     const list = Array.isArray(items) ? items : [];
     if (!list.length) return { added: [], touched: [], records: 0 };
     _pre = { created: new Set(), texts: new Map(), segs: new Map(),
-             pending: [], pseq: 0, scanned: 0 };
+             pending: [], pseq: 0, scanned: 0, pairScan: 0, addedKeys: [] };
     const touched = new Set();
     const t0 = (typeof performance !== "undefined") ? performance.now() : 0;
     try {
@@ -824,16 +984,21 @@ export function createAssembler() {
       for (const [node, arr] of _pre.segs) {
         node._reasoningSegs = arr.concat(node._reasoningSegs || []);
       }
+      _prePairOrphans(touched);        // 批尾：孤儿回执按重建语义归位
       _preFlush();                     // 收尾归并：pending 一次性落 order
       const batch = _pre;
       _pre = null;
       structRev++;                     // touched 也要让快照缓存失效
       return {
-        added: order.filter((k) => batch.created.has(k)),
+        /* added 由归并通道顺带产出（O(新增)，不再 O(已装) 全表扫）；
+           顺序＝归并发射序（多次 flush 之间不保位次序，消费方只用数量
+           与键集——快照差序由 order 保证）。 */
+        added: batch.addedKeys.filter((k) => byKey.has(k)),
         touched: Array.from(touched),
         records: list.length,
         scanned: batch.scanned,            // 归并通道的实际比对步数（热路径对账）
         copied: batch.copied || 0,           // 引用搬移量（验收对账：单次数组通道）
+        pairScan: batch.pairScan || 0,       // 配对扫描步数（验收对账）
         ms: (typeof performance !== "undefined") ? performance.now() - t0 : 0,
       };
     }
@@ -847,6 +1012,11 @@ export function createAssembler() {
     structRev++;
     pendingLocalKey = null;
     pendingBuckets = new Map();
+    _openCalls = new Set();
+    _orphans = new Set();
+    _posBoundByRes = new Map();
+    _posBoundByOwner = new Map();
+    _toolByPk = new Map();
     snapCache = null;
     snapCacheRev = -1;
     if (Array.isArray(items)) for (const rec of items) applyRecord(rec);
@@ -864,7 +1034,9 @@ export function createAssembler() {
     });
     if (keepKeys.length === order.length && !pendingLocalKey) return false;
     const keep = new Set(keepKeys);
-    for (const k of Array.from(byKey.keys())) if (!keep.has(k)) byKey.delete(k);
+    for (const k of Array.from(byKey.keys())) if (!keep.has(k)) {
+      byKey.delete(k); _openCalls.delete(k); _orphans.delete(k);
+    }
     order = keepKeys;
     pendingLocalKey = null;
     structRev++;

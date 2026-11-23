@@ -573,7 +573,7 @@ def revive_sunk(work_id: str, card_id: str, seq: int,
     return bool(done["changed"])
 
 
-def load_chain(work_id: str, card_id: str) -> list[dict[str, Any]]:
+def load_chain(work_id: str, card_id: str, *, conn: Any = None) -> list[dict[str, Any]]:
     """读回链（读不到＝空链，不抛）。"""
     import json
 
@@ -583,10 +583,13 @@ def load_chain(work_id: str, card_id: str) -> list[dict[str, Any]]:
         row = conn.execute("SELECT chain FROM memory WHERE card_id = ?", (card_id,)).fetchone()
         return str(row["chain"] or "") if row else ""
 
-    try:
-        raw = card_db.read_sync(work_id, _fn, "") or ""
-    except Exception:  # noqa: BLE001
-        return []
+    if conn is not None:
+        raw = _fn(conn)
+    else:
+        try:
+            raw = card_db.read_sync(work_id, _fn, "") or ""
+        except Exception:  # noqa: BLE001
+            return []
     if not raw:
         return []
     try:
@@ -646,7 +649,7 @@ def save_archive(work_id: str, card_id: str, chain: list[dict[str, Any]]) -> int
 
 
 def load_archive(work_id: str, card_id: str, seq: Optional[int] = None,
-                 role: str = "gist") -> dict[str, Any]:
+                 role: str = "gist", *, conn: Any = None) -> dict[str, Any]:
     """读描述层：给 `seq` 取单条；不给则取全表 `{(seq,role): row}`。"""
     import json
 
@@ -663,10 +666,13 @@ def load_archive(work_id: str, card_id: str, seq: Optional[int] = None,
                 "WHERE card_id = ? AND seq = ? AND role = ?", (card_id, int(seq), role))
         return [dict(r) for r in cur.fetchall()]
 
-    try:
-        rows = card_db.read_sync(work_id, _fn, []) or []
-    except Exception:  # noqa: BLE001
-        return {}
+    if conn is not None:
+        rows = _fn(conn)
+    else:
+        try:
+            rows = card_db.read_sync(work_id, _fn, []) or []
+        except Exception:  # noqa: BLE001
+            return {}
     out: dict[Any, dict[str, Any]] = {}
     for r in rows:
         item = {

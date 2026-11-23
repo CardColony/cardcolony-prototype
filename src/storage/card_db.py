@@ -36,6 +36,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -1191,10 +1192,8 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
     # [对齐场 2026-11-11] 存量卡补 align 能力（create_align 的挂载件；
     # 该能力晚于一大批卡的建卡时刻注册，显式清单里没有就永远看不见工具）
     _ensure_align_perm(conn)
-    # [委办线 2026-11-14] ① 职能卡补 dispose_card（委办线的删域挂载件）；
-    # ② work_events.card_created.data.by 回填 cards.created_by＋创建者通信线。
+    # [委办线 2026-11-14] 职能卡补 dispose_card；历史回填在监听后单独运行。
     _ensure_dispose_perm(conn)
-    _backfill_created_by(conn)
     _migrate_inbox_to_messages(conn)
     _ensure_role_columns(conn)
     _ensure_function_columns(conn)
@@ -2479,7 +2478,34 @@ def _ensure_dispose_perm(conn: sqlite3.Connection) -> None:
                 (json.dumps(ab, ensure_ascii=False), r[key_col]))
 
 
-def _backfill_created_by(conn: sqlite3.Connection) -> None:
+_CREATOR_BACKFILL_KEY = "created_by_backfill_v1"
+
+
+def _read_creator_history(conn: sqlite3.Connection) -> dict[str, tuple[str, str]] | None:
+    """完成历史扫描后返回证据。还没有事件表时，留给下次运行。"""
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_events'"
+    ).fetchone():
+        return None
+    creators: dict[str, tuple[str, str]] = {}
+    for row in conn.execute(
+        "SELECT card_id, data, ts FROM work_events "
+        "WHERE type='card_created' ORDER BY seq"
+    ):
+        cid = row["card_id"]
+        if not cid or cid in creators:
+            continue
+        try:
+            data = json.loads(row["data"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("by"):
+            creators[cid] = (str(data["by"]), str(row["ts"] or ""))
+    return creators
+
+
+def _backfill_created_by(conn: sqlite3.Connection,
+                         creators: dict[str, tuple[str, str]] | None = None) -> None:
     """从 ``work_events`` 的 ``card_created`` 事件回填 ``cards.created_by``
     ＋补**创建者默认通信线**（委办线 2026-11-14）。
 
@@ -2494,26 +2520,10 @@ def _backfill_created_by(conn: sqlite3.Connection) -> None:
     ``by`` 为空 / ``by`` 不是现存卡（已删）⇒ 整行跳过（列与线都不落）——
     权属认不准就不给，保守方向与「没记录⇒无权属」一致。
     """
-    try:
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(cards)")}
-        if "created_by" not in cols:
-            return
-        rows = list(conn.execute(
-            "SELECT card_id, data, ts FROM work_events "
-            "WHERE type='card_created' ORDER BY seq"))
-    except sqlite3.Error:
-        return                                # 老库没 work_events 表 ⇒ 无源可回
-    creators: dict[str, tuple[str, str]] = {}  # card_id → (by, ts)
-    for r in rows:
-        cid = str(r["card_id"] or "")
-        if not cid or cid in creators:
-            continue                          # 重复建卡事件取最早一条为准
-        try:
-            by = str((json.loads(r["data"] or "{}") or {}).get("by") or "")
-        except (TypeError, ValueError):
-            continue
-        if by:
-            creators[cid] = (by, str(r["ts"] or ""))
+    if creators is None:
+        creators = _read_creator_history(conn)
+    if not creators:
+        return
     for cid, (by, ts) in creators.items():
         if by == cid:
             continue
@@ -2523,7 +2533,7 @@ def _backfill_created_by(conn: sqlite3.Connection) -> None:
         prow = conn.execute(
             "SELECT created_by, parent FROM cards WHERE card_id=?",
             (cid,)).fetchone()
-        if prow is None:
+        if prow is None or (prow["created_by"] and prow["created_by"] != by):
             continue
         if not prow["created_by"]:
             conn.execute("UPDATE cards SET created_by=? WHERE card_id=?",
@@ -2534,3 +2544,41 @@ def _backfill_created_by(conn: sqlite3.Connection) -> None:
                 "VALUES(?,?,?,?,?) ON CONFLICT(from_card,to_card,type) DO NOTHING",
                 (cid, by, "关联", "创建者默认通信线",
                  ts or _now_iso()))
+
+
+def _migrate_creator_history(work_id: str) -> None:
+    conn = _read_conn(work_id)
+    if conn is None or get_meta_value(conn, _CREATOR_BACKFILL_KEY):
+        return
+    # 历史大表在 WAL 只读连接上扫描，期间释放应用写锁。发布只处理候选卡。
+    started = time.monotonic()
+    creators = _read_creator_history(conn)
+    if creators is None:
+        return
+
+    def publish(conn: sqlite3.Connection) -> bool:
+        if get_meta_value(conn, _CREATOR_BACKFILL_KEY):
+            return False
+        before = conn.total_changes
+        _backfill_created_by(conn, creators)
+        if conn.total_changes != before:
+            bump_rev(conn)
+        set_meta_value(conn, _CREATOR_BACKFILL_KEY, "done")
+        return True
+
+    if write_sync(work_id, publish):
+        logger.info("[card_db] 创建者历史回填完成 work=%s candidates=%d elapsed_s=%.2f",
+                    work_id, len(creators), time.monotonic() - started)
+
+
+def migrate_creator_history() -> None:
+    """仅在属主恢复进程监听后调用。每个库完成一次，失败留待下次启动。"""
+    from . import card_store
+
+    for work in sorted(card_store.WORKS_DIR.glob("work_*")):
+        if not (work / "work.json").is_file():
+            continue
+        try:
+            _migrate_creator_history(work.name)
+        except Exception:
+            logger.exception("[card_db] 创建者历史回填失败 work=%s", work.name)

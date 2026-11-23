@@ -159,7 +159,17 @@ export async function request(method, url, body, opts) {
     const { signal, state, cleanupTimeout, cleanupAbort } = _composeSignal(o.signal, ms);
     init.signal = signal;
     try {
+      const _t = (typeof performance !== "undefined") ? performance.now() : 0;
       const resp = await fetch(url, init);
+      /* [任务二·分账] 接口段：fetch 头到耗时（网络+服务端处理）。
+         __PERF_SEG 存在才记——零成本常设路径。 */
+      if (typeof window !== "undefined" && window.__PERF_SEG) {
+        const s = (window.__PERF_SEG.net = window.__PERF_SEG.net
+          || { ms: 0, reqs: 0, bytes: 0 });
+        s.ms += performance.now() - _t; s.reqs++;
+        const cl = resp.headers && resp.headers.get("content-length");
+        if (cl) s.bytes += +cl || 0;
+      }
       /* ★ 头到即解除 abort 连线 ⇒ **正文还在读的时候，取消已经传不下去了**
          （返工 2b）：消费者退了、底层正文却还在拉（首屏那条时序是 1.3MB）。
          ⇒ holdSignal：保留「外部取消 → 派生 signal」的连线，直到**正文读完**。
@@ -335,7 +345,13 @@ async function _runSharedGet(entry, o) {
   let data = null;
   try {
     // 正文读取仍在 abort 连线之内 ⇒ 消费者此刻退订也能打断它。
+    const _tj = (typeof performance !== "undefined") ? performance.now() : 0;
     data = await resp.json();
+    /* [任务二·分账] JSON 解码段：body 读取+解析。 */
+    if (typeof window !== "undefined" && window.__PERF_SEG) {
+      const s = (window.__PERF_SEG.json = window.__PERF_SEG.json || { ms: 0, reqs: 0 });
+      s.ms += performance.now() - _tj; s.reqs++;
+    }
   } catch (e) {
     if (entry.ctrl.signal.aborted) throw _abortError();
     /* 非 JSON */
@@ -349,6 +365,27 @@ async function _runSharedGet(entry, o) {
     throw new Error(msg);
   }
   return data;
+}
+
+/* ══ [任务三·合源] 可读点闸：首屏正文落板双帧后才放行的后台状态读。
+   解闩＝渲染侧首屏出正文行调 markReadable()；草稿页/空正文由兜底放行。
+   旗标 ``window.__FLOW_BOARD__.deferStatus === false`` ⇒ 立即执行（对照）。 */
+let _readableResolve = null;
+const _readableGate = new Promise((r) => { _readableResolve = r; });
+export function markReadable() {
+  const r = _readableResolve;
+  if (r) { _readableResolve = null; r(); }
+}
+if (typeof window !== "undefined") setTimeout(() => markReadable(), 8000);
+/* [任务三·世代校验] 第二参 ``check``：执行前一刻的归属谓词——排队期间
+   切了卡/换了项目/开了新世代 ⇒ 跳过整个 fn（请求不发、浮窗不重置）。
+   谓词在**发请求前**判（不是响应回来后）——这正是它与函数内
+   stale() 检查的差别：过期调用连副作用入口都进不了。 */
+export function deferStatusRead(fn, check) {
+  const run = () => (check && !check()) ? undefined : fn();
+  const fb = (typeof window !== "undefined" && window.__FLOW_BOARD__) || {};
+  if (fb.deferStatus === false) return Promise.resolve().then(run);
+  return _readableGate.then(run);
 }
 
 /** 非 GET 的直连通道（语义与改前逐字一致）。 */
@@ -463,15 +500,19 @@ export const API = {
   // 静默实现，不走 call()：本口是周期探测（10s），而 call() 在非 2xx 时无条件弹 toast——
   // 若服务尚未装载本口（旧版返回 404），就会每 10 秒弹一个错。失败一律返回 null，
   // 由调用方按「本轮拿不到运行中信息」处理（行尾不亮转圈，不打扰用户）。
+  /* [任务三·合源] 走 call() 共享通道：probeRunning 周期探测与 stream 侧
+     恢复校准在途合并成一次；silent 消费者不弹 toast（周期探测语义不变）。
+     返回 {running, coverage?}——coverage.missing 非空＝部分 runner 缺失，
+     调用方按「可确认的更新、未确认的保留」防误清运行态；null＝查询失败。 */
   getNavRunning: async () => {
     try {
-      const resp = await request("GET", "/api/nav/running");
-      if (!resp.ok) return null;
-      return await resp.json();
+      return await call("GET", "/api/nav/running", undefined, { silent: true });
     } catch (e) {
       return null;
     }
   },
+  deferStatusRead,
+  markReadable,
   // [画布 2026-10-19] 活态：谁在跑 + 最近发生了什么（一次到手）。
   // 周期探测（3s），静默实现：失败返回 null，不弹 toast——辅助信息拿不到时
   // 画布照常可用，只是少了"在跑"的呼吸条，不能因此每 3 秒打扰用户一次。

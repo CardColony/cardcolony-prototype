@@ -13,6 +13,7 @@
 - search_manuscript(work_id, keyword, limit=10)
 """
 from __future__ import annotations
+from .works_root import works_dir
 
 import re
 from pathlib import Path
@@ -21,7 +22,7 @@ from typing import Any, Optional
 from .hash_utils import parse_front_matter
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-WORKS_DIR = BASE_DIR / "works"
+WORKS_DIR = works_dir()
 
 # 整章读取的字数上限（超过则按整段截断返回）
 READ_CHAR_LIMIT = 8000

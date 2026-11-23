@@ -24,13 +24,23 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 os.chdir(ROOT)
 
-PROBE_URL = "http://127.0.0.1:5700/api/nav/version"
-PROBE_TIMEOUT = 10          # 秒；该端点正常 <100ms，10s 已极宽松
+# [stdout 轮转 2026-11-22] ECO_STDOUT_LOG 有值 ⇒ stdout/stderr 写轮转文件。
+try:
+    sys.path.insert(0, ROOT)
+    from src.infra.stdout_rotate import install_from_env
+    install_from_env()
+except Exception:  # noqa: BLE001
+    pass
+
+PROBE_PATH = "/api/live"
+PROBE_URL = f"http://127.0.0.1:5700{PROBE_PATH}"
+PROBE_TIMEOUT = 10          # 秒；仅检查 HTTP 服务循环，不查询导航或数据库
 INTERVAL = 20               # 探活间隔
 MAX_FAILS = 4               # 连续失败阈值 → 重启
 RESTART_WINDOW = 600        # 熔断窗口（秒）
@@ -78,6 +88,12 @@ def _probe(url):
     try:
         with urllib.request.urlopen(url, timeout=PROBE_TIMEOUT) as r:
             return (r.status == 200, f"http {r.status}")
+    except urllib.error.HTTPError as e:
+        if e.code == 404 and url.endswith(PROBE_PATH):
+            # 部分进程还在跑旧代码时，沿用仅渲染模板的首页探测。
+            e.close()
+            return _probe(url.removesuffix(PROBE_PATH) + "/")
+        return (False, f"http {e.code}")
     except Exception as e:
         return (False, f"{type(e).__name__}: {e}")
 
@@ -88,7 +104,7 @@ def probe():
 
 def probe_runner(i):
     """runner-i 守 ECO_RUNNER_BASE_PORT+i 回环，白名单 GET 与 web 同面。"""
-    return _probe(f"http://127.0.0.1:{BASE_PORT + i}/api/nav/version")
+    return _probe(f"http://127.0.0.1:{BASE_PORT + i}{PROBE_PATH}")
 
 
 def probe_condense():
@@ -254,19 +270,27 @@ def _venv_py():
 def spawn_web():
     """拉起 web（5700 对外）。独立控制台、不挂在本进程上。"""
     log("拉起 web（main.py, ECO_ROLE=web）")
-    subprocess.Popen([_venv_py(), "main.py"], cwd=ROOT,
-                     env=_cluster_env("web"),
-                     creationflags=(subprocess.CREATE_NEW_CONSOLE
-                                    | subprocess.CREATE_NEW_PROCESS_GROUP))
+    env = _cluster_env("web")
+    env["ECO_STDOUT_LOG"] = os.path.join("logs", "service_stdout.log")
+    with open(os.path.join(ROOT, "logs", "service_boot.log"), "ab") as out:
+        subprocess.Popen([_venv_py(), "main.py"], cwd=ROOT,
+                         env=env, stdout=out, stderr=subprocess.STDOUT,
+                         creationflags=(subprocess.CREATE_NEW_CONSOLE
+                                        | subprocess.CREATE_NEW_PROCESS_GROUP))
 
 
 def spawn_runner(i):
     """拉起 runner-i（5701+i 回环）。无窗，stdout 落 logs\\runner{i}_stdout.log。"""
     log(f"拉起 runner{i}（runner_main.py {i}）")
-    out = open(os.path.join(ROOT, "logs", f"runner{i}_stdout.log"), "ab")
+    env = _cluster_env("runner", i)
+    env["ECO_STDOUT_LOG"] = os.path.join("logs", f"runner{i}_stdout.log")
+    # [2026-11-22 返修] 早期输出落独立 boot 文件——不再把 *_stdout.log 的
+    # fd 塞给子进程：该文件归子进程自己的轮转器改名，塞进去的句柄会被
+    # 终身持有，Windows 上挡死 rename（WinError 32 实测复现）。
+    out = open(os.path.join(ROOT, "logs", f"runner{i}_boot.log"), "ab")
     try:
         subprocess.Popen([_venv_py(), "runner_main.py", str(i)], cwd=ROOT,
-                         env=_cluster_env("runner", i), stdout=out,
+                         env=env, stdout=out,
                          stderr=subprocess.STDOUT,
                          creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
     finally:
@@ -276,10 +300,13 @@ def spawn_runner(i):
 def spawn_condense():
     """拉起凝练独立进程（5710 探针）。无窗，stdout 落 logs\\condense_stdout.log。"""
     log("拉起 condense（condense_main.py）")
-    out = open(os.path.join(ROOT, "logs", "condense_stdout.log"), "ab")
+    env = _cluster_env("condense")
+    env["ECO_STDOUT_LOG"] = os.path.join("logs", "condense_stdout.log")
+    # [2026-11-22 返修] 同上：boot 文件独立，stdout 归子进程轮转器。
+    out = open(os.path.join(ROOT, "logs", "condense_boot.log"), "ab")
     try:
         subprocess.Popen([_venv_py(), "condense_main.py"], cwd=ROOT,
-                         env=_cluster_env("condense"), stdout=out,
+                         env=env, stdout=out,
                          stderr=subprocess.STDOUT,
                          creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
     finally:

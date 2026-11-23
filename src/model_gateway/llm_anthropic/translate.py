@@ -73,6 +73,7 @@ def map_usage(usage: Optional[dict[str, Any]]) -> TokenUsage:
         cache_read_tokens=cache_read or None,
         cache_write_tokens=cache_write or None,
         reasoning_tokens=int(reasoning_tokens) if reasoning_tokens else None,
+        raw=dict(usage),
     )
 
 

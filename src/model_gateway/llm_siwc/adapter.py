@@ -38,6 +38,7 @@ from ..llm.errors import (
 )
 from ..llm.runtime import LlmAdapter, ResolvedRetryPolicy
 from ..llm.transport import send_stream
+from ..hop_budget import HopBudgetExhausted, HopBudgetUnverified
 from ..llm.types import (
     BlockEnd,
     BlockStart,
@@ -295,6 +296,7 @@ def _map_usage(usage: dict[str, Any]) -> TokenUsage:
         output_tokens=int(usage.get("output_tokens") or 0),
         cache_read_tokens=int(details.get("cached_tokens") or 0),
         reasoning_tokens=int(out_details.get("reasoning_tokens") or 0),
+        raw=dict(usage),
     )
 
 
@@ -361,9 +363,12 @@ class SiwcAdapter(LlmAdapter):
             try:
                 request = client.build_request("POST", url, headers=headers,
                                                content=json.dumps(body, ensure_ascii=False))
-                response = await send_stream(client, request, options,
+                response, _aid = await send_stream(client, request, options,
                                              model=str(body["model"]),
-                                             api_base=connection.base_url)
+                                             api_base=connection.base_url,
+                                             adapter="siwc")
+            except (HopBudgetExhausted, HopBudgetUnverified):
+                raise        # 预算控制结果穿透——不许包成传输失败去重试
             except Exception as exc:  # noqa: BLE001
                 raise LlmError(f"SIWC 请求发不出去（proxy={self._proxy}）", "TRANSPORT",
                                cause=exc) from exc

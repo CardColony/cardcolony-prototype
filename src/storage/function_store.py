@@ -833,7 +833,8 @@ _DEPLOY_DDL = """CREATE TABLE IF NOT EXISTS function_deployments (
     meta TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    closed_at TEXT NOT NULL DEFAULT ''
+    closed_at TEXT NOT NULL DEFAULT '',
+    wake_admitted INTEGER NOT NULL DEFAULT 0
 )"""
 
 _DEPLOY_IDX = (
@@ -857,11 +858,20 @@ def _ensure_deployments(conn: sqlite3.Connection) -> None:
     # 注意：不能用 executescript——它隐式提交事务，会把 run_write 的
     # BEGIN IMMEDIATE 提前 COMMIT（「no transaction is active」坑）。
     conn.execute(_DEPLOY_DDL)
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(function_deployments)")}
+    if "wake_admitted" not in columns:
+        conn.execute("ALTER TABLE function_deployments"
+                     " ADD COLUMN wake_admitted INTEGER NOT NULL DEFAULT 0")
     for idx in _DEPLOY_IDX:
         conn.execute(idx)
 
 
 def _dep_row(row: sqlite3.Row) -> dict[str, Any]:
+    wake_status = "pending"
+    if "wake_admitted" in row.keys() and row["wake_admitted"]:
+        wake_status = "admitted"
+    elif "wake_claimed" in row.keys() and row["wake_claimed"]:
+        wake_status = "legacy_unverified"
     return {
         "id": int(row["id"]),
         "work_id": row["work_id"],
@@ -882,6 +892,7 @@ def _dep_row(row: sqlite3.Row) -> dict[str, Any]:
         "created_at": row["created_at"] or "",
         "updated_at": row["updated_at"] or "",
         "closed_at": row["closed_at"] or "",
+        "wake_status": wake_status,
     }
 
 
@@ -1088,10 +1099,13 @@ async def create_deployment(work_id: str, function_id: str,
                             exit_kind: str = "explicit",
                             exit_spec: str = "", venue_label: str = "",
                             status: str = "created",
-                            meta: Optional[dict[str, Any]] = None
+                            meta: Optional[dict[str, Any]] = None,
+                            once_per_batch: bool = False,
                             ) -> dict[str, Any]:
     """开一张差事。**幂等**：同 (function, venue_kind, venue_ref, batch_id)
-    同 mandate 的在派差事已存在 ⇒ 返回既有行（补种/重放不双开）。"""
+    同 mandate 的在派差事已存在 ⇒ 返回既有行（补种/重放不双开）。
+    ``once_per_batch`` 按场卡和批次复用原差事，包括已关账的差事。
+    """
     venue_kind = str(venue_kind or "").strip()
     if venue_kind not in VENUE_KINDS:
         raise ValueError(f"venue_kind 非法: {venue_kind!r}（{VENUE_KINDS}）")
@@ -1108,9 +1122,18 @@ async def create_deployment(work_id: str, function_id: str,
     mandate = str(mandate or "").strip()
     tools = [str(t) for t in (tools or [])]
     now = _now()
+    if once_per_batch and not batch_id:
+        raise ValueError("once_per_batch 需要稳定的 batch_id")
 
-    def _fn(conn: sqlite3.Connection) -> dict[str, Any]:
+    def _fn(conn: sqlite3.Connection) -> tuple[dict[str, Any], bool]:
         _ensure_deployments(conn)
+        if once_per_batch:
+            row = conn.execute(
+                "SELECT * FROM function_deployments WHERE work_id=?"
+                " AND venue_kind=? AND venue_ref=? AND batch_id=? ORDER BY id LIMIT 1",
+                (work_id, venue_kind, venue_ref, batch_id)).fetchone()
+            if row is not None:
+                return _dep_row(row), False
         row = conn.execute(
             "SELECT * FROM function_deployments"
             " WHERE work_id=? AND function_id=? AND venue_kind=?"
@@ -1119,7 +1142,7 @@ async def create_deployment(work_id: str, function_id: str,
             (work_id, function_id, venue_kind, venue_ref,
              str(batch_id or ""), mandate)).fetchone()
         if row is not None:
-            return _dep_row(row)
+            return _dep_row(row), True
         cur = conn.execute(
             "INSERT INTO function_deployments"
             " (work_id,function_id,venue_kind,venue_ref,venue_label,"
@@ -1133,9 +1156,11 @@ async def create_deployment(work_id: str, function_id: str,
              _dumps(meta or {}), now, now))
         return _dep_row(conn.execute(
             "SELECT * FROM function_deployments WHERE id=?",
-            (cur.lastrowid,)).fetchone())
+            (cur.lastrowid,)).fetchone()), True
 
-    dep = await card_db.run_write(work_id, _fn)
+    dep, emit = await card_db.run_write(work_id, _fn)
+    if not emit:
+        return dep
     _emit_deploy(work_id, dep, "deployment_created")
     try:
         # 顺手一扫：票/台账先于差事就位（重演、补建）的态直接判完，
@@ -1163,7 +1188,8 @@ def get_deployment(work_id: str, deployment_id: int) -> Optional[dict[str, Any]]
 
 
 async def _set_status(work_id: str, deployment_id: int, status: str,
-                      *, result: str = "") -> Optional[dict[str, Any]]:
+                      *, result: str = "",
+                      only_created: bool = False) -> Optional[dict[str, Any]]:
     if status not in DEPLOY_STATUSES:
         raise ValueError(f"status 非法: {status!r}（{DEPLOY_STATUSES}）")
     now = _now()
@@ -1174,7 +1200,7 @@ async def _set_status(work_id: str, deployment_id: int, status: str,
         conn.execute(
             "UPDATE function_deployments SET status=?, result=?,"
             " updated_at=?, closed_at=?"
-            " WHERE work_id=? AND id=?",
+            " WHERE work_id=? AND id=?" + (" AND status='created'" if only_created else ""),
             (status, str(result or "") if terminal else "", now,
              now if terminal else "",
              work_id, int(deployment_id)))
@@ -1187,8 +1213,28 @@ async def _set_status(work_id: str, deployment_id: int, status: str,
     return await card_db.run_write(work_id, _fn)
 
 
-async def activate_deployment(work_id: str, deployment_id: int) -> dict[str, Any]:
-    return await _set_status(work_id, deployment_id, "active") or {}
+async def activate_deployment(work_id: str, deployment_id: int, *,
+                              only_created: bool = False) -> dict[str, Any]:
+    return await _set_status(work_id, deployment_id, "active",
+                             only_created=only_created) or {}
+
+
+def admit_deployment_wake(work_id: str, deployment_id: int,
+                          venue_card: str, function_id: str) -> bool:
+    """由差事卡回合过闸时确认接纳，入队失败不会消耗接纳机会。"""
+    def _admit(conn: sqlite3.Connection) -> bool:
+        _ensure_deployments(conn)
+        row = conn.execute(
+            "SELECT * FROM function_deployments WHERE work_id=? AND id=?"
+            " AND venue_kind='deploy' AND venue_ref=? AND function_id=? AND status='active'",
+            (work_id, deployment_id, venue_card, function_id)).fetchone()
+        if row is None or _dep_row(row)["wake_status"] != "pending":
+            return False
+        conn.execute("UPDATE function_deployments SET wake_admitted=1 WHERE id=?",
+                     (deployment_id,))
+        return True
+
+    return bool(card_db.write_sync(work_id, _admit))
 
 
 async def close_deployment(work_id: str, deployment_id: int, *,

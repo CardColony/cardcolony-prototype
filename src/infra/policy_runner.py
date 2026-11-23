@@ -380,6 +380,30 @@ async def deliver_fired(work_id: str, fired: list[dict[str, Any]]) -> int:
                             work_id, aid)
                     if not token:
                         continue
+                    # [批五·落信边界复核] 领取到落信之间事项可能已关、
+                    # 卡面可能已回阈值——复核不过销账，不落信不起轮。
+                    if intervention_runner.oversize_delivery_stale(
+                            work_id,
+                            _ist.store().get_action(work_id, aid) or _arow):
+                        _ist.store().mark_action(
+                            work_id, aid, "stale",
+                            receipt={"reason": "resolved_before_deliver"},
+                            claim_token=token)
+                        continue
+                    # [批五·最新材料] 超限提醒领取成功后按**当前卡面**字数
+                    # 重渲染——事件里的旧读数（首火 10,000）不得进会话；台账
+                    # 材料已被后续编辑刷新到 13,000，投递照最新说。
+                    if (intervention_runner._coalesce_on()
+                            and pid == intervention_runner._OVERSIZE_PID):
+                        _cur = intervention_runner._status_len(work_id, t)
+                        if _cur is not None:
+                            _ctx2 = dict(ctx)
+                            _ctx2["trigger_data"] = {
+                                **(ctx.get("trigger_data") or {}),
+                                "new_len": _cur}
+                            text = harness.render_message(
+                                {"message": then.get("message") or ""},
+                                _ctx2)
                     if mode == "continue":
                         expect = intervention_runner.step_expect(
                             _ist.store().get_action(work_id, aid) or _arow)

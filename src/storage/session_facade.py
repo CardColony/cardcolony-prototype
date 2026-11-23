@@ -1137,7 +1137,8 @@ async def emit_message_event(work_id: str, card_id: str, ev_type: str,
                              from_card: str = "",
                              msg_id: str = "",
                              reply_to: str = "",
-                             extra: dict[str, Any] | None = None) -> None:
+                             extra: dict[str, Any] | None = None, *,
+                             once_per_message: bool = False) -> dict[str, Any]:
     """消息类事件落 events jsonl（**单一落点**）。
 
     [卡片底座第一步 2026-10-14] 卡间信不再写会话块（改落待处理收件箱），但其
@@ -1157,7 +1158,7 @@ async def emit_message_event(work_id: str, card_id: str, ev_type: str,
     现在一条事件带全五样，条件面才立得住（catalog 的 fields.part 已声明）。
     """
     if not ev_type:
-        return
+        return {}
     try:
         data: dict[str, Any] = {"content": content}
         # [2026-10-26 · 记录补全] 消息事件带**发信方**。改前只有 content，
@@ -1188,12 +1189,14 @@ async def emit_message_event(work_id: str, card_id: str, ev_type: str,
             for _k, _v in dict(extra).items():
                 if _k not in data:
                     data[_k] = _v
-        await event_log.append(work_id, card_id, {
+        record = {
             "run_id": str(run_id or ""),
             "round": int(round_ or 0),
             "type": ev_type,
             "data": data,
-        })
+        }
+        written = (await event_log.append(work_id, card_id, record, once_per_message=True)
+                   if once_per_message else await event_log.append(work_id, card_id, record))
         # [2026-11-07] assistant_text 补一条 journal-only 帧进直播流。
         # 病根：本函数只落盘（event_log.append）不进内存 journal ⇒ SSE 回放
         # 里 assistant_text 一帧都没有 ⇒ 直播态「中间发言全没了」、只能刷新补。
@@ -1209,15 +1212,18 @@ async def emit_message_event(work_id: str, card_id: str, ev_type: str,
                          journal_only=True)
             except Exception:  # noqa: BLE001 展示层零阻断
                 pass
+        return written
     except Exception as exc:  # noqa: BLE001 事件日志零阻断
         logger.warning("[facade] 消息事件落盘失败（不阻断）card=%s type=%s: %s",
                        card_id, ev_type, exc)
+        return {}
 
 
 async def _emit_block_event(work_id: str, card_id: str,
                             blk: dict[str, Any], hint: str,
                             event_content: str | None = None,
-                            origin: dict[str, Any] | None = None) -> None:
+                            origin: dict[str, Any] | None = None, *,
+                            once_per_message: bool = False) -> dict[str, Any]:
     """[消息底座能力对齐 · 件2] 消息块同步落 events jsonl（裁定 C1/C5）。
 
     落盘位置＝append 成功后、ops 打点之前：会话文件与事件流同一次写路径内
@@ -1240,7 +1246,7 @@ async def _emit_block_event(work_id: str, card_id: str,
     src = origin if isinstance(origin, dict) else {}
     _from = str(src.get("from_card") or src.get("from") or "")
     _extra = src.get("_extra")
-    await emit_message_event(
+    return await emit_message_event(
         work_id, card_id, ev_type, content,
         run_id=str(blk.get("pair_id") or ""), round_=int(blk.get("turn") or 0),
         model=str(blk.get("model") or ""), end=str(blk.get("end") or ""),
@@ -1249,6 +1255,7 @@ async def _emit_block_event(work_id: str, card_id: str,
         msg_id=str(src.get("msg_id") or ""),
         reply_to=str(src.get("reply_to") or ""),
         extra=_extra if isinstance(_extra, dict) else None,
+        **({"once_per_message": True} if once_per_message else {}),
     )
 
 
@@ -1463,7 +1470,8 @@ async def publish_review_session_locked(
 def _write_new_blocks_locked(work_id: str, card_id: str, path: Path,
                              text: str, fmt: int,
                              existing: list[dict[str, Any]],
-                             new_blks: list[dict[str, Any]]) -> None:
+                             new_blks: list[dict[str, Any]], *,
+                             write_origin: bool = True) -> None:
     """锁内落盘新块（首建／追加／现场升格三分支，与旧 append 逐字同逻辑）。
 
     批量与单块共用：new_blks 是一个工具轮的 A＋N×B 时，写盘一次完成（原子）。
@@ -1495,7 +1503,8 @@ def _write_new_blocks_locked(work_id: str, card_id: str, path: Path,
     # [原文入库 2026-10-20] md 落盘成功后，把**同一批块**写进原文表（双写）。
     # 追溯链：记忆条目 seq_from/seq_to → origin_store.trace_entry → 这里的行。
     # md 仍是写路径的真相源；库是第二份可查副本，写失败只记日志（待 backfill 补）。
-    origin_store.write_blocks_sync(work_id, card_id, new_blks)
+    if write_origin:
+        origin_store.write_blocks_sync(work_id, card_id, new_blks)
 
 
 async def append(work_id: str, card_id: str, block: dict[str, Any],
@@ -2067,3 +2076,51 @@ def repair_damaged_tail(work_id: str, card_id: str) -> dict[str, Any]:
     logger.warning("[facade] 损坏处置：残块旁路 %s，尾部重建 blocks=%d work=%s card=%s",
                    frag_path.name, report["blocks_after"], work_id, card_id)
     return report
+
+
+# ---------------------------------------------------------------- 事务内同步落信（任务四）
+
+def append_directive_sync(work_id: str, card_id: str, from_card: str,
+                          text: str, msg_id: str) -> dict[str, Any]:
+    """**同步投影**一条卡间指令到目标会话（幂等；DB 收件是权威）。
+
+    [任务四 2026-11-22 · 用户实测三次返工] 会话文件写入**不能**在 SQLite
+    事务回调里做（文件不可回滚）——改为：权威收件行先在同一 DB 事务提交
+    （含稳定 msg_id），本函数在**提交之后**从已提交记录补写投影；按 msg_id
+    幂等（块内已有该 id ⇒ 跳过），重试/多次补写只会有一条。
+
+    - 块身份：``actor=card:<from_card>``＋``from=``（不是 human——事件流与
+      上下文装配按 card: 识别为卡间指令）；
+    - 正文首行是**结构化消息头**（``[[card-msg id=… type=msg_directive from=…]]``）
+      ——msg_id 在块里，可按正式指令对账；
+    - 调用方持有 session_store 的会话锁；事件由调用方提交后补。
+    """
+    from ..api import card_msg
+
+    path = _session_path(work_id, card_id)
+    header = card_msg.build_header(str(msg_id), "msg_directive",
+                                   str(from_card or ""))
+    content = f"{header}\n卡 {from_card} 给你发来一条统筹指令：\n{text}"
+    new_blk = {"actor": f"card:{from_card}", "from": str(from_card or ""),
+               "content": content, "event_type": "msg_directive"}
+    if not path.exists():
+        existing: list[dict[str, Any]] = []
+        fmt = 2
+    else:
+        fmt = _detect_format_stream(path)
+        existing = (_project_v2_stream(path, 1 << 30) if fmt == 2
+                    else _read_v1_sync(work_id, card_id))
+    # 正文引用消息号不算收件。重放返回原块，供原文和事件补写。
+    for block in existing:
+        saved = card_msg.parse_header(block.get("content") or "")
+        if (saved and saved["id"] == msg_id and saved["type"] == "msg_directive"
+                and saved["from"] == from_card and block.get("actor") == new_blk["actor"]):
+            if block.get("damaged"):
+                raise OSError(f"指令 {msg_id} 的会话块未完整落盘")
+            return {"msg_id": msg_id, "skipped": True,
+                    "seq": block.get("seq"), "block": block}
+    blk = _assign_block(existing, new_blk)
+    _write_new_blocks_locked(work_id, card_id, path, "", fmt, existing, [blk],
+                             write_origin=False)
+    return {"msg_id": msg_id, "skipped": False,
+            "seq": blk.get("seq"), "block": blk}

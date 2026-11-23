@@ -40,6 +40,14 @@ from src.infra.console_io import ensure_utf8_console
 
 ensure_utf8_console()
 
+# [stdout 轮转 2026-11-22] ECO_STDOUT_LOG 有值 ⇒ stdout/stderr 写轮转文件
+# （放 ensure_utf8_console 之后——它先收拾好真实控制台流，再被替换）。
+try:
+    from src.infra.stdout_rotate import install_from_env
+    install_from_env()
+except Exception:  # noqa: BLE001 轮转装不上不阻断启动
+    pass
+
 # [双循环隔离 2026-11-05] 服务循环 B（独立线程）上的一切写/emit/孵化动作
 # 经 on_main 委托回主循环 A——startup 钩子与端点共用同一套边界。
 from src.infra.loops import install_main_dispatch, on_main
@@ -440,6 +448,20 @@ async def _start_db_watchdog() -> None:
         _dw.start()
     except Exception as exc:  # noqa: BLE001
         print(f"[startup] 库看门狗启动失败（不阻断）: {exc}", flush=True)
+
+
+@app.on_event("startup")
+@on_main
+async def _start_creator_history_migration() -> None:
+    if not _procs.is_primary_runner():
+        return
+
+    async def _migrate() -> None:
+        from src.storage import card_db
+
+        await asyncio.to_thread(card_db.migrate_creator_history)
+
+    _start_after_listen(_migrate)
 
 
 from src.api.routes import router as api_router  # noqa: E402  (需在 .env 加载后导入)

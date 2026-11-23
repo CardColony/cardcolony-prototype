@@ -91,7 +91,7 @@ def _coverage_seqs(node: dict[str, Any], seq: int) -> tuple[list[int], str]:
 
 
 def _fetch_covered(work_id: str, card_id: str, seqs: list[int],
-                   coverage: str) -> tuple[list[dict[str, Any]], list[int]]:
+                   coverage: str, *, conn: Any = None) -> tuple[list[dict[str, Any]], list[int]]:
     """按覆盖集取原文块（空洞保持空洞；返回 (命中块, 缺块清单)）。
 
     exact/anchor ⇒ **按块号** IN 查询（card_017/2913：5 块覆盖不再捞 41 块）；
@@ -100,10 +100,13 @@ def _fetch_covered(work_id: str, card_id: str, seqs: list[int],
     if not seqs:
         return [], []
     if coverage == "legacy_range":
-        span = origin_store.read_origin_span(work_id, card_id,
-                                             min(seqs), max(seqs))
-        want = set(seqs)
-        got = [e for e in span["events"] if int(e["seq"]) in want]
+        if conn is None:
+            got = origin_store.read_origin_span(
+                work_id, card_id, seqs[0], seqs[-1])["events"]
+        else:
+            got = origin_store.read_origin_span_tx(conn, card_id, seqs[0], seqs[-1])
+    elif conn is not None:
+        got = origin_store.read_origin_seqs_tx(conn, card_id, seqs)
     else:
         got = origin_store.read_origin_seqs(work_id, card_id, seqs)
     have = {int(e["seq"]) for e in got}
@@ -122,7 +125,7 @@ def _sender_of(ev: dict[str, Any]) -> str:
 
 def _verbatim_corpus(events: list[dict[str, Any]], *,
                      work_id: str = "", card_id: str = "",
-                     sanitized: bool = False) -> tuple[
+                     sanitized: bool = False, conn: Any = None) -> tuple[
                          str, list[dict[str, Any]], list[tuple[int, str]]]:
     """原文块逐字拼接（零加工零分隔），逐段出溯源区间。
 
@@ -144,7 +147,7 @@ def _verbatim_corpus(events: list[dict[str, Any]], *,
     proxies = [dict(e.get("data") or {}) for e in events]
     for p, e in zip(proxies, events):
         p["seq"], p["content"] = e["seq"], e.get("content") or ""
-    kept = review_scope.drop_stale_review(work_id, card_id, proxies, keep=0) \
+    kept = review_scope.drop_stale_review(work_id, card_id, proxies, keep=0, conn=conn) \
         if sanitized else proxies
     kept_ids = {id(p) for p in kept}
 
@@ -265,7 +268,8 @@ def expand(work_id: str, card_id: str, seq: int, role: str = "gist",
            missing_page: int = 0,
            sanitized: bool = False,
            revive: bool = True,
-           now_ms: Optional[int] = None) -> dict[str, Any]:
+           now_ms: Optional[int] = None,
+           conn: Any = None) -> dict[str, Any]:
     """展开一个锚点。返回结构化结果（**不抛**）。
 
     返回字段：
@@ -279,7 +283,8 @@ def expand(work_id: str, card_id: str, seq: int, role: str = "gist",
     section = str(section or "verbatim")
     page_chars = int(page_chars or PAGE_CHARS)
 
-    chain = md.load_chain(work_id, card_id)
+    tx_kw = {"conn": conn} if conn is not None else {}
+    chain = md.load_chain(work_id, card_id, **tx_kw)
     node = _find(chain, seq, role)
     if node is None:
         return {"found": False, "reason": f"链上没有 anchor.seq={seq} role={role} 的条目",
@@ -308,7 +313,7 @@ def expand(work_id: str, card_id: str, seq: int, role: str = "gist",
     }
 
     # 描述层正文（archive）——dsh 口径：chain 只留 gist，长正文在 archive
-    arc = md.load_archive(work_id, card_id, seq=seq, role=role)
+    arc = md.load_archive(work_id, card_id, seq=seq, role=role, **tx_kw)
     row = arc.get((int(seq), role))
     if row:
         result["process"] = str(row.get("process") or "")
@@ -320,7 +325,7 @@ def expand(work_id: str, card_id: str, seq: int, role: str = "gist",
 
     # 已沉底 ⇒ 复活（sunk=false，父链 lastUsedAt 刷新）；revive=False
     # 是归拢回灌口——回灌不触发复活写入（复活语义是"模型主动找回"）。
-    if result["sunk"] and revive:
+    if result["sunk"] and revive and conn is None:
         # [F19 · 修] now 缺省用**当前时刻**（原缺省 0 ⇒ lastUsedAt=0，
         # 复活即重新进入回收线，等于白复活）。
         # [§三.2] 复活改走事务内局部更新（revive_sunk）：读-改-写同事务，
@@ -359,7 +364,7 @@ def expand(work_id: str, card_id: str, seq: int, role: str = "gist",
 
     # ── 覆盖集 → 原文块（空洞保持空洞）────────────────────────────
     seqs, coverage = _coverage_seqs(node, int(seq))
-    events, missing = _fetch_covered(work_id, card_id, seqs, coverage)
+    events, missing = _fetch_covered(work_id, card_id, seqs, coverage, **tx_kw)
     # 合成锚点（无覆盖、锚点块在原文库也不存在）⇒ 范围如实报未知，
     # 不拿"按锚点兜底"伪装成有覆盖。
     if coverage == "anchor" and not events:
@@ -385,7 +390,7 @@ def expand(work_id: str, card_id: str, seq: int, role: str = "gist",
         slice_frags: list[dict[str, Any]] = []
     else:
         corpus, slice_frags, rev_parts = _verbatim_corpus(
-            events, work_id=work_id, card_id=card_id, sanitized=sanitized)
+            events, work_id=work_id, card_id=card_id, sanitized=sanitized, **tx_kw)
     result["total_chars"] = len(corpus)
     rev = _revision(coverage, seqs, section, rev_parts, missing)
     result["revision"] = rev

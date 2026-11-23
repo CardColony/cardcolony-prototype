@@ -234,3 +234,118 @@ test("S8：写**期间**发起的 GET 不能被提交后的重读复用 ⇒ 保�
     "提交后的重读必须拿到**新值**（原来纪元在写**之前**推进 ⇒ 写期间那条与重读同纪元 ⇒ 重读并上去 ⇒ 读到旧值）");
   assert.equal(hits, 3, "两条 GET 必须各走一次网络（不能合并）");
 });
+
+/* ── [任务三·合源] nav/running 合并 + 可读点闸 + 部分缺失并入 ── */
+
+test("T6 getNavRunning 走共享通道：并发两读合一，coverage 原样透传", { skip: SKIP }, async () => {
+  const mod = await freshApi();
+  const hits = stubFetch({
+    running: [{ work_id: "w", card_id: "c1" }],
+    coverage: { ok: 2, total: 3, missing: [1] },
+  });
+  const [a, b] = await Promise.all(
+    [mod.API.getNavRunning(), mod.API.getNavRunning()]);
+  assert.equal(hits.filter((h) => h.url.includes("/api/nav/running")).length, 1,
+    "probeRunning 与 stream 校准的并发读必须合成一次网络");
+  assert.equal(a.running.length, 1);
+  assert.deepEqual(a.coverage.missing, [1], "coverage 缺失分片要透传给消费方");
+});
+
+test("T7 deferStatusRead：闸解前不发，markReadable 后放行", { skip: SKIP }, async () => {
+  const mod = await freshApi();
+  let ran = 0;
+  const p = mod.deferStatusRead(() => { ran++; return 7; });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(ran, 0, "可读点前不许发起");
+  mod.markReadable();
+  assert.equal(await p, 7);
+  assert.equal(ran, 1);
+});
+
+test("T8 deferStatus===false 旗标：后台读立即执行（对照臂语义）", { skip: SKIP }, async () => {
+  const mod = await freshApi();
+  globalThis.window.__FLOW_BOARD__ = { deferStatus: false };
+  try {
+    let ran = 0;
+    await mod.deferStatusRead(() => { ran++; });
+    assert.equal(ran, 1, "旗标关闭时不得等可读点");
+  } finally { delete globalThis.window.__FLOW_BOARD__; }
+});
+
+test("T9 mergeRunningSet：部分缺失只并入不清除；完整响应才整体替换", { skip: SKIP }, async () => {
+  const { createNavStateStore } =
+    await import(`../static/esm/state_layers.js?probe=${++_seq}`);
+  const store = createNavStateStore({});
+  store.temp.setRunningSet([
+    { work_id: "w", card_id: "a" }, { work_id: "w", card_id: "b" }]);
+  /* 部分缺失：响应只回了 a——b 不许清（缺的分片真相不明） */
+  assert.equal(store.temp.mergeRunningSet([{ work_id: "w", card_id: "a" }]), false);
+  assert.equal(store.temp.isRunning("w", "b"), true, "缺失分片的卡不得误清运行态");
+  /* 可确认的新条目照常并入 */
+  assert.equal(store.temp.mergeRunningSet([{ work_id: "w", card_id: "c" }]), true);
+  assert.equal(store.temp.isRunning("w", "c"), true);
+  /* 完整响应（含空集）⇒ 整体覆盖，该清的清 */
+  store.temp.setRunningSet([]);
+  assert.equal(store.temp.isRunning("w", "a"), false);
+});
+
+test("T10 mergeRunningSet 属主分片：确认分片缺席即删，缺失分片与无标保留", { skip: SKIP }, async () => {
+  const { createNavStateStore } =
+    await import(`../static/esm/state_layers.js?probe=${++_seq}`);
+  const store = createNavStateStore({});
+  /* 完整扇入：a/x 属 runner0，b 属 runner1，s 由 SSE 置位（无标） */
+  store.temp.setRunningSet([
+    { work_id: "w", card_id: "a", _runner: 0 },
+    { work_id: "w", card_id: "x", _runner: 0 },
+    { work_id: "w", card_id: "b", _runner: 1 }]);
+  store.temp.running("w", "s", true);   // SSE 置位：owner=null
+  /* runner1 失联的部分响应：只回了 runner0 的 x——
+     a（runner0 已确认、缺席）⇒ 删；b（runner1 缺失）⇒ 留；s（无标）⇒ 留 */
+  store.temp.mergeRunningSet(
+    [{ work_id: "w", card_id: "x", _runner: 0 }], new Set([0]));
+  assert.equal(store.temp.isRunning("w", "a"), false, "确认分片缺席须清除");
+  assert.equal(store.temp.isRunning("w", "b"), true, "缺失分片保留待校准");
+  assert.equal(store.temp.isRunning("w", "s"), true, "无属主标条目保守保留");
+  assert.equal(store.temp.isRunning("w", "x"), true);
+});
+
+test("T11 deferStatusRead 世代谓词：谓词为假时整调用跳过（请求不发）", { skip: SKIP }, async () => {
+  const mod = await freshApi();
+  let ran = 0;
+  const p = mod.deferStatusRead(() => { ran++; }, () => false);
+  mod.markReadable();
+  await p;
+  assert.equal(ran, 0, "谓词失败时排队任务不得执行");
+  /* 谓词为真才放行 */
+  let ran2 = 0;
+  await mod.deferStatusRead(() => { ran2++; }, () => true);
+  assert.equal(ran2, 1);
+});
+
+test("T12 mergeCanvasRunning：部分空快照清已确认属主、失联属主与乐观项保留", { skip: SKIP }, async () => {
+  const { mergeCanvasRunning } =
+    await import(`../static/esm/state_layers.js?probe=${++_seq}`);
+  /* 画布态：A@0 在跑、B@1 在跑、L 本地乐观、U 无属主标 */
+  const prev = new Map([
+    ["A", { card_id: "A", _runner: 0 }],
+    ["B", { card_id: "B", _runner: 1 }],
+    ["L", { card_id: "L", _runner: 0, __local: true }],
+    ["U", { card_id: "U" }],
+  ]);
+  /* runner1 失联的部分空快照：A（runner0 已确认缺席）⇒ 清；
+     B（runner1 缺失）⇒ 留；L（乐观）⇒ 留；U（无标）⇒ 保守留 */
+  const m1 = mergeCanvasRunning(prev, [], [1]);
+  assert.equal(m1.has("A"), false, "确认分片缺席须清除");
+  assert.equal(m1.has("B"), true, "缺失分片保留待校准");
+  assert.equal(m1.has("L"), true, "本地乐观标记保留");
+  assert.equal(m1.has("U"), true, "无属主标保守保留");
+  /* 同一部分覆盖下快照仍报 A ⇒ A 如实更新 */
+  const m2 = mergeCanvasRunning(prev, [{ card_id: "A", _runner: 0, stage: "x" }], [1]);
+  assert.equal(m2.get("A").stage, "x");
+  assert.equal(m2.has("B"), true);
+  /* 完整覆盖（missing 空）：无标/失联条目全清，只留乐观项 */
+  const m3 = mergeCanvasRunning(prev, [{ card_id: "B", _runner: 1 }], []);
+  assert.deepEqual([...m3.keys()].sort(), ["B", "L"]);
+  /* prev 不被改写 */
+  assert.equal(prev.has("A"), true);
+});

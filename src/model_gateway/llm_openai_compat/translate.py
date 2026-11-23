@@ -99,6 +99,7 @@ def map_usage(usage: dict) -> TokenUsage:
         output_tokens=usage["completion_tokens"],
         cache_read_tokens=cache_read,
         reasoning_tokens=reasoning,
+        raw=dict(usage),
     )
 
 

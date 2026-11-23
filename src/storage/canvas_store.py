@@ -16,6 +16,7 @@ Phase 7：每个 work 各有一份 canvas.json，路径 = works/{work_id}/canvas
 写入失败只记日志，绝不抛出中断调用方，绝不删除任何文件。
 """
 from __future__ import annotations
+from .works_root import works_dir
 
 import asyncio
 import json
@@ -64,7 +65,7 @@ logger = logging.getLogger("storage.canvas")
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-WORKS_DIR = BASE_DIR / "works"
+WORKS_DIR = works_dir()
 CARDS_DIR = BASE_DIR / "cards"        # 旧路径（兼容）
 CANVAS_PATH = BASE_DIR / "canvas.json"  # 旧路径（兼容）
 

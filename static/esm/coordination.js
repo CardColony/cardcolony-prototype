@@ -195,8 +195,9 @@ const STATE_LABEL = {
   finished: "已结束", none: "未任命",
 };
 
-export async function renderCardRegion(mount) {
+export async function renderCardRegion(mount, onChange) {
   if (!mount) return;
+  const refresh = () => onChange ? onChange() : renderCardRegion(mount);
   injectStyle();
   const wid = window.__WORK_ID__ || "";
   const cid = mount.dataset.cardId || "";
@@ -209,7 +210,7 @@ export async function renderCardRegion(mount) {
       <div class="blocktitle">统筹计划 <span class="note">把「项目统筹」差事任命给一张职能卡</span></div>
       <div class="coord-empty">这张卡还没有任命统筹。填写下面表单后，强模型按计划持续判偏、协调与发令；弱模型按它写的标准替它盯变化。</div>
       ${appointFormHtml(cid)}`;
-    bindAppointForm(mount, wid, () => renderCardRegion(mount));
+    bindAppointForm(mount, wid, refresh);
     return;
   }
   // 有任命
@@ -233,6 +234,8 @@ export async function renderCardRegion(mount) {
     btns.push(`<button class="btn" data-op="finish">结束</button>`);
   }
   const planJson = JSON.stringify(p.plan || {}, null, 2);
+  const editablePlan = (plan) => Object.fromEntries(
+    Object.entries(plan || {}).filter(([key]) => key !== "items"));
   const pendingTxt = (p.pending || []).length
     ? (p.pending || []).map((x) => x.kind === "user_wake"
         ? `· 点名唤醒已排队（${fmtTs(x.at)}）`
@@ -252,6 +255,38 @@ export async function renderCardRegion(mount) {
   // [历史唯一定位 2026-11-21 · 用户令] 版本史条目带修订记录主键
   // history_id——撤回后重新任命会出现两个 rev.0，按主键回读才能把
   // 前后两次的正文都打开。
+  // [下一批 ③] 行动/专业答复/QA 回执只读视图（面板 GET 已带三组摘要）
+  const actionsHtml = (p.actions || []).length
+    ? (p.actions || []).map((a) => `<div class="coord-kv">
+        ${esc(a.status)} · 事项 ${esc(a.item_id || "—")} · 目标 ${esc(a.target_card)}
+        · rev.${Number(a.rev || 0)} · 验收判据 ${esc(a.acceptance || "（缺项）")}
+        · 消息号 ${esc(a.msg_id || "—")}${a.woke ? " · 已唤醒" : ""}
+        ${(a.execution_evidence || []).map((ev) => `<div class="coord-kv">
+           执行证据 · 回执 ${esc(ev.reply_msg_id)}
+           <a href="/work/${encodeURIComponent(wid)}/card/${encodeURIComponent(ev.reply_session_card || a.target_card)}?msg=${encodeURIComponent(ev.reply_msg_id)}"
+              target="_blank" rel="noopener">打开原件（收件 ${esc(ev.reply_session_card || a.target_card)} · ${esc(ev.reply_msg_id)}）</a>
+           <div>${esc(ev.content || "")}</div>
+         </div>`).join("")}
+      </div>`).join("")
+    : `<div class="coord-kv">尚无行动</div>`;
+  const questionsHtml = (p.questions || []).length
+    ? (p.questions || []).map((q) => `<div class="coord-kv">
+        ${esc(q.status)} · 职能 ${esc(q.function_id)} · 事项 ${esc(q.item_id || "—")}
+        · 需求版本 ${esc(q.requirements_version || "—")}
+        <div>${esc(q.answer || "（尚未取得答复）")}</div>
+      </div>`).join("")
+    : `<div class="coord-kv">尚无专业问答</div>`;
+  const qaHtml = (p.qa || []).length
+    ? (p.qa || []).map((q) => `<div class="coord-kv">
+        QA ${esc(q.verdict || "未验证")} · 事项 ${esc(q.item_id || "—")}
+        · 对象 ${esc(q.target_card)} · 编号 ${esc(q.qa_id)}
+        <div>${esc(q.conclusion || "（未取得 QA 结论）")}</div>
+        <pre>${esc(JSON.stringify(q.evidence_refs || [], null, 2))}</pre>
+      </div>`).join("")
+    : `<div class="coord-kv">尚无 QA 回执</div>`;
+  const extrasHtml = `<details class="coord-kv"><summary>行动与收件</summary>${actionsHtml}</details>
+    <details class="coord-kv"><summary>专业答复</summary>${questionsHtml}</details>
+    <details class="coord-kv"><summary>QA 验收回执</summary>${qaHtml}</details>`;
   const histHtml = (p.history || []).map((h) =>
     `<a href="javascript:void(0)" data-hid="${Number(h.history_id)}" class="coord-hist-link" title="任命 ${esc(h.assignment_id || "")}">rev.${Number(h.rev)}</a>`
   ).join(" · ") || "—";
@@ -270,7 +305,7 @@ export async function renderCardRegion(mount) {
         <div class="coord-empty">上次任命已${st === "revoked" ? "撤回" : "结束"}。可重新任命（产生新任命标识；历史版本仍可回看）。</div>
         ${appointFormHtml(cid)}
       </div>`;
-    bindAppointForm(mount, wid, () => renderCardRegion(mount));
+    bindAppointForm(mount, wid, refresh);
     bindHistoryLinks(mount, wid, cid);
     return;
   }
@@ -290,12 +325,13 @@ export async function renderCardRegion(mount) {
         待办：<span style="white-space:pre-wrap">${pendingTxt}</span>
       </div>
       ${lastReview}
+      ${extrasHtml}
       <div class="coord-btns">${btns.join("")}<button class="btn" id="coordEditPlan">编辑计划</button></div>
       <label>提前回看 <input type="datetime-local" id="coordEarlierAt"></label>
       <button class="btn" data-op="set_review_at">保存回看时间</button>
       <div class="cf-msg"></div>
       <div class="coord-plan" id="coordPlanView">${esc(planJson)}</div>
-      <textarea class="coord-form" id="coordPlanEdit" style="display:none">${esc(planJson)}</textarea>
+      <textarea class="coord-form" id="coordPlanEdit" style="display:none">${esc(JSON.stringify(editablePlan(p.plan), null, 2))}</textarea>
       <div class="coord-btns" id="coordPlanEditBtns" style="display:none">
         <button class="btn primary" id="coordPlanSave">保存计划</button>
         <button class="btn" id="coordPlanCancel">取消</button>
@@ -334,7 +370,7 @@ export async function renderCardRegion(mount) {
         if (rr.status === 409) {
           msg.textContent = (rr.body.error || "版本已过期") + "——面板已刷新到最新状态，请重试";
           msg.className = "coord-err";
-          renderCardRegion(mount);
+          refresh();
           return;
         }
         msg.textContent = rr.body.error || `操作失败（${rr.status}）`;
@@ -344,10 +380,10 @@ export async function renderCardRegion(mount) {
       if (btn.dataset.op === "wake") {
         msg.textContent = "唤醒已排队";
         msg.className = "coord-ok";
-        renderCardRegion(mount);
+        refresh();
         return;
       }
-      renderCardRegion(mount);
+      refresh();
     });
   });
   // 计划编辑（提交读入版本；冲突返回最新版本＋最新版本号，原面板可再次保存）
@@ -370,7 +406,7 @@ export async function renderCardRegion(mount) {
     if (rr.status === 409) {
       // 版本过期：按任务书要求返回最新版本并要求重读——同步填入最新正文
       // **和最新版本号**，用户核对后直接再点保存即按新版本提交。
-      edit.value = JSON.stringify(rr.body.plan || {}, null, 2);
+      edit.value = JSON.stringify(editablePlan(rr.body.plan), null, 2);
       syncRev(rr.body.current_rev != null ? rr.body.current_rev : planRev);
       msg.textContent = (rr.body.error || "计划版本已过期")
         + "——已填入最新正文并更新提交版本，请核对后再次保存";
@@ -378,11 +414,13 @@ export async function renderCardRegion(mount) {
       return;
     }
     if (!rr.ok) { msg.textContent = rr.body.error || `保存失败（${rr.status}）`; msg.className = "coord-err"; return; }
-    renderCardRegion(mount);
+    refresh();
   });
   // [历史正文回读 2026-11-21 · 用户令] 版本史条目可点开该版本完整正文。
   bindHistoryLinks(mount, wid, cid);
 }
+
+export { _api as coordinationApi, esc, appointFormHtml, bindAppointForm, loadModels };
 
 /* 版本史条目点击 → 按修订记录主键 history_id 回读该版完整正文
  * （跨任命 rev 撞号后仍能唯一定位每一条历史记录）。 */

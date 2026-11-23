@@ -11,6 +11,7 @@ Phase 7 沿革：卡片归属于 work；序号（NNN）在每个 work 内独立�
 ``meta`` 表的 ``seq`` 承载，发号与建卡同事务。
 """
 from __future__ import annotations
+from .works_root import works_dir
 
 import asyncio
 import contextlib
@@ -21,7 +22,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from . import card_db, canvas_store, data_snapshot, work_store
 from .hash_utils import (
@@ -42,7 +43,7 @@ logger = logging.getLogger("storage.card")
 _REQ_WRITE_VIA = frozenset({"promote", "append", "user", "final"})
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-WORKS_DIR = BASE_DIR / "works"
+WORKS_DIR = works_dir()
 
 
 # [库搬出施工目录 2026-11-07 · work_027 cards.db 被原地清零事故]
@@ -1006,6 +1007,8 @@ async def create_card(
     skip_kick: bool = False,
     card_id: str = "",
     created_by: str = "",
+    *,
+    on_create_tx: Optional[Callable[[Any, str], None]] = None,
 ) -> dict[str, Any]:
     """创建卡片 + 对应会话文件，更新 canvas 缓存。
 
@@ -1037,6 +1040,7 @@ async def create_card(
     [卡片存储迁移 SQLite] 卡片进库：正文三块各占独立列；发号（meta.seq）与建卡
     同一事务（避免并发重号）；不再建 ``cards/`` 目录、不再写卡片 md。
     会话文件仍写 ``sessions/session_NNN.md``（会话不进库，方案 §三决策 2）。
+    ``on_create_tx`` 用同一连接写建卡关联记录。回调失败时卡和关联记录一起回滚。
 
     任何一步失败：保留已写下的库行/会话文件，记日志返回错误。
     """
@@ -1168,6 +1172,8 @@ async def create_card(
             card_db.set_meta_value(conn, "seq", str(seq))
             _append_issued(conn, card_id)
             card_db.bump_rev(conn)
+            if on_create_tx is not None:
+                on_create_tx(conn, card_id)
             return ("ok", card_id, card_id, seq)
 
         outcome, payload, card_id, seq = await card_db.run_write(work_id, _fn)

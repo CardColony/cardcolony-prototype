@@ -21,7 +21,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, ClassVar, Optional, Union
 
 __all__ = [
@@ -181,6 +181,37 @@ class TokenUsage:
     cache_read_tokens: Optional[int] = None
     cache_write_tokens: Optional[int] = None
     reasoning_tokens: Optional[int] = None
+    # [批七·成本台账] 端点原始 usage 报文（归一化前的 wire 字典）——
+    # 台账保留原口径，TokenUsage 的值比较仍以归一化字段为准。
+    raw: Optional[dict] = field(default=None, compare=False)
+
+
+def merge_usage(old: Optional[TokenUsage], new: Optional[TokenUsage]) -> Optional[TokenUsage]:
+    """按端点契约**合并**分帧到达的用量——Anthropic ``message_start`` 给
+    输入/缓存、``message_delta`` 只给输出；装配器旧实现「后者覆盖」会
+    把首帧的输入与缓存丢光。规则：新帧提供的字段取新值，新帧缺席的
+    字段保旧值；``raw`` 按 wire 字段并集合并（后帧同名字段覆盖）。
+
+    ``input_tokens``/``output_tokens`` 是必填 int——以「非 0 为正」判
+    提供（分帧端点给不出该字段时适配器落 0，不算提供了 0 用量；
+    同一帧内重复到达的完整用量照常被新值整换）。"""
+    if old is None:
+        return new
+    if new is None:
+        return old
+    return TokenUsage(
+        input_tokens=new.input_tokens or old.input_tokens,
+        output_tokens=new.output_tokens or old.output_tokens,
+        cache_read_tokens=(new.cache_read_tokens
+                           if new.cache_read_tokens is not None
+                           else old.cache_read_tokens),
+        cache_write_tokens=(new.cache_write_tokens
+                            if new.cache_write_tokens is not None
+                            else old.cache_write_tokens),
+        reasoning_tokens=(new.reasoning_tokens
+                          if new.reasoning_tokens is not None
+                          else old.reasoning_tokens),
+        raw={**(old.raw or {}), **(new.raw or {})})
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +254,16 @@ class GenerateOptions:
     stream: bool = True
     # 宿主侧观测。适配器拿到请求发送证据后调用，序列化器不使用。
     on_dispatch: Any = None
+    # [批五·同跳预算] 出站边界领用闸——``send_stream`` 调 ``client.send``
+    # 前调用一次；拒（抛 HopBudgetExhausted）⇒ 本尝试零出站。默认 None
+    # ＝旧路径（不挂闸）。网关在同跳预算开时注入。
+    attempt_gate: Any = None
+    # [批七·台账] 本调用的活动 AttemptLedger——网关经 ``replace`` 注入。
+    # **不能靠 contextvar**：调用方用 asyncio.wait 逐次 anext 驱动
+    # 生成器时，每个 Task 拿创建时的 context 副本，var 不可见。
+    ledger: Any = None
+    # 网关每次尝试独立创建；发送边界在确认实发之前回填 attempt_id。
+    ledger_attempt: Optional[dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------

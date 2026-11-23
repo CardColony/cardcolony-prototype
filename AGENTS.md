@@ -218,6 +218,42 @@
   失败如实报没复活。精确覆盖集走 `read_origin_seqs`（IN 查询），
   旧闭区间走 `read_origin_span`。
 
+## 统筹计划板（2026-11-23 · 施工任务书）
+
+- 板＝同一份 `appointments.plan.items` 的结构化编辑/投影，**不是第二套
+  计划**。条目层在 `src/storage/coordination_board.py`（纯函数）：
+  `item_id`（新条目宿主分配 `it_<hex>`）/title/next_result/owner_card
+  （可空＝待核）/priority（正整数小者优先，缺省按旧顺序投影
+  100/200/300…，首次有效编辑随新版本实体化；读取/部署不改库）/
+  status(todo|doing|blocked|done)/depends（须指向已存在事项）/
+  requirement_refs/result_note/evidence_refs。排序 `(priority,item_id)`。
+- `coordination_store.board_apply`＝唯一增量写口（与 save_plan 同一
+  版本保存入口）：单事务 `_require_appt`(active/paused)＋expected_rev
+  CAS＋整批校验（任一不合法零写入）＋rev+1＋revision 行（detail 记
+  kind/reason/changed/allocated；`detail` 列由 _ensure ALTER 补）。
+  `status=done` 同批提交完成说明，已登记的最新 QA 判据以通过为准。
+  改动的引用须匹配实际需求版本、事项事件或已绑定的正式回执。需求查证
+  坐标保存为 `req:<work>:<card>:<sha256>`，同一计划按坐标保留原文。
+  `save_plan` 更新整份计划时保留已有条目、来源与查证原文，兼容无条目时的旧版首份计划。
+- 强模型工具 `coord_plan_board`（`args.op`=read|apply）已入
+  `_COORD_TURN_SYSTEM` 协议与跳内派发：read 默认未完成项、显式
+  item_id 可读已完成；apply 成功 ⇒ 本轮 `snap_rev` 换保存回执新 rev
+  并刷新 `appt`/板快照（`_recheck`/`before_send` 以新读入版本为准）。
+  独立回看轮只读（apply 拒）。
+- **每次出站恰一份当轮板**：`_board_tail`（rev＋可见未完成按序＋
+  `empty_text=当前无未完成事项`）走 `call_main(turn_tail=)`，覆盖任命/
+  手动/弱提请/直接节点/到期回看/工具续跳/用户对话；非任命轮材料里的
+  整份 plan 去掉 items。观察范围收窄时，快照、单项回读及弱模型材料
+  共用条目来源过滤。排序与人类编辑保留原有来源。长板先精简为全部索引，
+  超过当轮材料预算时提供 next_offset，与 read 分页配套。
+  弱模型材料附「本批涉及事项现状」（status＋next_result），全板不走。
+- 面板：GET coordination 出 `board{rev,items(全量投影),unfinished,done}`
+  +历史 `detail`；POST op=`board_apply`（用户面板写口，含暂停期）。
+  UI：`coordination_chat.js` 页签 [对话|计划板|模型设置]，板面在
+  `coordination_board.js`（排序/新增/编辑/标完成/重开/冲突保留编辑）。
+- 验收：`tests/test_coord_plan_board.py`（11 例）；隔离实例口径
+  `ECO_WORKS_DIR=… ECO_PORT=5799 python main.py`。
+
 ## "commit" 的含义
 
 用户说 **"commit"＝同步到 GitHub**，不是只本地落账。完整动作链：

@@ -264,7 +264,7 @@ models:
     reasoning_echo_fill: ''
     temperature: 1
     note: 火山方舟 coding · deepseek v4.1 flash economy（eco 版，2026-10-25 用户令增加）
-    text_protocols: [dsml, call, invoke, cjk_call, function_calls]  # 正文兼容只读
+    text_protocols: [dsml, call, invoke, cjk_call, function_calls, quoted_tool_tag]  # 正文兼容只读
   kimi-k31-pro-volc:
     provider: volcengine-coding
     model: kimi-k3-1-pro-261024
@@ -534,7 +534,7 @@ models:
     reasoning_echo_fill: ''
     temperature: 1
     note: '[第二组] 火山方舟 coding · deepseek v4.1 flash economy（eco 版，2026-10-25 用户令增加）'
-    text_protocols: [dsml, call, invoke, cjk_call, function_calls]  # 正文兼容只读
+    text_protocols: [dsml, call, invoke, cjk_call, function_calls, quoted_tool_tag]  # 正文兼容只读
   kimi-k31-pro-volc2:
     provider: volcengine-coding2
     model: kimi-k3-1-pro-261024
@@ -551,11 +551,11 @@ models:
   ds-v41-flash-eco-amr:
     provider: opendesign
     model: deepseek-v4.1-flash-eco
-    text_protocols: [dsml, call, invoke, cjk_call, function_calls]  # card_049 实录
+    text_protocols: [dsml, call, invoke, cjk_call, function_calls, quoted_tool_tag]  # card_049 实录
   ds-v41-flash-eco-amr2:
     provider: opendesign2
     model: deepseek-v4.1-flash-eco
-    text_protocols: [dsml, call, invoke, cjk_call, function_calls]  # 正文兼容只读
+    text_protocols: [dsml, call, invoke, cjk_call, function_calls, quoted_tool_tag]  # 正文兼容只读
   wb-hy4free-cn:
     provider: workbuddy-cn
     model: hy4free
@@ -593,7 +593,7 @@ models:
   ds-v41-flash-eco-amr3:
     provider: opendesign3
     model: deepseek-v4.1-flash-eco
-    text_protocols: [dsml, call, invoke, cjk_call, function_calls]  # 正文兼容只读
+    text_protocols: [dsml, call, invoke, cjk_call, function_calls, quoted_tool_tag]  # 正文兼容只读
   glm-53-oc1:
     provider: opencode
     model: glm-5.3
@@ -662,7 +662,7 @@ models:
     reasoning_echo_fill: ''
     temperature: 1
     note: '[第三份套餐] Command Code · DeepSeek V4.1 Flash（2026-11-19 实调 200，走 7890 代理）'
-    text_protocols: [invoke, cjk_call, function_calls]  # card_049 实录
+    text_protocols: [invoke, cjk_call, function_calls, quoted_tool_tag]  # card_049 实录
   cmd3-glm-53-flash:
     provider: commandcode3
     echo_reasoning: true

@@ -49,23 +49,65 @@ const PROBE = `
   } catch (e) {}
   /* [2026-11-21 修] 可读点＝**真实用户/助手正文**挂载（.flow-user-bubble 或
      .msg 有字）——旧判据「列里任一非骨架行有字」会被工具行/步骤行提前触发
-     （它们比正文先到，但那不是用户要的「可读」）。 */
+     （它们比正文先到，但那不是用户要的「可读」）。
+     [任务三·累计门槛] 再加**视口相交**：有字但挂在视口外的行不算可读
+     （有界挂载下底部正文可能先挂进离屏窗）。 */
   const isRow = (el) => el && el.nodeType === 1 &&
     el.matches && el.matches(".flow-user-bubble, .msg") &&
     (el.textContent || "").trim().length > 0;
-  const check = () => {
+  const inView = (el) => {
+    try {
+      const r = el.getBoundingClientRect();
+      const scroller = document.querySelector(".flow-view, #chatArea")
+        || document.scrollingElement || document.documentElement;
+      const sr = scroller === document.documentElement
+        ? { top: 0, bottom: window.innerHeight } : scroller.getBoundingClientRect();
+      return r.height > 0 && r.bottom > sr.top + 1 && r.top < sr.bottom - 1;
+    } catch (e) { return true; }   // 量不出时退回旧判据（不误伤基线路径）
+  };
+  /* [2026-11-22 修] 相交判定改 IntersectionObserver 异步上报——旧实现把
+     getBoundingClientRect 逐行同步查挂在 MutationObserver+30ms 轮询上，
+     对增量渲染臂（DOM 变更频繁）不对称抽税：每次突变强制 layout，
+     测出的 A 臂 P50 回退有相当部分来自测量器本身。判据口径不变：
+     同选择器＋视口相交＋非空。只盯末尾 ≤3 个候选行（新卡视口恒在尾部）。 */
+  let io = null;
+  const markHit = () => {
+    P.firstRowMs = performance.now();
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      P.settledMs = performance.now();
+      performance.mark("card-perf-first-paint");
+    }));
+    try { io && io.disconnect(); } catch (e) {}
+  };
+  const hit = () => {
     if (P.firstRowMs !== null) return;
     const col = document.querySelector(".flow-view-column");
     if (!col) return;
-    const hit = col.querySelector(".flow-user-bubble, .msg");
-    if (hit && isRow(hit)) {
-      P.firstRowMs = performance.now();
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        P.settledMs = performance.now();
-        performance.mark("card-perf-first-paint");
-      }));
-      return;
+    const rows = col.querySelectorAll(".flow-user-bubble, .msg");
+    for (let i = Math.max(0, rows.length - 3); i < rows.length; i++) {
+      if (io) { try { io.observe(rows[i]); } catch (e) {} }
+      if (rows[i].__ioSeen && isRow(rows[i])) { markHit(); return; }
     }
+  };
+  try {
+    const scroller0 = document.querySelector(".flow-view, #chatArea");
+    io = new IntersectionObserver((ents) => {
+      for (const e of ents) { if (e.isIntersecting) e.target.__ioSeen = true; }
+      hit();
+    }, scroller0 ? { root: scroller0 } : undefined);
+  } catch (e) { io = null; }
+  const rowHit = () => {
+    const col = document.querySelector(".flow-view-column");
+    if (!col) return null;
+    for (const el of col.querySelectorAll(".flow-user-bubble, .msg")) {
+      if (isRow(el) && inView(el)) return el;
+    }
+    return null;
+  };
+  const check = () => {
+    if (P.firstRowMs !== null) return;
+    if (io) { hit(); return; }
+    if (rowHit()) markHit();   // 无 IO 的老浏览器退回同步判据
   };
   const start = () => {
     try { new MutationObserver(check).observe(document.documentElement, { childList: true, subtree: true, characterData: true }); } catch (e) {}

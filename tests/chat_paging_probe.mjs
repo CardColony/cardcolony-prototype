@@ -107,6 +107,8 @@ const METRIC = `(() => {
     renders: seg.renders || 0,
     pages: (seg.prepend && seg.prepend.pages) || 0,
     perPage: seg.prepend && seg.prepend.perPage ? seg.prepend.perPage.slice() : [],
+    seg: { net: seg.net || null, json: seg.json || null,
+      render: seg.render || null, anchorLog: (seg.anchorLog || []).slice() },
     olderVisible: !!(document.querySelector(".flow-view-older-btn") || {}).offsetParent,
     loadingOlder: [...document.querySelectorAll("button")]
       .some((x) => /载入历史/.test(x.textContent)),
@@ -159,16 +161,24 @@ for (let i = 1; i <= 200 && out.netApplied < NPAGES; i++) {
     }
   }
   const after = { ...(m || {}), anchor: await ev(ANCHOR) };
-  /* 锚点对账口径：网络页＝「请求在途时捕获的首行」对「前插落账后的首行」——
-     同一可见行的像素偏移应在锚点保位下近似不变（scrollTop 位移本身会换行，
-     所以不能拿滚动前的 before.anchor 比）。 */
+  /* 锚点对账口径：网络页＝「请求在途时捕获的可见行」对「前插落账后的
+     **同一行**」——前插后新行会占据顶缘，所以不能用「应用后的顶相交行」，
+     必须按键找回捕获行实测偏移；行被改键/卸载 → same=false 如实记。 */
   const refAnchor = midAnchor || before.anchor;
+  const refAfter = refAnchor && await ev(`(() => {
+    const sc = document.querySelector(".flow-view-scroll");
+    const scTop = sc ? sc.getBoundingClientRect().top : 0;
+    const r = document.querySelector('[data-chat-anchor-key="${refAnchor.key}"]');
+    return r && r.isConnected
+      ? Math.round(r.getBoundingClientRect().top - scTop) : null;
+  })()`);
   const rec = { i, kind, rows: after.rows, dom: after.dom,
     netReqs: tlReqs.length, pages: after.pages,
     renders: after.renders, loadingOlder: after.loadingOlder,
-    anchorSame: !!(refAnchor && after.anchor && refAnchor.key === after.anchor.key),
+    anchorSame: refAfter !== null && refAnchor != null,
     offBefore: refAnchor && refAnchor.off,
-    offAfter: after.anchor && after.anchor.off,
+    offAfter: refAfter,
+    topKey: after.anchor && after.anchor.key,
     perPage: after.perPage && after.perPage[after.perPage.length - 1] };
   out.iters.push(rec);
   console.error(`[iter ${i}] kind=${kind} rows=${after.rows} renders=${after.renders} pages=${after.pages} reqs=${tlReqs.length} loading=${after.loadingOlder} anchor=${rec.anchorSame} off=${rec.offBefore}→${rec.offAfter}`);
@@ -184,26 +194,38 @@ out.peak = { rows: rowPeak, dom: domPeak };
   const before = { ...(await ev(METRIC)), anchor: await ev(ANCHOR) };
   const tlBefore = tlReqs.length;
   fetchKill = true;
-  await ev(`(() => { document.querySelector(".flow-view-scroll").scrollTop = 400; return 1; })()`);
-  await sleep(150);                              // 分两帧：同帧写会被滚动事件合并
-  await ev(`(() => { document.querySelector(".flow-view-scroll").scrollTop = 0; return 1; })()`);
-  for (let w = 0; w < 60 && tlReqs.length === tlBefore; w++) await sleep(50);
+  /* 内存窗先耗尽才有网络请求——循环顶翻直到 before= 请求出现（被 500 拦）。 */
+  let killed = false;
+  for (let w = 0; w < 160 && !killed; w++) {
+    await sleep(50);
+    if (tlReqs.length > tlBefore) { killed = true; break; }
+    if (w % 6 === 3) {
+      await ev(`(() => { document.querySelector(".flow-view-scroll").scrollTop = 400; return 1; })()`);
+      await sleep(60);
+      await ev(`(() => { document.querySelector(".flow-view-scroll").scrollTop = 0; return 1; })()`);
+      await ev(`(() => { const b = document.querySelector(".flow-view-older-btn");
+        if (b && !b.disabled) b.click(); return 1; })()`);
+    }
+  }
   await sleep(1200);
   fetchKill = false;
   const mid = { ...(await ev(METRIC)), anchor: await ev(ANCHOR) };
-  const killed = fetchKill === "spent" || tlReqs.length > tlBefore;
-  const keptContent = mid.rows > 0 && mid.anchor && mid.anchor.key === before.anchor.key;
+  /* 失败要留现场：内容仍在、页账未动、重试入口可用。 */
+  const keptContent = mid.rows > 0 && mid.pages === before.pages;
   const retryEntry = mid.olderVisible || before.pages > 0;
-  // 再滚顶 → 应发新请求并成功应用
+  // 再滚顶 → 应发新请求并成功应用（同样循环触发，内存窗可能未耗尽）
   const tlB2 = tlReqs.length, pgB = mid.pages;
-  await ev(`(() => { const s = document.querySelector(".flow-view-scroll");
-     s.scrollTop = 200; s.scrollTop = 0; return 1; })()`);
   let okRetry = false;
-  for (let w = 0; w < 400; w++) {
+  for (let w = 0; w < 400 && !okRetry; w++) {
     await sleep(50);
     const mm = await ev(METRIC);
     if (tlReqs.length > tlB2 && mm.pages > pgB && !mm.loadingOlder) { okRetry = true; break; }
     if (tlReqs.length > tlB2 && !mm.loadingOlder && w > 100) { okRetry = true; break; }
+    if (w % 6 === 3) {
+      await ev(`(() => { document.querySelector(".flow-view-scroll").scrollTop = 400; return 1; })()`);
+      await sleep(60);
+      await ev(`(() => { document.querySelector(".flow-view-scroll").scrollTop = 0; return 1; })()`);
+    }
   }
   out.failRetry = { killed, keptContent, retryEntry, okRetry,
     rowsAfter500: mid.rows };
@@ -216,18 +238,30 @@ out.peak = { rows: rowPeak, dom: domPeak };
 /* ── C 段：持续顶翻（不回落，纯顶边手势）────────────────────── */
 {
   let progress = 0;
-  const tlB = tlReqs.length;
+  const rounds = [];
   for (let i = 0; i < 5; i++) {
-    const pg = (await ev(METRIC)).pages;
+    /* 逐轮基线：只认本轮内的新进展（新页应用 / 新请求 / 新渲染），
+       上一轮的请求或超时残留都不算本轮成功。 */
+    const m0 = await ev(METRIC);
+    const reqs0 = tlReqs.length, pages0 = m0.pages, renders0 = m0.renders;
+    await ev(`(() => { document.querySelector(".flow-view-scroll").scrollTop = 400; return 1; })()`);
+    await sleep(80);                                   // 分两帧，滚动事件不合并
     await ev(`(() => { document.querySelector(".flow-view-scroll").scrollTop = 0; return 1; })()`);
-    for (let w = 0; w < 300; w++) {
+    let kind = "none";
+    /* 末轮加严：必须等到网络页**实际应用**（请求在途不算）。 */
+    const needNet = (i === 4);
+    for (let w = 0; w < 300 && kind === "none"; w++) {
       await sleep(50);
       const mm = await ev(METRIC);
-      if ((mm.pages > pg || tlReqs.length > tlB) && !mm.loadingOlder) { progress++; break; }
-      if (mm.renders !== undefined && w === 299 && mm.rows > 0) progress++;
+      if (mm.loadingOlder) continue;
+      if (mm.pages > pages0) kind = "net";
+      else if (!needNet && tlReqs.length > reqs0) kind = "req";
+      else if (!needNet && mm.renders > renders0) kind = "mem";
     }
+    rounds.push({ round: i, kind });
+    if (kind !== "none") progress++;
   }
-  out.sustained = { rounds: 5, progress };
+  out.sustained = { rounds, progress };
   if (progress === 0) fail("C 段：持续顶翻五轮零进展（无可用续翻路径）");
 }
 

@@ -251,6 +251,49 @@ def _function_calls_sample(card_id):
         '<parameter name="para_end">6</parameter></function_calls>')
 
 
+def _quoted_tool_sample(card_id):
+    return (
+        f'<read_card">\n<card_id>{card_id}</card_id>\n<block>现状</block>\n'
+        '<para_start>1</para_start>\n<para_end>5</para_end>\n</read_card>\n'
+        f'<read_card">\n<card_id>{card_id}</card_id>\n<block>现状</block>\n'
+        '<para_start>6</para_start>\n<para_end>10</para_end>\n</read_card>\n'
+        '</read_card>\n</read_card>')
+
+
+def test_quoted_tool_tag_keeps_both_read_ranges_and_strips_extra_closers():
+    raw = _quoted_tool_sample("card_049")
+    calls, unresolved, stripped = text_tool_rescue.extract_text_tool_calls(
+        raw + "\n核对结束。", protocols={"quoted_tool_tag"})
+    assert calls == [
+        {"name": "read_card", "_origin": "textJ_quoted_tool_tag",
+         "arguments": {"card_id": "card_049", "block": "现状",
+                       "para_start": start, "para_end": end}}
+        for start, end in ((1, 5), (6, 10))
+    ]
+    assert not unresolved and stripped == "核对结束。"
+    assert text_tool_rescue.extract_text_tool_calls(raw) == ([], True, "")
+    assert text_tool_rescue.detect_protocol_hint(raw) == "quoted_tool_tag"
+    assert text_tool_rescue.quarantine_view(raw) == text_tool_rescue.ANOMALY_NOTE
+    quoted = f"```xml\n{raw}\n```\n"
+    assert text_tool_rescue.extract_text_tool_calls(quoted, protocols={"quoted_tool_tag"}) == (
+        [], False, quoted)
+    result = f"<function_results>{raw}</function_results>"
+    assert text_tool_rescue.extract_text_tool_calls(result, protocols={"quoted_tool_tag"}) == (
+        [], False, result)
+
+
+@pytest.mark.parametrize("body", [
+    "<card_id>card_049</card_id><card_id>card_057</card_id>",
+    "<card_id>card_049",
+    "读取卡片如下。<card_id>card_049</card_id>",
+    "<card_id><read_card><card_id>card_049</card_id></read_card></card_id>",
+])
+def test_quoted_tool_tag_rejects_invalid_parameters(body):
+    raw = f'<read_card">{body}</read_card>\n核对结束。'
+    assert text_tool_rescue.extract_text_tool_calls(raw, protocols={"quoted_tool_tag"}) == (
+        [], True, "核对结束。")
+
+
 def test_invoke_blocks_keep_read_ranges_and_leave_no_residue():
     content = _invoke_sample("card_049")
     calls, unresolved, stripped = text_tool_rescue.extract_text_tool_calls(
@@ -431,9 +474,9 @@ def test_protocol_gate_uses_actual_seat():
     from src.api import model_config
     for seat in ("amr", "amr2", "amr3", "volc", "volc2"):
         assert model_config.text_protocols(f"ds-v41-flash-eco-{seat}") == frozenset(
-            {"dsml", "call", "invoke", "cjk_call", "function_calls"})
+            {"dsml", "call", "invoke", "cjk_call", "function_calls", "quoted_tool_tag"})
     assert model_config.text_protocols("cmd3-ds-v41-flash") == frozenset(
-        {"invoke", "cjk_call", "function_calls"})
+        {"invoke", "cjk_call", "function_calls", "quoted_tool_tag"})
     assert model_config.text_protocols("glm-53-flash-volc") == frozenset()
     assert model_config.text_protocols("no-such-seat") == frozenset()
     assert model_config.text_protocols("") == frozenset()
@@ -456,6 +499,9 @@ def test_legacy_invocation_preserves_quoted_markup_in_arguments():
     ("cjk_read", "ds-v41-flash-eco-amr", 1),
     ("cjk_edit", "ds-v41-flash-eco-amr", 0),
     ("function_calls", "cmd3-ds-v41-flash", 1),
+    ("quoted_tool_tag", "ds-v41-flash-eco-amr", 2),
+    ("quoted_tool_tag", "glm-53-flash-volc", 0),
+    ("quoted_edit", "ds-v41-flash-eco-amr", 0),
 ])
 async def test_new_protocols_through_runner(work, monkeypatch, shape, seat, expected):
     from src.api import message_runner, model_service, routes
@@ -472,6 +518,10 @@ async def test_new_protocols_through_runner(work, monkeypatch, shape, seat, expe
         "cjk_edit": _cjk_sample("edit_status", {
             "card_id": cid, "old_string": "审计现状第16行", "new_string": "意外写入"}),
         "function_calls": _function_calls_sample(cid),
+        "quoted_tool_tag": _quoted_tool_sample(cid),
+        "quoted_edit": (f'<edit_status"><card_id>{cid}</card_id>'
+                        '<old_string>审计现状第16行</old_string>'
+                        '<new_string>意外写入</new_string></edit_status>'),
     }
     requests = []
     events = []
@@ -509,17 +559,24 @@ async def test_new_protocols_through_runner(work, monkeypatch, shape, seat, expe
         if shape == "function_calls":
             assert "审计现状第1行" in prior and "审计现状第6行" in prior
             assert "审计现状第7行" not in prior
+        elif shape == "quoted_tool_tag":
+            first, second = [m["content"] for m in tool_results]
+            assert "审计现状第1行" in first and "审计现状第5行" in first
+            assert "审计现状第6行" not in first
+            assert "审计现状第6行" in second and "审计现状第10行" in second
+            assert "审计现状第11行" not in second
+            assert '<read_card"' not in prior and "</read_card>" not in prior
         else:
             assert "审计现状第16行" in prior
         if shape == "invoke":
             assert "审计需求第206行" in prior and "审计需求第210行" in prior
-    elif shape == "cjk_edit":
+    elif shape in {"cjk_edit", "quoted_edit"}:
         assert any(kind == "text_proto_refused" and data["name"] == "edit_status"
                    for kind, data in events)
         card = await card_store.read_card(wid, cid)
         assert card["body"]["status_block"] == status
     else:
-        assert any(kind == "pseudo_call_unparsed" and data["proto_hint"] == "invoke"
+        assert any(kind == "pseudo_call_unparsed" and data["proto_hint"] == shape
                    for kind, data in events)
 
 

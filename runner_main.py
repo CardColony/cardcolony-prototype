@@ -16,6 +16,14 @@ import os
 import runpy
 import sys
 
+# [stdout 轮转 2026-11-22] ECO_STDOUT_LOG 有值 ⇒ stdout/stderr 写轮转文件，
+# 不再靠 >> 无界追加（runner stdout 实测单份 11GiB+，且占句柄挡应用层轮转）。
+try:
+    from src.infra.stdout_rotate import install_from_env
+    install_from_env()
+except Exception:  # noqa: BLE001 轮转装不上不阻断服务
+    pass
+
 os.environ.setdefault("ECO_ROLE", "runner")
 if len(sys.argv) > 1:
     os.environ.setdefault("ECO_RUNNER_INDEX", sys.argv[1])

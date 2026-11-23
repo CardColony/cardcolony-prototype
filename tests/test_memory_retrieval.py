@@ -664,7 +664,7 @@ async def test_fold_expand_uses_sanitized_view_bounded_no_revive(
         sandbox, monkeypatch):
     from src.storage import review_scope
     monkeypatch.setattr(review_scope, "review_card_ids",
-                        lambda _w: frozenset({"card_rev9"}))
+                        lambda _w, **_: frozenset({"card_rev9"}))
     wid, cid, entries = await _fold_fixture()
     await memory_store.save_memory(wid, cid,
                                    {"card_id": cid, "mark": 0,
@@ -697,7 +697,7 @@ async def test_maybe_fold_expand_request_sanitized(sandbox, monkeypatch):
     """沿 _maybe_fold 截获展开回灌后的下一次模型请求：送净化视图＋有界。"""
     from src.storage import review_scope
     monkeypatch.setattr(review_scope, "review_card_ids",
-                        lambda _w: frozenset({"card_rev9"}))
+                        lambda _w, **_: frozenset({"card_rev9"}))
     wid, cid, entries = await _fold_fixture()
     await memory_store.save_memory(
         wid, cid, {"card_id": cid, "mark": 0, "batch_count": 5,

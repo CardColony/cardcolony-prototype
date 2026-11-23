@@ -267,7 +267,30 @@ def _notify_harness(work_id: str, card_id: str, rec: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------- 写
-async def append(work_id: str, card_id: str, record: dict[str, Any]) -> dict[str, Any]:
+def _message_event(path: Path, kind: str, msg_id: str) -> dict[str, Any] | None:
+    """持写锁时按消息号找落盘事件。读失败交回调用方重试。"""
+    needle = msg_id.encode("utf-8")
+    try:
+        with path.open("rb") as stream:
+            for line in stream:
+                if needle not in line:
+                    continue
+                try:
+                    old = _loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if (isinstance(old, dict) and old.get("type") == kind
+                        and isinstance(old.get("data"), dict)
+                        and old["data"].get("msg_id") == msg_id
+                        and isinstance(old.get("seq"), int)):
+                    return old
+    except FileNotFoundError:
+        pass
+    return None
+
+
+async def append(work_id: str, card_id: str, record: dict[str, Any], *,
+                 once_per_message: bool = False) -> dict[str, Any]:
     """追加一条记录，返回落盘后的完整记录（seq 已定）。
 
     同卡 asyncio.Lock 内完成「读文件尾 seq+1 → 追加一行」——两步不可分，
@@ -276,6 +299,11 @@ async def append(work_id: str, card_id: str, record: dict[str, Any]) -> dict[str
     try:
         async with _async_lock(work_id, card_id):
             with _write_lock:
+                if once_per_message:
+                    old = _message_event(event_path(work_id, card_id), record["type"],
+                                         record["data"]["msg_id"])
+                    if old is not None:
+                        return old
                 rec = _append_locked(work_id, card_id, record)
         # [基础设施 2026-10-26] 批量落汇总表（阈值由 event_hub 控制）
         if rec:

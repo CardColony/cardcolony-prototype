@@ -16,7 +16,7 @@ import { buildExecBackendHtml as buildExecBackendHtmlPure } from "./esm/exec_bac
 //   （原先在装配闭包里 ⇒ 不可单测）；此处不再需要 cardmsg.js 的解析件。
 // [S2/S3] 导航体系整体抽入 esm/nav_system.js（[阶段1 A1.2]）；本文件只留面包屑用的 ancestorCards。
 import { ancestorCards } from "./esm/nav_breadcrumb.js?v=30";
-import { createNavSystem } from "./esm/nav_system.js?v=75";
+import { createNavSystem } from "./esm/nav_system.js?v=76";
 import { loadRulePanel, getRuleCardId, loadRule } from "./esm/rule_panel.js?v=48";
 /* [对话流照抄 dsh 完全版 v3 2026-10-17] 输入系统整件来自 flow/（dsh 移植件）：
    machine＝输入状态机、submission-policy＝忙时 Enter 策略、
@@ -545,10 +545,14 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
       refreshSessions(cardId, mySeq).catch(() => {});
       // [评审浮窗 2026-10-29] 这张卡有进行中的评审批次 ⇒ 右侧浮窗出现；
       // 没有就什么都不多。**不 await**：浮窗晚到几十毫秒没关系，切卡不能等它。
-      rvRefresh(cardId, mySeq);
+      /* [任务三·合源] 评审/对齐浮窗是后台状态读——开卡首读延到可读点后；
+         用户点开浮窗/批次推进时的重读走各自事件路径，不经此闸。
+         [世代校验] 谓词在请求发出**前**判 mySeq——排队期间切卡/重开 ⇒
+         整调用跳过（旧卡的浮窗重置与读请求都不会发生）。 */
+      API.deferStatusRead(() => rvRefresh(cardId, mySeq), () => mySeq === _openSeq);
       // [对齐场浮窗 2026-11-11] 这张卡是某场对齐的成员且场还开着 ⇒
       // 对齐浮窗出现（评审窗下方）；同样不 await。
-      alRefresh(cardId, mySeq);
+      API.deferStatusRead(() => alRefresh(cardId, mySeq), () => mySeq === _openSeq);
       // [会话渲染单源化 2026-10-15 · C1] 刷新/换卡恢复走**唯一一条路**：
       // GET /timeline → 装配器 → 节点快照 → 渲染。原「先 renderChat 读 /session
       // 上屏消息、再 replayTrace 补过程行」两通道已合并成这一次调用。
@@ -1404,7 +1408,7 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     const mount = document.getElementById("coordRegion");
     if (!mount) return;
     try {
-      const mod = await import("/static/esm/coordination.js");
+      const mod = await import("/static/esm/coordination.js?v=3");
       await mod.renderCardRegion(mount);
     } catch (e) {
       mount.innerHTML = `<div class="coord-err">统筹面板加载失败：${escapeHtml(String(e && e.message || e))}</div>`;
@@ -2779,6 +2783,25 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   // 旧 hash 链接（#wid/cid）兼容：一次性重定向到新地址（hash 退役第一步）。
   async function bootRestore() {
     const pathCid = (window.__CARD_ID__ || "").trim();
+    if (pathCid && pathCid !== "draft"
+        && new URLSearchParams(location.search).get("coordination") === "1") {
+      document.getElementById("workspace").style.display = "none";
+      document.getElementById("topInspBtn").hidden = true;
+      document.getElementById("procToggleBtn").hidden = true;
+      const crumb = document.getElementById("chatCrumb");
+      crumb.textContent = "项目统筹";
+      const mount = document.createElement("section");
+      mount.className = "coord-page";
+      mount.setAttribute("aria-label", "项目统筹");
+      document.getElementById("workspace").after(mount);
+      try {
+        const mod = await import("/static/esm/coordination_chat.js?v=2");
+        await mod.mountCoordinationPage(mount, WORK_ID);
+      } catch (error) {
+        mount.textContent = `统筹加载失败：${error.message}`;
+      }
+      return true;
+    }
     // [惰性新建 2026-10-17] 新卡对话：标题/父卡/类型由上一页经 sessionStorage **一次性携带**
     // （跳页清空内存；URL 只承担页面身份，不塞临时状态）。读出即删 ⇒ 刷新回到空白（从头再来）。
     if (pathCid === "draft") {
@@ -2808,6 +2831,24 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     if (!pathCid) return false;          // 无卡号：停在画布态（现行为）
     try {
       await open(pathCid);
+      // [隔离联验] 打开原件：URL hash #msg=<msg_id> ⇒ 滚到该消息身份锚
+      (function focusReceipt() {
+        let target = "";
+        try {
+          target = sessionStorage.getItem("receipt.focus") || "";
+          // 不立即删：刷新后仍定位到同一原件（下次点别的链接会覆盖）
+        } catch (e) {}
+        if (!target) return;
+        let tries = 0;
+        const timer = setInterval(() => {
+          const el = document.querySelector('[data-msg-id="' + target + '"]');
+          if (el) {
+            clearInterval(timer);
+            el.scrollIntoView({ block: "center" });
+            el.classList.add("receipt-focus");
+          } else if (++tries > 30) clearInterval(timer);
+        }, 120);
+      })();
       /* [重复读 2026-11-20 · 性能批次一] 原来这里还有一次
          `await attachRunningState(pathCid)` ⇒ 冷开时**两个一模一样的
          /progress 请求**在飞（open() 内部已经调过一次，两处 URL 完全相同）。
@@ -3779,6 +3820,10 @@ function rvSubscribe() {
    ⇒ 发起时带上切卡序号，回来核对还是不是这一张。 */
 async function rvRefresh(cid, openSeq) {
   if (!cid) return;
+  /* [任务三·世代校验] 先判世代再动面板：过期调用不许重置浮窗、
+     不许发请求——原实现把 rvReset/RV.target 改写放在校验前，
+     延迟队列里的旧卡调用会把浮窗打回旧卡。 */
+  if (openSeq != null && openSeq !== _openSeq) return;   // 已切走 ⇒ 丢
   if (cid !== RV.target) {
     RV.closedBatch = "";
     rvReset();
@@ -4105,6 +4150,8 @@ function alSubscribe() {
    迟到的回包必须核对切卡序号，否则会把上一张卡的对齐场画到当前卡上。 */
 async function alRefresh(cid, openSeq) {
   if (!cid) return;
+  /* [任务三·世代校验] 同 rvRefresh：先判世代，再重置浮窗、再发请求。 */
+  if (openSeq != null && openSeq !== _openSeq) return;   // 已切走 ⇒ 丢
   if (cid !== AL.target) {
     AL.closedAid = "";
     alReset();

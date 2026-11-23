@@ -12,6 +12,7 @@ work.json 结构：
 不真删（可手动移回），并先关掉该项目的 SQLite 连接（Windows 下打开的文件移不动）。
 """
 from __future__ import annotations
+from .works_root import works_dir
 
 import json
 import logging
@@ -24,7 +25,7 @@ from typing import Any, Optional
 logger = logging.getLogger("storage.work")
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-WORKS_DIR = BASE_DIR / "works"
+WORKS_DIR = works_dir()
 
 _WORK_DIR_RE = re.compile(r"^work_(\d{3,})$")
 

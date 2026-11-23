@@ -14,6 +14,7 @@
 缓存（聊天不触发重建，必然滞后）。
 """
 from __future__ import annotations
+from .works_root import works_dir
 
 import logging
 from pathlib import Path
@@ -25,7 +26,7 @@ from . import session_facade, session_store, work_store
 logger = logging.getLogger("storage.activity")
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-WORKS_DIR = BASE_DIR / "works"
+WORKS_DIR = works_dir()
 
 
 def _max_iso(a: str, b: str) -> str:

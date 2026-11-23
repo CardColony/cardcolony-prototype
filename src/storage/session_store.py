@@ -15,6 +15,7 @@ model: 模型名          # 仅 assistant 消息有
 解析时还原。
 """
 from __future__ import annotations
+from .works_root import works_dir
 
 import asyncio
 import logging
@@ -30,7 +31,7 @@ import aiofiles
 logger = logging.getLogger("storage.session")
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-WORKS_DIR = BASE_DIR / "works"
+WORKS_DIR = works_dir()
 SESSIONS_DIR = BASE_DIR / "sessions"  # 旧路径，兼容用
 
 MARKER = "---MSG---"

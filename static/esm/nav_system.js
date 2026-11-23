@@ -5,9 +5,9 @@
         RenderNav / gotoCard / startNav。 */
 import { escapeHtml } from "./util.js?v=30";
 import { notify, request } from "./api.js?v=57";
-import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=32";
+import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=33";
 import { createNavAsync } from "./nav_async.js?v=30";
-import { createNavRenderer } from "./nav_render.js?v=65";
+import { createNavRenderer } from "./nav_render.js?v=66";
 import { createNavFind } from "./nav_find.js?v=31";
 import { createNavBreadcrumb, ancestorCards } from "./nav_breadcrumb.js?v=30";
 import { cardInSnapshot } from "./nav_badge.js?v=30";
@@ -119,6 +119,10 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
 
   function gotoCard(cid, wid, focusChild) {
     if (!cid) return;
+    if (new URLSearchParams(location.search).get("coordination") === "1") {
+      location.assign(`/work/${encodeURIComponent(wid || WID())}/card/${encodeURIComponent(cid)}`);
+      return;
+    }
     if (wid && wid !== WID()) {
       /* [跨项目跳转 2026-10-21 · 修] 原来拼 `/work/{wid}#{cid}`（旧 hash 路由），
          hash 已退役（选中态在路径里）⇒ 靠 bootRestore / main.js 的旧链接兼容链
@@ -494,6 +498,7 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
   // 旧口径退役：「打开 →」（进画布）与「＋卡」两枚文字按钮已从 DOM 撤除（data-act="open" 分支随之删除，
   //   不留死接线）；项目行单击＝展开/折叠退位给 ▸ 箭头。
   navTree.addEventListener("click", (e) => {
+    if (e.target.closest(".nav-coordination")) return;
     const twist = e.target.closest("[data-twist]");
     if (twist) {
       const rowEl = twist.closest(".nav-card");
@@ -532,7 +537,8 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
       /* [当前卡单源 2026-10-21] 早退只问一个口：select.is(项目, 卡)。
          改前这里拼了三个条件（在对话页 且 当前卡存在 且 卡号相同），少比了项目号
          ——而所有项目的根卡都叫 card_001 ⇒ 点 B 项目被判成"已经在看"，毫无反应。 */
-      if (navStore.select.is(phead.dataset.wid, rootCid)) return;
+      if (navStore.select.is(phead.dataset.wid, rootCid)
+          && new URLSearchParams(location.search).get("coordination") !== "1") return;
       gotoCard(rootCid, phead.dataset.wid, false);
       return;
     }
@@ -728,7 +734,12 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
     const npClose = document.getElementById("npClose");
     if (npClose) npClose.onclick = () => panel.classList.remove("open");
 
-    refreshBadge();
+    /* [任务三·合源] 角标是后台状态读——首探延到可读点后（周期轮询不变）。
+       用户点开通知面板走上面的 click 路径直读，不经此闸。
+       [世代校验] work 级谓词：排队期间切了项目 ⇒ 跳过（新项目的
+       启动序列自带角标首探，不会漏）。 */
+    const _badgeWid = WID();
+    API.deferStatusRead(() => refreshBadge(), () => WID() === _badgeWid);
     // [推送优先 2026-10-25] 新的卡间信由工作级 SSE 的 card_message 帧带过来
     // （秒级）；60s 轮询是**常驻真值网**（2026-11-06：推送丢一帧＝角标永久旧，
     // 不能只在 SSE 不健康时才对真值），只留可达性闩。
@@ -736,6 +747,10 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
   }
 
   _renderNavImpl = renderNav;   // 静态导出 RenderNav 的实现注入
+  /* [任务三·对账调试口] 只读探针：扇入验收要对「运行状态」断言，
+     DOM 转圈受虚拟树裁剪不可靠 ⇒ 直读 temp.running。
+     与 window.__openCard / __checkRulePending 同性质——只读调试口，非功能依赖。 */
+  try { window.__navIsRunning = (w, c) => navStore.temp.isRunning(w, c); } catch (e) { /* 零阻断 */ }
   return { navStore, navAsync, navRenderer, navFind, navBreadcrumb,
            renderNav, RenderNav: renderNav, gotoCard, startNav,
            // [推送优先 2026-10-25] 给宿主（对话页）用：SSE 帧到达时按需刷新这三个面。

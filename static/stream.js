@@ -1305,7 +1305,7 @@ const BOARD_CFG = Object.assign(
             (acc.perPage = acc.perPage || []).push(
               { records: res.records, added: res.added.length,
                 touched: res.touched.length, scanned: res.scanned,
-                copied: res.copied || 0,
+                copied: res.copied || 0, pairScan: res.pairScan || 0,
                 ms: Math.round((res.ms || 0) * 10) / 10 });
           }
           // 视野不跳：窗口起点对齐「新增段的尾部」，锚点保位由视图完成
@@ -1385,6 +1385,8 @@ const BOARD_CFG = Object.assign(
   }
 
   function renderSnapshot(st, snap) {
+    /* [任务二·分账] 布局/渲染段：窗口切片+view.render 主线程耗时。 */
+    const _t = (typeof performance !== "undefined") ? performance.now() : 0;
     const v = viewOf(st);
     st._dirty = null;                 // 结构重建：作废尚未落地的增量刷新
     const total = snap.order.length;
@@ -1401,6 +1403,58 @@ const BOARD_CFG = Object.assign(
       ? new Set(snap.order.slice(_m.lo, _m.hi))
       : new Set(snap.order));
     st.renderedOrder = snap.order;
+    if (typeof window !== "undefined" && window.__PERF_SEG) {
+      const s = (window.__PERF_SEG.render = window.__PERF_SEG.render
+        || { ms: 0, calls: 0 });
+      s.ms += performance.now() - _t; s.calls++;
+    }
+    /* [任务三·合源] 解闩判据＝实际可见正文（与探针同口径）：.flow-view-column
+       内 .flow-user-bubble/.msg 非空 且 与滚动视口相交，命中后双帧解闩。
+       检测整体**不驻渲染路径**：首个快照 arm 一次，之后 150ms 节流自查
+       ——IntersectionObserver 异步判相交（getBoundingClientRect 逐行同步
+       查会强制 layout，插进流式渲染每快照都付主线程布局钱——实测 P50
+       回退来源），文本复查补「先相交、后填字」的时序缺口；
+       10s 自查自停（全局 8s 兜底在 api.js）。 */
+    if (!st._readableArmed && typeof IntersectionObserver === "function"
+        && typeof document !== "undefined") {
+      st._readableArmed = true;
+      try {
+        const sc = document.querySelector(".flow-view-scroll, .flow-view");
+        const chk = () => {
+          if (st._readableMarked) return true;
+          const c = document.querySelector(".flow-view-column");
+          if (!c) return false;
+          const rows = c.querySelectorAll(".flow-user-bubble, .msg");
+          /* 只盯末尾 ≤3 个候选行——新开卡视口恒在尾部，虚拟化卸载不
+             拖累相交账（曾全行 observe ⇒ 每帧重算，A 臂 +~150ms） */
+          for (let i = Math.max(0, rows.length - 3); i < rows.length; i++) {
+            st._readableIO.observe(rows[i]);
+            const el = rows[i];
+            if (el.__ioSeen && (el.textContent || "").trim()) {
+              st._readableMarked = true;
+              if (typeof requestAnimationFrame === "function") {
+                requestAnimationFrame(() =>
+                  requestAnimationFrame(() => API.markReadable()));
+              } else { API.markReadable(); }
+              return true;
+            }
+          }
+          return false;
+        };
+        st._readableIO = new IntersectionObserver((ents) => {
+          for (const e of ents) { if (e.isIntersecting) e.target.__ioSeen = true; }
+          chk();
+        }, sc ? { root: sc } : undefined);
+        const iv = setInterval(() => {
+          try { if (chk()) { clearInterval(iv); st._readableIO.disconnect(); st._readableIO = null; } }
+          catch (_) { /* 单拍失败下拍再试 */ }
+        }, 150);
+        setTimeout(() => {
+          clearInterval(iv);
+          if (st._readableIO) { try { st._readableIO.disconnect(); } catch (_) { } st._readableIO = null; }
+        }, 10000);
+      } catch (e) { /* 量不出时靠 8s 兜底放行——不阻断渲染 */ }
+    }
     logInfo("[flow-render] snapshot(" + win.length + "/" + total + " nodes)");
   }
 
@@ -2044,8 +2098,11 @@ const BOARD_CFG = Object.assign(
       也不能把已结束的回合显示成在跑、把发送按钮锁死）。 */
   async function _syncRunningFromServer(st) {
     try {
-      const resp = await fetch("/api/nav/running", { headers: { Accept: "application/json" } });
-      const d = await resp.json();
+      /* [任务三·合源] 走 API.getNavRunning——与 probeRunning 周期探测
+         共用 call() 在途通道：冷开并发时两读合一。回包三态：
+         null（查询失败）/完整（含空集）/部分缺失（coverage.missing）——
+         本口只按命中**置真**，缺席不清除，三态天然安全。 */
+      const d = await API.getNavRunning();
       const hit = (d && d.running ? d.running : []).some(
         (r) => r && r.work_id === st.wid && r.card_id === st.cid);
       if (hit) setRunning(st.wid, st.cid, true, { fromStream: true });

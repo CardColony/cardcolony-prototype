@@ -53,6 +53,7 @@ _WEB_LOCAL_GET_TPLS: tuple[str, ...] = (
     "/api/nav",
     "/api/nav/children",
     "/api/nav/version",
+    "/api/live",
     "/api/health",
     "/api/works",
     "/api/works/{}/canvas",
@@ -487,9 +488,39 @@ async def _fanin_get_merge(path: str, query: str) -> Response:
     per_ms = [round(ms, 1) for _r, ms, _e in results]
     errs = [f"runner{i}:{type(e).__name__}" for i, (_r, _ms, e) in enumerate(results)
             if e is not None]
-    payloads = [r.json() for (r, _ms, _e) in results
-                if r is not None and r.status_code == 200
-                and "application/json" in r.headers.get("content-type", "")]
+    # [任务三·覆盖修正] 「已覆盖」只认**成功解码且符合接口结构**的响应：
+    # 200 text/html（代理/错误页）、坏 JSON（r.json() 抛错——旧实现会把
+    # 整次扇入带崩）、标量载荷（无法按分片语义合并）都不算覆盖，
+    # 一律进 missing；否则那一片会既不算缺、又吞掉它的运行态。
+    list_field = "inflight" if path == "/api/observe/calls" else "running"
+    running_keys = ("work_id", "card_id") if path == "/api/nav/running" else ("card_id",)
+
+    def _usable(resp):
+        if resp is None or resp.status_code != 200:
+            return None
+        if "application/json" not in (resp.headers.get("content-type") or ""):
+            return None
+        try:
+            p = resp.json()
+        except Exception:
+            return None
+        records = p.get(list_field) if isinstance(p, dict) else None
+        if not isinstance(records, list):
+            return None
+        if list_field == "running" and any(
+            not isinstance(row, dict) or any(
+                not isinstance(row.get(key), str) or not row[key] for key in running_keys
+            ) for row in records
+        ):
+            return None
+        return p
+    usable = [_usable(r) for (r, _ms, _e) in results]
+    payloads = [(i, p) for i, p in enumerate(usable) if p is not None]
+    for i, (r, _ms, e) in enumerate(results):
+        if e is None and r is not None and usable[i] is None:
+            errs.append(f"runner{i}:unusable("
+                        f"http={r.status_code},"
+                        f"ct={(r.headers.get('content-type') or '-')[:24]})")
     if errs or total_ms > 1000.0:
         logger.warning("[procs] fanin GET %s total=%.1fms per_runner_ms=%s "
                        "ok=%d/%d err=%s", path, total_ms, per_ms,
@@ -500,36 +531,66 @@ async def _fanin_get_merge(path: str, query: str) -> Response:
     if not payloads:
         return Response("全部 runner 不可达", status_code=502,
                         media_type="text/plain; charset=utf-8")
-    return Response(json.dumps(_merge_payloads(payloads),
-                               ensure_ascii=False),
-                    media_type="application/json")
+    merged = _merge_payloads(payloads)
+    # [任务三·合源 §3.2.3] 覆盖范围如实上报：哪几片回了、哪几片缺。
+    # 此前部分 200 静默吞掉缺失 ⇒ 前端无法分辨「真没有」与「属主掉了」
+    # （例如 nav/running 缺了一片 ⇒ 误清那片的运行态）。
+    # dict 载荷带 coverage 字段；list 载荷只能靠响应头（旧前端忽略两者）。
+    # 合并出的 list 条目另带 ``_runner`` 属主标（本条出自哪片）——前端据此
+    # 对「已确认分片」做删除、对「缺失分片」保留待校准（A 完成清 A、
+    # B 失联留 B 待校准）。dict 顶层键不注（非分片事实）。
+    missing_idx = [i for i, p in enumerate(usable) if p is None]
+    if isinstance(merged, dict):
+        merged = {**merged, "coverage": {"ok": len(payloads),
+                                         "total": _RUNNER_COUNT,
+                                         "missing": missing_idx}}
+    return Response(json.dumps(merged, ensure_ascii=False),
+                    media_type="application/json",
+                    headers={"X-Fanin-Missing": ",".join(map(str, missing_idx))})
 
 
-def _merge_payloads(payloads: list) -> Any:
-    if all(isinstance(p, list) for p in payloads):
+def _tag(item: Any, idx: int) -> Any:
+    """[任务三·覆盖] list 条目自报来源分片——只有 dict 能注，其余原样。
+    去重键在**标注前**算（不同片报同一条目仍算同一条）。"""
+    if isinstance(item, dict):
+        return {**item, "_runner": idx}
+    return item
+
+
+def _lkey(item: Any) -> str:
+    """list 去重键：忽略已注的 ``_runner``（否则同条目两片各算一份）。"""
+    if isinstance(item, dict):
+        item = {k: v for k, v in item.items() if k != "_runner"}
+    return json.dumps(item, sort_keys=True, ensure_ascii=False)
+
+
+def _merge_payloads(tagged: list) -> Any:
+    """``tagged``＝``(runner_idx, payload)`` 对——合并同时给 list 条目
+    注 ``_runner`` 属主标（见 _fanin_get_merge 注释）。"""
+    if all(isinstance(p, list) for _i, p in tagged):
         seen, out = set(), []
-        for p in payloads:
+        for i, p in tagged:
             for item in p:
-                k = json.dumps(item, sort_keys=True, ensure_ascii=False)
+                k = _lkey(item)
                 if k not in seen:
                     seen.add(k)
-                    out.append(item)
+                    out.append(_tag(item, i))
         return out
-    if all(isinstance(p, dict) for p in payloads):
+    if all(isinstance(p, dict) for _i, p in tagged):
         merged: dict = {}
-        for p in payloads:
+        for i, p in tagged:
             for k, v in p.items():
                 cur = merged.get(k)
                 if isinstance(cur, list) and isinstance(v, list):
-                    have = {json.dumps(x, sort_keys=True, ensure_ascii=False)
-                            for x in cur}
-                    cur.extend(x for x in v
-                               if json.dumps(x, sort_keys=True,
-                                             ensure_ascii=False) not in have)
-                elif cur in (None, "", [], {}) and v not in (None, "", []):
-                    merged[k] = v
+                    have = {_lkey(x) for x in cur}
+                    cur.extend(_tag(x, i) for x in v if _lkey(x) not in have)
+                elif cur in (None, "", [], {}) and v not in (None, "", {}):
+                    # [任务三·覆盖] 空 list 也要落键——``{"running": []}`` 是
+                    # 真值（全集为空），丢了会让前端分不清「缺键」与「真空」。
+                    merged[k] = ([_tag(x, i) for x in v]
+                                 if isinstance(v, list) else v)
         return merged
-    return payloads[0]
+    return tagged[0][1]
 
 
 async def _fanin_sse_stream(work_id: str, query: str) -> StreamingResponse:

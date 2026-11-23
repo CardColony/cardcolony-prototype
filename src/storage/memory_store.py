@@ -45,6 +45,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,7 @@ from typing import Any
 import tiktoken
 
 from . import memory_domain, memory_lifecycle, session_facade, session_store
+from . import stage_cache
 from ..infra import observe as _obs  # [F22] 观测打点（不阻断业务；不引 api/storage 依赖）
 
 logger = logging.getLogger("storage.memory")
@@ -305,6 +307,7 @@ class _StaleCondenseBatch(Exception):
 def _publish_memory(work_id: str, card_id: str, data: dict[str, Any], *,
                     expected_state: dict[str, Any] | None = None,
                     origin_prefix: list[dict[str, Any]] | None = None,
+                    fold_sources: dict[tuple[int, ...], str] | None = None,
                     create_only: bool = False) -> None:
     """[§三.2 · 2026-11-20] **单事务发布**：memory 行（链+水位+簿记）＋
     memory_nodes 索引 ＋ context_board 裁板——一个 `_write_sync`（BEGIN
@@ -347,6 +350,13 @@ def _publish_memory(work_id: str, card_id: str, data: dict[str, Any], *,
                 changes = {key: value for key, value in _extra.items()
                            if key not in expected_state or expected_state[key] != value}
                 extra = {**_memory_extra(row["batch_starts"]), **changes}
+        for seqs, expected in (fold_sources or {}).items():
+            try:
+                _, current = _fold_expansion(work_id, card_id, seqs, conn=conn)
+            except (sqlite3.Error, TypeError, ValueError) as exc:
+                raise _StaleCondenseBatch("归拢展开材料无法复核") from exc
+            if current != expected:
+                raise _StaleCondenseBatch("归拢展开材料已变化")
         conn.execute(
             "INSERT INTO memory(card_id, chain, condense_mark, batch_starts, updated_at) "
             "VALUES(?,?,?,?,?) ON CONFLICT(card_id) DO UPDATE SET "
@@ -794,7 +804,8 @@ def _memory_lock(work_id: str, card_id: str) -> asyncio.Lock:
 
 async def save_memory(work_id: str, card_id: str, data: dict[str, Any], *,
                       expected_state: dict[str, Any] | None = None,
-                      origin_prefix: list[dict[str, Any]] | None = None) -> None:
+                      origin_prefix: list[dict[str, Any]] | None = None,
+                      fold_sources: dict[tuple[int, ...], str] | None = None) -> None:
     """写记忆：**只写 sqlite 的 `memory` 表**（唯一事实源）。
 
     [2026-10-27 · 用户令「所有都以一个事实源」] 改前写 JSON 文件；现在不再写文件，
@@ -804,7 +815,7 @@ async def save_memory(work_id: str, card_id: str, data: dict[str, Any], *,
         # [§三.2] 链+节点索引+水位+缓存板**同事务**发布——任一失败整体回滚，
         # 不再出现「水位推进、原文退出缓存板、记忆区却没有新条目」的中间态。
         _publish_memory(work_id, card_id, data, expected_state=expected_state,
-                        origin_prefix=origin_prefix)
+                        origin_prefix=origin_prefix, fold_sources=fold_sources)
 
 
 async def ensure_watermark(work_id: str, card_id: str) -> bool:
@@ -1661,9 +1672,40 @@ async def _guarded_model_call(make_call, *, work_id: str, card_id: str,
         _es.reset_stream_context(_stream_tok)
 
 
+@dataclass(frozen=True)
+class _MemoryModelRequest:
+    gateway: Any
+    seat: str
+    max_tokens: int | None
+    facts: dict[str, str]
+
+    @classmethod
+    def resolve(cls, max_tokens: int | None = None) -> _MemoryModelRequest:
+        from ..api import model_config, model_service
+
+        seat = model_config.pick_one("condense")
+        gateway = model_service.get_gateway()
+        return cls(gateway, seat, max_tokens, gateway.cache_route(seat))
+
+    def confirmed_origin(self, result: dict, sent: dict) -> str | None:
+        trace = str(sent.get("trace_id") or "")
+        if (not trace or not result.get("terminal_received")
+                or result.get("stopped") or result.get("model_used") != self.seat
+                or result.get("trace_id") != trace
+                or any(sent.get(key) != self.facts[key] for key in (
+                    "model_used_entry", "vendor", "request_model",
+                    "endpoint_protocol", "transport", "api_base"))
+                or self.gateway.cache_route(self.seat) != self.facts):
+            logger.warning("[condense_fold] 出站凭据未确认，阶段产物略过缓存 seat=%s trace=%s",
+                           self.seat, trace)
+            return None
+        return trace
+
+
 async def _condense_call(user_prompt: str, system: str | None = None, *,
                          trace_id: str = "", work_id: str = "", card_id: str = "",
-                         stage: str = "") -> str:
+                         stage: str = "",
+                         pinned: _MemoryModelRequest | None = None) -> str | stage_cache.StageResponse:
     """凝练模型调用（任务 3）：call_main 纯文本（prior_messages=[]、tools=None）。
 
     测试经 monkeypatch 本接缝注入脚本化产出——MockGateway 罐头内容无
@@ -1675,25 +1717,29 @@ async def _condense_call(user_prompt: str, system: str | None = None, *,
     """
     from ..api import model_config, model_service  # 延迟导入：storage 装载期不依赖 api（唯一调用点）
 
-    cap = compute_output_token_cap()
+    cap = pinned.max_tokens if pinned is not None else (compute_output_token_cap() or None)
     _stage = stage or "batch"
     _system = system or CONDENSE_SYSTEM_PROMPT
-    _model_name = model_config.pick_one("condense")
+    _model_name = pinned.seat if pinned is not None else model_config.pick_one("condense")
+    sent: dict[str, Any] = {}
 
     async def _make(on_chunk, trace: str):
+        sent.clear()
         return await model_service.call_main(
             _system, user_prompt, prior_messages=[], tools=None,
             model_name=_model_name,
             on_chunk=on_chunk,
             trace_id=trace, caller=f"condense:{_stage}",
             work_id=work_id, card_id=card_id,
-            max_tokens=cap or None)
+            max_tokens=cap,
+            **({"gateway": pinned.gateway, "on_transport": sent.update} if pinned else {}))
 
     result = await _guarded_model_call(_make, work_id=work_id, card_id=card_id,
                                        stage=_stage, trace_id=trace_id,
                                        request={"system": _system, "user_prompt": user_prompt,
-                                                "max_tokens": cap or None, "model": _model_name})
-    return str(result.get("content") or "")
+                                                "max_tokens": cap, "model": _model_name})
+    text = str(result.get("content") or "")
+    return stage_cache.StageResponse(text, pinned.confirmed_origin(result, sent)) if pinned else text
 
 def _batch_ok(mark: int, stage: str, consumed: int = 0) -> dict[str, Any]:
     """批成功结果（§三.1）：带已提交水位/阶段/消耗数——调用方不许再用裸 bool。"""
@@ -1860,15 +1906,16 @@ async def _condense_one_batch(work_id: str, card_id: str,
     # 凝练产出不再与旧结论重复/碎片化。★ 不复用上下文基线渲染（后者不看 sunk）。
     domain_full = render_condense_memory(load_memory(work_id, card_id).get("entries") or [])
     _trace = _obs.new_trace_id()
+    pinned: _MemoryModelRequest | None = None
 
-    async def _call_stage(system: str, user: str) -> str:
+    async def _call_stage(system: str, user: str) -> str | stage_cache.StageResponse:
+        call = _condense_call(
+            user, system, trace_id=_obs.new_trace_id() if pinned else _trace,
+            work_id=work_id, card_id=card_id, stage=f"batch{batch_no}",
+            **({"pinned": pinned} if pinned else {}))
         if _call_timeout > 0:
-            return await asyncio.wait_for(
-                _condense_call(user, system, trace_id=_trace, work_id=work_id,
-                               card_id=card_id, stage=f"batch{batch_no}"),
-                timeout=_call_timeout)
-        return await _condense_call(user, system, trace_id=_trace, work_id=work_id,
-                                    card_id=card_id, stage=f"batch{batch_no}")
+            return await asyncio.wait_for(call, timeout=_call_timeout)
+        return await call
 
     # [分块凝 · 按预算逐片] 巨块切段后**不能再合成一个巨 prompt**（那就回到
     # 巨提示老路）——按窗口预算切片，每片独立跑三段；各片产物汇总。
@@ -1891,10 +1938,36 @@ async def _condense_one_batch(work_id: str, card_id: str,
     descs_all: list[dict[str, Any]] = []
     retries = 0
     try:
+        if stage_cache.stage_on():
+            pinned = _MemoryModelRequest.resolve(compute_output_token_cap() or None)
         for _si, _slice in enumerate(_slices):
             while _slice:
+                # [批六] 阶段复用只在开关开时传 stage_ctx——关态调用签名与
+                # 旧版逐字一致（替身回放/旧调用方零感知）。
+                # [返修③④] 身份与实际出站同口径：模型座取 _condense_call
+                # 已解析的同一座；options 带输出上限/窗口预算（影响分片与产出
+                # 的有效选项）；shard 用**稳定窗口身份**（首末块号+片序号）
+                # ——跨批恢复批号重排也不换键；origin_fp 记原块可见性凭据
+                # （seq/隔离态/投影指纹——仅改隔离状态、投影相同也失效）。
+                _stage_ctx = None
+                if pinned:
+                    _stage_ctx = {
+                        "work_id": work_id, "card_id": card_id,
+                        "model": pinned.seat,
+                        "route": stage_cache.sha(stage_cache.canon(pinned.facts)),
+                        "shard": (f"seq{int(_slice[0].get('seq') or 0)}-"
+                                  f"{int(_slice[-1].get('seq') or 0)}/s{_si}"),
+                        "options_fp": stage_cache.sha(stage_cache.canon({
+                            "cap": pinned.max_tokens,
+                            "win": int(_win_budget)})),
+                        "origin_fp": stage_cache.sha(stage_cache.canon([
+                            {"seq": int(m.get("seq") or 0),
+                             "q": str(m.get("quarantine") or ""),
+                             "ctx": stage_cache.sha(_pred.context_content(m))}
+                            for m in window]))}
                 _res = await _tl.run_two_layer(
-                    _slice, _call_stage, session_id=card_id, domain_full=domain_full)
+                    _slice, _call_stage, session_id=card_id, domain_full=domain_full,
+                    **({"stage_ctx": _stage_ctx} if _stage_ctx else {}))
                 if not _res.get("ok"):
                     logger.warning("[condense_fold] 分片 %d/%d 整批作废——水位不动 work=%s card=%s 阶段=%s",
                                    _si + 1, len(_slices), work_id, card_id, _res.get("stage"))
@@ -2426,30 +2499,49 @@ def _expand_for_fold(work_id: str, card_id: str, seqs: list[int],
       不许带沉底复活写入副作用；
     - **实际拼装后有界**：整条目预算按页长分摊，总产出封顶 page_chars。
     """
-    from . import memory_expand
+    return _fold_expansion(work_id, card_id, tuple(seqs), page_chars)[0]
+
+
+def _fold_expansion(work_id: str, card_id: str, seqs: tuple[int, ...],
+                    page_chars: int = 6000, *, conn: Any = None) -> tuple[str, str]:
+    """在同一事务视图取回实际送出的净化材料及其版本。"""
+    from . import card_db, memory_expand
+
+    if conn is None:
+        def read(db: Any) -> tuple[str, str]:
+            db.execute("BEGIN")
+            try:
+                return _fold_expansion(work_id, card_id, seqs, page_chars, conn=db)
+            finally:
+                db.execute("ROLLBACK")
+
+        result = card_db.read_sync(work_id, read)
+        if result is None:
+            raise _StaleCondenseBatch("展开原文不可读")
+        return result
+
     parts: list[str] = []
+    revisions: list[str] = []
     picks = seqs[:3]
     per = max(1, int(page_chars) // max(1, len(picks)))
     for s in picks:
-        try:
-            parts.append(memory_expand.render(
-                memory_expand.expand(work_id, card_id, int(s),
-                                     page_chars=per, sanitized=True,
-                                     revive=False)))
-        except Exception as exc:  # noqa: BLE001 单条展开失败不阻断归拢
-            parts.append(f"[seq {s}] 展开失败：{str(exc)}")
+        expanded = memory_expand.expand(work_id, card_id, s, page_chars=per,
+                                        sanitized=True, revive=False, conn=conn)
+        parts.append(memory_expand.render(expanded))
+        revisions.append(str(expanded.get("revision") or "missing"))
     joined = "\n\n".join(parts)
     if len(joined) > page_chars:
         # 截断标记也计入预算（切完再贴尾巴会把总量顶出页长）
         _mark = "…[回灌按体积上限截断]"
         joined = joined[: max(0, page_chars - len(_mark))] + _mark
-    return joined
+    return joined, stage_cache.sha(stage_cache.canon([revisions, joined]))
 
 
 async def _fold_call(system: str, user: str,
                      tools: list[dict[str, Any]] | None = None,
                      *, work_id: str = "", card_id: str = "",
-                     stage: str = "", trace_id: str = "") -> dict[str, Any]:
+                     stage: str = "", trace_id: str = "",
+                     pinned: _MemoryModelRequest | None = None) -> dict[str, Any]:
     """归拢模型调用（与凝练同走 bindings.condense 绑定）；返回**完整 result**
     （s1/s2' 一律产纯文本、取 content；tools 参数留作兼容形参）。
 
@@ -2460,21 +2552,26 @@ async def _fold_call(system: str, user: str,
     """
     from ..api import model_config, model_service
 
-    _model_name = model_config.pick_one("condense")
+    _model_name = pinned.seat if pinned else model_config.pick_one("condense")
     _stage = stage or "fold"
+    sent: dict[str, Any] = {}
 
     async def _make(on_chunk, trace: str):
+        sent.clear()
         return await model_service.call_main(
             system, user, prior_messages=[], tools=tools,
             model_name=_model_name,
             on_chunk=on_chunk,
             trace_id=trace, caller=f"fold:{_stage}",
-            work_id=work_id, card_id=card_id)
+            work_id=work_id, card_id=card_id,
+            **({"gateway": pinned.gateway, "on_transport": sent.update} if pinned else {}))
 
-    return await _guarded_model_call(_make, work_id=work_id, card_id=card_id,
-                                     stage=_stage, trace_id=trace_id,
-                                     request={"system": system, "user_prompt": user,
-                                              "tools": tools, "model": _model_name})
+    result = await _guarded_model_call(
+        _make, work_id=work_id, card_id=card_id, stage=_stage, trace_id=trace_id,
+        request={"system": system, "user_prompt": user, "tools": tools, "model": _model_name})
+    if pinned:
+        result["_stage_origin_call"] = pinned.confirmed_origin(result, sent)
+    return result
 
 
 def _foldable_tops(state: dict[str, Any]) -> list[tuple[int, dict[str, Any]]]:
@@ -2725,10 +2822,12 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
     if (count - last < FOLD_EVERY_BATCHES) and (len(tops) < fold_top_trigger()):
         return
     fold_base = {**state, "entries": deepcopy(state.get("entries") or [])}
+    fold_sources: dict[tuple[int, ...], str] = {}
 
     async def _publish_fold() -> bool:
         try:
-            await save_memory(work_id, card_id, state, expected_state=fold_base)
+            await save_memory(work_id, card_id, state, expected_state=fold_base,
+                              **({"fold_sources": fold_sources} if fold_sources else {}))
         except _StaleCondenseBatch:
             logger.info("[condense_fold] 归拢提交版本已变化 work=%s card=%s", work_id, card_id)
             return False
@@ -2777,12 +2876,38 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
                            _cache_path(step), exc)
 
     # ── s1 分组裁决（自由推理＋JSON尾）───────────────────────────────────
-    text1 = _cache_read("s1")
+    top_seqs = {int((t.get("anchor") or {}).get("seq") or 0) for _i, t in tops}
+    # [批六] 新版阶段缓存与旧指纹文件彻底分开：开态只查新版（含逐成员内容
+    # 指纹），关态只走旧 _fp 文本缓存。
+    pinned = _MemoryModelRequest.resolve() if stage_cache.stage_on() else None
+    _sc_on = pinned is not None
+    route_kw = {"pinned": pinned} if pinned else {}
+    cache_route = ({"model_seat": pinned.seat,
+                    "route": stage_cache.sha(stage_cache.canon(pinned.facts))}
+                   if pinned else {})
+    _s1_key = ""
+    text1 = ""
+    s1_origin = None
+    if _sc_on:
+        _s1_key = stage_cache.stage_key(
+            work_id=work_id, card_id=card_id, session_id=card_id,
+            stage="fold_s1",
+            inputs={"tops": [stage_cache.member_fp(t) for _i, t in tops],
+                    "material": stage_cache.sha(_render_fold_step1(state))},
+            prompt_fp=stage_cache.sha(FOLD_STEP1_PROMPT), **cache_route)
+        _hit = stage_cache.lookup(
+            work_id, card_id, stage="fold_s1", key=_s1_key, require_origin=True,
+            revalidate=lambda p: _parse_fold_groups(
+                str(p.get("text") or ""), top_seqs)[0] != "broken")
+        if _hit is not None:
+            text1 = str(_hit.get("text") or "")
+    if not text1:
+        text1 = _cache_read("s1") if not _sc_on else ""
     if not text1:
         try:
             r1 = await _fold_call(FOLD_STEP1_PROMPT,
                                   _build_fold_messages(_render_fold_step1(state)),
-                                  work_id=work_id, card_id=card_id, stage="s1")
+                                  work_id=work_id, card_id=card_id, stage="s1", **route_kw)
         except Exception as exc:  # noqa: BLE001 abort：游标不动（失败不消费触发线）
             logger.warning("[condense_fold] 归拢失败——游标不动（abort，s1）work=%s card=%s 原因=%s",
                            work_id, card_id, exc)
@@ -2791,11 +2916,18 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
                                 f"归拢模型无法继续使用（{str(exc)}）——请检查模型配置/key/额度。")
             return
         text1 = str(r1.get("content") or "")
-        _cache_write("s1", text1)
+        s1_origin = r1.get("_stage_origin_call")
+        if not _sc_on:
+            _cache_write("s1", text1)   # 旧路径照旧（解析前落盘——关态逐字同旧）
         logger.info("[condense_fold] 归拢 s1 分组完成 work=%s card=%s 产出=%d 字 思考帧=%s",
                     work_id, card_id, len(text1), r1.get("tokens_used"))
-    top_seqs = {int((t.get("anchor") or {}).get("seq") or 0) for _i, t in tops}
     verdict, groups = _parse_fold_groups(text1, top_seqs)
+    if s1_origin and verdict != "broken":
+        # [批六] 过校验才落盘：legal 组表与「无可并」都是可复用产物；
+        # broken 不落盘 ⇒ 下轮重发 S1（旧缓存解析前落盘的坏命中被根除）。
+        stage_cache.store_valid(
+            work_id, card_id, stage="fold_s1", key=_s1_key,
+            input_fp={"tops": len(tops)}, product={"text": text1}, origin_call=s1_origin)
     if verdict == "empty":
         state["last_fold_check"] = count
         if not await _publish_fold():
@@ -2805,7 +2937,7 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
         return
     if verdict == "broken":
         # 管线失败 ≠ 判断无果：s1 说可合却拿不出可解析组表（或连结论行都没写）——
-        # 不许推游标；s1 产出已缓存，下轮同指纹直接复用、只重付后续步骤。
+        # 游标保留。
         logger.warning("[condense_fold] 归拢 s1 产出不可解析（pipeline-failure，游标不动）"
                        "work=%s card=%s 产出=%d 字", work_id, card_id, len(text1))
         return
@@ -2830,42 +2962,103 @@ async def _maybe_fold(work_id: str, card_id: str) -> None:
             tag = f"g{idx}-{gfp}"
             step2_in = (f"【线程】{g.get('label') or ''}\n\n"
                         + _render_fold_group(state, mems))
-            text2 = _cache_read(tag + "x")
-            if not text2:
+            # [批六] 组键＝有序成员内容指纹＋线程标签＋选材——成员经过/结果/
+            # 子条/锚点身份/隔离态任一变化即失效（旧键只有块号）。组产物按
+            # 合并/弃权/展开请求分别入账（fold_s2g / fold_s2gx 两段）。
+            _g_key = ""
+            group_origin = None
+            if _sc_on:
+                _g_key = stage_cache.stage_key(
+                    work_id=work_id, card_id=card_id, session_id=card_id,
+                    stage="fold_s2g", shard=f"g{idx}",
+                    inputs={"label": str(g.get("label") or ""),
+                            "members": [stage_cache.member_fp(m) for m in mems],
+                            "material": stage_cache.sha(step2_in), "cap": cap},
+                    prompt_fp=stage_cache.sha(FOLD_STEP2_GROUP_PROMPT), **cache_route)
+                _hit = stage_cache.lookup(
+                    work_id, card_id, stage="fold_s2g", key=_g_key, require_origin=True,
+                    revalidate=lambda p: _parse_fold_digest(
+                        str(p.get("text") or ""), allowed, card_id)[0]
+                    in ("merge", "bail", "expand"))
+                if _hit is not None:
+                    text2 = str(_hit.get("text") or "")
+                else:
+                    text2 = ""
+            else:
                 text2 = _cache_read(tag)
-                if not text2:
-                    try:
-                        r2 = await _fold_call(FOLD_STEP2_GROUP_PROMPT, step2_in,
-                                              work_id=work_id, card_id=card_id,
-                                              stage=tag)
-                    except Exception as exc:  # noqa: BLE001 组调用失败＝fail（游标见尾态）
-                        if _model_error_disposition(exc) == "fatal":
-                            _report_to_user(work_id, card_id,
-                                            f"归拢模型无法继续使用（{str(exc)}）"
-                                            "——请检查模型配置/key/额度。")
-                        return "fail", f"组{idx} 调用失败：{str(exc)}"
-                    text2 = str(r2.get("content") or "")
+            if not text2:
+                try:
+                    r2 = await _fold_call(FOLD_STEP2_GROUP_PROMPT, step2_in,
+                                          work_id=work_id, card_id=card_id,
+                                          stage=tag, **route_kw)
+                except Exception as exc:  # noqa: BLE001 组调用失败＝fail（游标见尾态）
+                    if _model_error_disposition(exc) == "fatal":
+                        _report_to_user(work_id, card_id,
+                                        f"归拢模型无法继续使用（{str(exc)}）"
+                                        "——请检查模型配置/key/额度。")
+                    return "fail", f"组{idx} 调用失败：{str(exc)}"
+                text2 = str(r2.get("content") or "")
+                group_origin = r2.get("_stage_origin_call")
+                if not _sc_on:
                     _cache_write(tag, text2)
-                k0, p0 = _parse_fold_digest(text2, allowed, card_id)
-                if k0 == "expand" and p0:
-                    # 展开钩子（有界往返一次）：点名成员锚点 → 深材料回灌 → 重写一次。
-                    # 缓存在 tag"x" 名下——首产与往返产物分开，续跑不重付。
-                    exp_in = (step2_in
-                              + "\n\n【展开材料】（按你的【需展开】请求回灌）\n"
-                              + _expand_for_fold(work_id, card_id, p0)
-                              + "\n\n——已回灌；请按原格式输出 digest 或【不合并】。")
+            k0, p0 = _parse_fold_digest(text2, allowed, card_id)
+            if group_origin and k0 in ("merge", "bail", "expand"):
+                stage_cache.store_valid(
+                    work_id, card_id, stage="fold_s2g", key=_g_key,
+                    input_fp={"members": len(mems)},
+                    product={"text": text2}, origin_call=group_origin)
+            # [批六·返修①] 展开续步对**缓存命中与新收到的展开请求同口径**：
+            # 首产是合法展开请求时，沿当前原文版本解析续写产物。
+            if k0 == "expand" and p0:
+                # 展开钩子（有界往返一次）：点名成员锚点 → 深材料回灌 → 重写一次。
+                picks = tuple(p0[:3])
+                _corpus, source_version = _fold_expansion(work_id, card_id, picks)
+                if fold_sources.setdefault(picks, source_version) != source_version:
+                    return "fail", f"组{idx} 展开材料已变化"
+                exp_in = (step2_in
+                          + "\n\n【展开材料】（按你的【需展开】请求回灌）\n"
+                          + _corpus
+                          + "\n\n——已回灌；请按原格式输出 digest 或【不合并】。")
+                # [批六] 展开续步键绑回灌正文指纹——顶层 gist 恒定、
+                # 展开涉及旧块被编辑/撤销/缺块/隔离改动即失效。
+                expanded_tag = f"{tag}x-{source_version}"
+                text2 = "" if _sc_on else _cache_read(expanded_tag)
+                if _sc_on:
+                    _x_key = stage_cache.stage_key(
+                        work_id=work_id, card_id=card_id,
+                        session_id=card_id, stage="fold_s2gx",
+                        shard=f"g{idx}",
+                        inputs={"base": _g_key, "source": source_version},
+                        prompt_fp=stage_cache.sha(FOLD_STEP2_GROUP_PROMPT), **cache_route)
+                    _hx = stage_cache.lookup(
+                        work_id, card_id, stage="fold_s2gx", key=_x_key, require_origin=True,
+                        revalidate=lambda p: _parse_fold_digest(
+                            str(p.get("text") or ""), allowed, card_id)[0]
+                        in ("merge", "bail"))
+                    if _hx is not None:
+                        text2 = str(_hx["text"])
+                if not text2:
                     try:
                         r2b = await _fold_call(FOLD_STEP2_GROUP_PROMPT, exp_in,
                                                work_id=work_id, card_id=card_id,
-                                               stage=tag + "x")
+                                               stage=tag + "x", **route_kw)
                     except Exception as exc:  # noqa: BLE001
                         if _model_error_disposition(exc) == "fatal":
-                            _report_to_user(work_id, card_id,
-                                            f"归拢模型无法继续使用（{str(exc)}）"
-                                            "——请检查模型配置/key/额度。")
+                            _report_to_user(
+                                work_id, card_id,
+                                f"归拢模型无法继续使用（{str(exc)}）"
+                                "——请检查模型配置/key/额度。")
                         return "fail", f"组{idx} 展开往返失败：{str(exc)}"
                     text2 = str(r2b.get("content") or "")
-                    _cache_write(tag + "x", text2)
+                    expanded_origin = r2b.get("_stage_origin_call")
+                    if not _sc_on:
+                        _cache_write(expanded_tag, text2)
+                    elif (expanded_origin
+                          and _parse_fold_digest(text2, allowed, card_id)[0] in ("merge", "bail")):
+                        stage_cache.store_valid(
+                            work_id, card_id, stage="fold_s2gx", key=_x_key,
+                            input_fp={"corpus": stage_cache.sha(_corpus)},
+                            product={"text": text2}, origin_call=expanded_origin)
             kind_, payload = _parse_fold_digest(text2, allowed, card_id)
             if kind_ == "merge":
                 return "merge", payload

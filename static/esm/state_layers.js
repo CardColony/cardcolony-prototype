@@ -37,7 +37,9 @@ export function createNavStateStore(deps = {}) {
     loading: new Map(),   // cid → bool
     error: new Map(),     // cid → msg|null
     loaded: new Map(),    // cid → bool
-    running: new Set(),   // [左栏接线 步2] 运行中的卡（/api/nav/running 灌入，行尾转圈）
+    running: new Map(),   // [左栏接线 步2] 运行中的卡："w:c" → 属主 runner 标（null=无标/单进程）
+                          //   属主标＝扇入回包每条目的 _runner——部分缺失时据此
+                          //   分「已确认分片」（缺席即删）与「缺失分片」（保留待校准）。
     query: "",            // [定稿] 搜索＝镜片：当前查询串（纯内存，绝不落盘、绝不改 prefs）
   };
   const temp = {
@@ -49,27 +51,54 @@ export function createNavStateStore(deps = {}) {
     //   只有 43 个编号），只按 cid 判会把所有同名卡一起点亮——症状＝「根本不在
     //   运行中的卡片一直显示运行中」。复合键与 row_model.key() 同口径，防漂移。
     running(wid, cid, on) {
-      on ? tempMap.running.add(wid + ":" + cid) : tempMap.running.delete(wid + ":" + cid);
+      // SSE 直接置位：无属主标（事件不知分片）——记 null，保守归「待校准」侧。
+      on ? tempMap.running.set(wid + ":" + cid, null)
+         : tempMap.running.delete(wid + ":" + cid);
     },
     isRunning(wid, cid) { return tempMap.running.has(wid + ":" + cid); },
     // 返回「集合是否真的变了」：调用方据此决定要不要重渲。
     // 为什么：总览是周期探测（10s），若每次都重渲，用户正 hover/展开时会被无谓 patch
     // 打断——违反「状态自己变，但绝不动你的视野」。无变化＝零动作。
     setRunningSet(list) {
-      // 契约：/api/nav/running → {"running":[{work_id,card_id,stage,detail}]}（后端实测形态）。
+      // 契约：/api/nav/running → {"running":[{work_id,card_id,stage,detail,_runner?}]}（后端实测形态）。
       // 缺 work_id 或 card_id 的条目一律丢弃——**宁可漏标，不可误标**：
       // 少了 spinner 只是少个提示；多亮了 spinner 是「骗你说它在跑」，比不亮更坏。
-      const next = new Set();
+      const next = new Map();
       for (const r of list || []) {
         if (!r || typeof r !== "object") continue;
         const w = r.work_id || "";
         const c = r.card_id || "";
-        if (w && c) next.add(w + ":" + c);
+        if (w && c) next.set(w + ":" + c,
+          Number.isInteger(r._runner) ? r._runner : null);
       }
       const same = next.size === tempMap.running.size
-        && [...next].every(k => tempMap.running.has(k));
+        && [...next.keys()].every(k => tempMap.running.has(k));
       tempMap.running = next;
       return !same;
+    },
+    // [任务三·合源 §3.2.3] 部分 runner 缺失：按「实际可用的响应」算覆盖——
+    // 回包条目照常并入（含属主标）；**已确认分片**（owner ∈ okSet）里的旧条目
+    // 缺席即删（健康的 A 完成 ⇒ 清 A 的转圈）；**缺失分片**与无标条目保留待校准
+    // （失联的 B 真相不明 ⇒ 不许清 B 的转圈）。okSet=null ⇒ 全部当待校准（只增不删）。
+    mergeRunningSet(list, okSet) {
+      const before = tempMap.running.size;
+      const seen = new Set();
+      for (const r of list || []) {
+        if (!r || typeof r !== "object") continue;
+        const w = r.work_id || "", c = r.card_id || "";
+        if (!w || !c) continue;
+        const k = w + ":" + c;
+        tempMap.running.set(k, Number.isInteger(r._runner) ? r._runner : null);
+        seen.add(k);
+      }
+      if (okSet) {
+        for (const [k, owner] of tempMap.running) {
+          if (!seen.has(k) && owner != null && okSet.has(owner)) {
+            tempMap.running.delete(k);
+          }
+        }
+      }
+      return tempMap.running.size !== before;
     },
     // [定稿] 搜索＝镜片：query 只活在内存。为什么放 temp 而不是 prefs——镜片是「换一种看法」，
     // 不是「改动你摆好的样子」：清空即回到原状，靠的就是它从没写进任何持久层。
@@ -244,6 +273,34 @@ export function createNavStateStore(deps = {}) {
   };
 
   return { temp, prefs, select, snapshot };
+}
+
+/* [任务三·合源 §3.2.3] 画布 running 表的按属主合并——与 nav 侧
+   mergeRunningSet(list, okSet) 同一契约翻成 Map 形：
+   部分覆盖（missing 非空）时，「已应答属主」名下条目由快照如实替换
+   （含完成清除），失联属主名下与本地乐观/无属主标条目一律保留待校准；
+   完整覆盖时仅额外保留本地乐观标记。
+   prev: Map(card_id→entry)；running: pulse 快照的 running 数组；
+   missing: 未应答 runner 下标数组。返回新的 Map（prev 不被改写）。 */
+export function mergeCanvasRunning(prev, running, missing) {
+  const next = new Map();
+  for (const r of running || []) {
+    if (r && r.card_id) next.set(r.card_id, r);
+  }
+  const miss = new Set(missing || []);
+  if (miss.size) {
+    for (const [cid, r] of prev || []) {
+      if (next.has(cid)) continue;
+      if (r && (r.__local || r._runner === undefined || miss.has(r._runner))) {
+        next.set(cid, r);
+      }
+    }
+  } else {
+    for (const [cid, r] of prev || []) {
+      if (r && r.__local && !next.has(cid)) next.set(cid, r);
+    }
+  }
+  return next;
 }
 
 /* ---------- 裸 localStorage 通用包装（workspace.js 内禁裸读写，V-S5 静态闸） ---------- */

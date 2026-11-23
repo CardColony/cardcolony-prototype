@@ -32,6 +32,13 @@ except Exception as _exc:  # noqa: BLE001 .env 装不上照跑（环境变量可
 from src.infra.console_io import ensure_utf8_console  # noqa: E402
 from src.infra.server_log import install_file_logging  # noqa: E402
 
+# [stdout 轮转 2026-11-22] ECO_STDOUT_LOG 有值 ⇒ stdout/stderr 写轮转文件。
+try:
+    from src.infra.stdout_rotate import install_from_env  # noqa: E402
+    install_from_env()
+except Exception:  # noqa: BLE001
+    pass
+
 ensure_utf8_console()
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")

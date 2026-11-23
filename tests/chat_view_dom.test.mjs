@@ -213,6 +213,14 @@ test("分页锚点保位：插入更早的行后，被锚定的那行回到同�
   const { view, scroll, rows } = mountView(t, {
     hasMore: () => true,
     onLoadOlder: () => { loaded += 1; },
+    renderRow: (key) => {
+      const el = rowFor(key);
+      rows.set(key, el);
+      /* 模拟「挂载新行把既有行顶下去」：真浏览器里位移发生在 _applyRange
+         插入新元素之后，不是在 render() 之前——stub 位移必须同步到这一步。 */
+      if (key === "a") rects.setTop(rows.get("b"), 160);
+      return [el];
+    },
   });
   view.render(["b", "c"], () => 1);
   view.markLoaded();
@@ -230,7 +238,6 @@ test("分页锚点保位：插入更早的行后，被锚定的那行回到同�
   assert.equal(loaded, 1, "滚到顶必须触发上翻加载");
 
   // 更早的一页到了 ⇒ 布局整体下移（b 从 100 挪到 160，被顶下去 60px）
-  rects.setTop(rows.get("b"), 160);
   view.render(["a", "b", "c"], () => 1);
   assert.equal(scroll.scrollTop, 60,
     "锚定的那行必须回到原位置（scrollTop 要补上被顶下去的 60px）");
@@ -411,9 +418,17 @@ test("有界挂载：前插后锚定行保持原位（同 key 同偏移）", { s
   // 前插 40 个键（等同 loadEarlier 翻页后的 render）
   const older = [];
   for (let i = 0; i < 40; i++) older.push("old" + i);
-  // 前插把 k25 顶下去：模拟它的新位置
-  stubRects([rowEl], { top: 3000, height: 50 });
-  view.render(older.concat(MANY), () => 1);
+  /* 前插把 k25 顶下去的位移发生在挂载/测量时（_applyRange 内），
+     与「应用前实测锚点偏移」的顺序一致——挂 revOf 里才 stub，
+     保证 render() 入口读到的还是 120。 */
+  let shifted = false;
+  view.render(older.concat(MANY), (key) => {
+    if (!shifted && key === midKey) {
+      shifted = true;
+      stubRects([rowEl], { top: 3000, height: 50 });
+    }
+    return 1;
+  });
   await nextFrame();
   const m2 = view._mounted();
   assert.equal(m2.total, 100);

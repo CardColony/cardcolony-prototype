@@ -60,3 +60,21 @@ def test_g3_install_is_idempotent(tmp_path):
         for h in list(lg.handlers):
             if getattr(h, "baseFilename", "").endswith("server.log"):
                 lg.removeHandler(h)
+
+
+def test_processes_rotate_separate_files(tmp_path, monkeypatch):
+    expected = [("web", "0", "server.log"), ("runner", "0", "server-runner0.log"),
+                ("runner", "1", "server-runner1.log"),
+                ("condense", "0", "server-condense.log")]
+    for role, index, filename in expected:
+        monkeypatch.setenv("ECO_ROLE", role)
+        monkeypatch.setenv("ECO_RUNNER_INDEX", index)
+        before = set(logging.getLogger().handlers)
+        path = server_log.install_file_logging(tmp_path)
+        try:
+            assert path == tmp_path / "logs" / filename
+        finally:
+            for handler in set(logging.getLogger().handlers) - before:
+                for name in server_log._LOGGERS:
+                    logging.getLogger(name).removeHandler(handler)
+                handler.close()

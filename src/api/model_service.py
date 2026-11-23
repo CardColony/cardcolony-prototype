@@ -21,6 +21,7 @@ import asyncio
 import os
 from typing import Any, Optional
 
+from ..infra.errors import ModelError
 from ..model_gateway.gateway import build_gateway, REASONING_PLACEHOLDER
 from . import model_config
 
@@ -138,6 +139,18 @@ def _endpoint_protocol_of(model_name: str) -> str:
         return "native"
 
 
+def hop_attempt_limit(model_name: str) -> int:
+    """[批五·同跳预算] 首选座 ``retry.max_attempts``——同跳预算额度
+    （含首次），缺省 3 与网关 ``_retry_params`` 同口径。"""
+    try:
+        gw = get_gateway()
+        mc = (gw.config.get("models") or {}).get(model_name) or {}
+        rc = mc.get("retry") or {}
+        return max(1, int(rc.get("max_attempts", 3)))
+    except Exception:  # noqa: BLE001 读不了配置按缺省
+        return 3
+
+
 async def call_main(
     system_prompt: str,
     user_prompt: str,
@@ -156,6 +169,9 @@ async def call_main(
     card_id: str = "",
     max_tokens: Optional[int] = None,
     before_send: Optional[Any] = None,
+    hop_budget: Optional[Any] = None,
+    gateway: Optional[Any] = None,
+    ledger_task: Optional[dict] = None,
 ) -> tuple[dict[str, Any], str]:
     """以指定模型名发起调用，返回 (gateway结果, 实际使用的模型名)。
 
@@ -180,7 +196,7 @@ async def call_main(
       （拆闸铁律不变：缺省不注入）。
     """
     model_name = model_name or model_config.default_model()
-    gw = get_gateway()
+    gw = gateway if gateway is not None else get_gateway()
     cfg = (gw.config.get("models") or {}).get(model_name, {})
     events: list[dict[str, Any]] = []
 
@@ -214,6 +230,7 @@ async def call_main(
     from .think_strip import ThinkStreamSplitter, strip_inline_think
     _think_sp = ThinkStreamSplitter()
     _stopped = False
+    _interruption: ModelError | None = None
     from . import control as _ctl
 
     # [取消墙钟 2026-10-23 · 用户令「整个机制全部通过信息反馈」]
@@ -260,10 +277,16 @@ async def call_main(
                 caller=caller or (f"card:{work_id}/{card_id}" if (work_id or card_id) else ""),
                 work_id=work_id,
                 card_id=card_id,
+                # [批七·成本台账] 宿主给的可信任务身份（pair/session/跳次），
+                # 网关 pop 它建本跳活账——不透传给适配器。
+                ledger_task=ledger_task,
                 # [批三返修②] 发送边界守卫：网关**每次**真实出站前
                 # （含同座重试/换座 attempt）调用——材料在网关内部重试
                 # 边界一样要复核，不能只在进 call_main 前查一次。
                 before_send=before_send,
+                # [批五·同跳预算] 预算对象直通网关——本跳所有重试/
+                # 换座共用一次尝试额度（None ⇒ 旧路径逐字不变）。
+                hop_budget=hop_budget,
             ),
             _stop_ev, _stream_key)
     try:
@@ -292,6 +315,10 @@ async def call_main(
             if ctx and _ctl.pending_stop(ctx[0], ctx[1]):
                 _stopped = True
                 break
+    except ModelError as exc:
+        if hop_budget is None or not getattr(exc, "emitted", False):
+            raise
+        _interruption = exc
     finally:
         # 消费者 break 出循环时生成器不会自动关闭 ⇒ 显式 aclose，
         # 否则 _stop_raced 的 finally 不跑、在流登记泄漏（停止判据永远为真）。
@@ -309,6 +336,9 @@ async def call_main(
     if _stop_ev is not None and _stop_ev.is_set() and not result:
         # 停止信号先到（流还没吐终帧）⇒ 与「帧边界停止」同一收口路径
         _stopped = True
+    if _interruption is not None and not _stopped:
+        _interruption.partial_content = "".join(_content_parts)
+        raise _interruption
     if not result and _stopped:
         # 人停断流：把已产出的正文照常交付（工具轮未走完 ⇒ 不产生 tool_calls）。
         # [B2返修·真实终帧] ``stopped`` 标记＝**无真实终帧的合成收口**——

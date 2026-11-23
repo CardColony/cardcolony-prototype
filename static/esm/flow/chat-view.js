@@ -194,8 +194,18 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     const visLo = _bisect(vTop);
     let visHi = visLo;
     while (visHi < len && cum[visHi] < vBot) visHi++;
-    const lo = Math.max(0, visLo - OVERSCAN);
-    const hi = Math.min(len, visHi + OVERSCAN);
+    let lo = Math.max(0, visLo - OVERSCAN);
+    let hi = Math.min(len, visHi + OVERSCAN);
+    /* [任务二收尾] 前插锚点在册 ⇒ 锚行必须常驻挂载窗——等待期换挡若把它
+       卸掉，回包到达时「应用前实测偏移」无处读、原行离开渲染窗口
+       （隔离复现的失锚根因）。邻近接续行同规。 */
+    if (anchor !== null) {
+      const rk = _resolveAnchorKey(anchor);
+      if (rk) {
+        const ai = order.indexOf(rk);
+        if (ai >= 0) { lo = Math.min(lo, Math.max(0, ai - 2)); hi = Math.max(hi, ai + 3); }
+      }
+    }
     return [lo, Math.max(hi, lo + 1)];
   }
 
@@ -564,9 +574,16 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     observedTop = stTop;
     // 滚到顶自动往前插一页（本项目既有行为；锚点已在读段记好）
     if (needLoadOlder) {
+      /* [任务二收尾] 先把挂载窗换到当前视口再**重记锚**——捕获瞬间窗口常
+         还停在别处（顶翻是从中段直接跳顶），那时 anchorRow 找到的是
+         「视口外几公里」的挂载行 ⇒ 退回 order[0]@0 把视口扔回文档顶。
+         换挡后锚行才真在视口内；重记覆盖上面过早的捕获。 */
+      rewindow();
+      captureAnchor();
       if (typeof onLoadOlder === "function") onLoadOlder();
+    } else {
+      rewindow();          // 有界挂载：视口外换挡（锚点内部校正）
     }
-    rewindow();          // 有界挂载：视口外换挡（锚点内部校正）
     _SEG.scroll += performance.now() - _t0;
   }
   scroll.addEventListener("scroll", onScroll, { passive: true });
@@ -579,10 +596,30 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     /* [任务二收尾] 只有「真在视口内」的挂载行才算阅读锚：顶翻触发瞬间
        挂载窗往往还停在底部（首个 bottom>视口顶 的行其实在视口**下方**
        几公里）——拿它当锚会把视口扔到窗口中部。回退语义＝展示窗首行
-       贴顶（前插后用户从新旧接缝继续上翻）。 */
-    if (a && a.off <= ch) anchor = { key: a.key, top: a.off };
-    else if (order.length) anchor = { key: order[0], top: 0 };
+       贴顶（前插后用户从新旧接缝继续上翻）。
+       [接续锚] 记下前后邻键：锚行被前插合并/撤销（如孤儿工具行被调用
+       改键认领）时按邻近有效行接续，不让锚空指针落到窗口外。 */
+    let prevKey = null, nextKey = null;
+    const baseKey = (a && a.off <= ch) ? a.key : order[0];
+    const bi = baseKey != null ? order.indexOf(baseKey) : -1;
+    if (bi >= 0) { prevKey = order[bi - 1] || null; nextKey = order[bi + 1] || null; }
+    if (a && a.off <= ch) anchor = { key: a.key, top: a.off, prevKey, nextKey };
+    else if (order.length) anchor = { key: order[0], top: 0, prevKey, nextKey };
     else anchor = null;
+    if (typeof window !== "undefined") {
+      (_SEG.anchorLog = _SEG.anchorLog || []).push(
+        { cap: true, key: anchor && anchor.key, top: anchor && anchor.top });
+      if (_SEG.anchorLog.length > 40) _SEG.anchorLog.shift();
+    }
+  }
+
+  /** 锚键失效（合并/撤销）⇒ 邻近有效行接续：后继优先，无则前驱。 */
+  function _resolveAnchorKey(anchor) {
+    if (!anchor) return null;
+    if (order.indexOf(anchor.key) >= 0) return anchor.key;
+    if (anchor.nextKey && order.indexOf(anchor.nextKey) >= 0) return anchor.nextKey;
+    if (anchor.prevKey && order.indexOf(anchor.prevKey) >= 0) return anchor.prevKey;
+    return null;
   }
 
   /** 键 → 行元素。座位表就是 key→el 的权威映射，不必再回 DOM 里线性查找。 */
@@ -597,6 +634,7 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
 
   /** 上翻：先记锚，再请求加载（原文 :349-363）。 */
   olderBtn.onclick = () => {
+    rewindow();      // 按钮按下时窗口可能未跟到视口——先换挡再记锚
     captureAnchor();
     if (typeof onLoadOlder === "function") onLoadOlder();
   };
@@ -659,10 +697,19 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     } else {
       [nLo, nHi] = desiredRange();
       if (anchor !== null) {
-        const ai = order.indexOf(anchor.key);
-        if (ai >= 0) { nLo = Math.min(nLo, Math.max(0, ai - 2)); nHi = Math.max(nHi, ai + 3); }
+        const rk = _resolveAnchorKey(anchor);   // 合并/撤销 ⇒ 邻近有效行接续
+        if (rk) anchor.key = rk;   // desiredRange 已把锚行扩进窗口
       }
       if (atBottom) { nHi = order.length; nLo = Math.min(nLo, Math.max(0, nHi - OVERSCAN)); }
+    }
+    /* [任务二收尾·锚点实测] 捕获时的 anchor.top 会在等待回包期间过期
+       （spacer 重绘/换挡让行位移却无滚动事件）。校正目标改用「回包应用前」
+       锚行在 DOM 里的**实际**偏移——此刻 DOM 还是变更前布局，读数即真值；
+       行未挂（窗口外）回退捕获值。 */
+    let anchorPreOff = null;
+    if (anchor !== null) {
+      const _r = rowOf(anchor.key);
+      if (_r) anchorPreOff = flowTop(_r);
     }
     _applyRange(nLo, nHi, revOf);
     paintEmpty();
@@ -683,11 +730,17 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     if (anchor !== null && newFirst !== firstKey) {
       const row = rowOf(anchor.key);
       _cancelPin();   // 延迟钉底不得踩掉锚点保位
-      if (typeof window !== "undefined")
+      if (typeof window !== "undefined") {
+        const got = row ? flowTop(row) : null;
         window.__DBG_ANCHOR = { key: anchor.key, want: anchor.top,
-          got: row ? flowTop(row) : null, ai: order.indexOf(anchor.key),
+          preOff: anchorPreOff, got, ai: order.indexOf(anchor.key),
           mnt: [mntLo, mntHi] };
-      if (row) scroll.scrollTop += flowTop(row) - anchor.top;
+        (_SEG.anchorLog = _SEG.anchorLog || []).push(
+          { key: anchor.key, want: anchor.top, preOff: anchorPreOff, got });
+        if (_SEG.anchorLog.length > 40) _SEG.anchorLog.shift();
+      }
+      if (row) scroll.scrollTop += flowTop(row) -
+        (anchorPreOff !== null ? anchorPreOff : anchor.top);
       observedTop = scroll.scrollTop;
       anchor = null;
       firstKey = newFirst;

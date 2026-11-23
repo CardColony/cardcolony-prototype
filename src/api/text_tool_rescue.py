@@ -290,6 +290,12 @@ _I_FUNCTION_OPEN = r"<\s*function_calls\s*>(?=\s*<\s*tool_name\s*>)"
 _I_FUNCTION_NAME = re.compile(
     r"<\s*tool_name\s*>\s*(?P<v>[A-Za-z_]\w*)\s*<\s*/\s*tool_name\s*>", re.IGNORECASE)
 
+# 根标签即工具名，开标签多了一个引号，例如 <read_card">。
+_QUOTED_TOOL_OPEN = r'<(?P<quoted_tool_name>[A-Za-z_]\w*)"\s*>'
+_QUOTED_TOOL_PARAM = re.compile(
+    r"\s*<(?P<key>[A-Za-z_][\w.-]*)>(?P<val>[^<`\r\n]*)</\s*(?P=key)\s*>",
+    re.IGNORECASE)
+
 
 def _xml_parameter(tag: str) -> re.Pattern:
     return re.compile(
@@ -305,6 +311,7 @@ _COMPAT_ORIGINS = {
     "cjk_call": "textG_cjk",
     "invoke": "textH_invoke",
     "function_calls": "textI_function_calls",
+    "quoted_tool_tag": "textJ_quoted_tool_tag",
 }
 READONLY_PROTOCOL_ORIGINS = frozenset({"textE_dsml", "textF_call", *_COMPAT_ORIGINS.values()})
 
@@ -359,6 +366,7 @@ _CONTEXT_REGION = re.compile(
     r"|(?P<legacy><tool_call>\s*(?=\{))"
     rf"|(?P<cjk_call>{_G_CALL_OPEN})"
     rf"|(?P<invoke>{_H_INVOKE_OPEN})"
+    rf"|(?P<quoted_tool_tag>{_QUOTED_TOOL_OPEN})"
     rf"|(?P<anomaly_open>^[ \t]*(?P<anomaly_start>(?:{_CDATAEND}[ \t]*)?{_ANOMALY_OPEN}))"
     rf"|(?P<anomaly_cdata>^[ \t]*(?P<cdata_start>{_CDATAEND}){_ANOMALY_LINE_END})"
     rf"|(?P<anomaly_bos>{_BOS_TOKEN})",
@@ -377,9 +385,9 @@ _JSON_DECODER = json.JSONDecoder()
 _MASKED_CHAR = "\x00"
 
 
-def _xml_call_region(content: str, start: int, tag: str) -> tuple[int, str | None]:
+def _xml_call_region(content: str, start: int, edges: re.Pattern) -> tuple[int, str | None]:
     depth = 1
-    for edge in _XML_EDGES[tag].finditer(content, start):
+    for edge in edges.finditer(content, start):
         if edge.group("open") and not edge[0].endswith("/>"):
             depth += 1
         elif edge.group("close"):
@@ -387,6 +395,35 @@ def _xml_call_region(content: str, start: int, tag: str) -> tuple[int, str | Non
             if depth == 0:
                 return edge.end(), content[start:edge.start()]
     return len(content), None
+
+
+def _quoted_tool_region(content: str, start: int, name: str) -> tuple[int, dict | None]:
+    tag = re.escape(name)
+    close = rf"</\s*{tag}\s*>"
+    edges = re.compile(
+        rf'{_REFERENCE}|{_INLINE_REFERENCE}|(?P<open><{tag}"?\s*>)|(?P<close>{close})',
+        re.IGNORECASE | re.DOTALL | re.MULTILINE)
+    end, body = _xml_call_region(content, start, edges)
+    if body is None:
+        return start, None
+
+    # 同名的多余闭标签是调用残片。只在已配对的块后清掉它们。
+    end = re.compile(rf"(?:\s*{close})*", re.IGNORECASE).match(content, end).end()
+    args: dict = {}
+    cursor = 0
+    while match := _QUOTED_TOOL_PARAM.match(body, cursor):
+        key = match["key"]
+        if key in args:
+            return end, None
+        value = match["val"].strip()
+        try:
+            args[key] = json.loads(value)
+        except (ValueError, RecursionError):
+            args[key] = value
+        cursor = match.end()
+    if not args or body[cursor:].strip():
+        return end, None
+    return end, {"name": name, "arguments": args}
 
 
 def _cjk_call_region(content: str, start: int) -> tuple[int, dict | None]:
@@ -464,9 +501,15 @@ def _context_regions(content: str, *, scan_anomalies: bool = True):
                 if close and isinstance(value, dict):
                     payload = value
         elif kind in _XML_FIELDS:
-            end, payload = _xml_call_region(content, end, kind)
+            end, payload = _xml_call_region(content, end, _XML_EDGES[kind])
         elif kind == "cjk_call":
             end, payload = _cjk_call_region(content, end)
+        elif kind == "quoted_tool_tag":
+            name = match["quoted_tool_name"].lower()
+            if name not in _d_names():
+                cursor = end
+                continue
+            end, payload = _quoted_tool_region(content, end, name)
         elif kind == "anomaly_open":
             # 行首可先有 CDATAEND>。闭合确认前，跨度只覆盖起始残片。
             start = match.start("anomaly_start")
@@ -781,7 +824,7 @@ def extract_text_tool_calls(
     - unresolved: 正文有疑似标记但没解析出任何完整调用（反馈兜底信号）
     - stripped_content: 把已解析的调用块剥离后的正文
     - protocols: 路由声明支持的正文协议集（models.yaml text_protocols）。
-      invoke / cjk_call / function_calls 即使未声明，也按整块剥离。
+      invoke / cjk_call / function_calls / quoted_tool_tag 即使未声明，也按整块剥离。
     """
     if not content:
         return [], False, content or ""

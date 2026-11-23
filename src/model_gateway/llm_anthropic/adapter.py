@@ -22,6 +22,7 @@ from ..llm.errors import LlmError
 from ..llm.retry import ResolvedRetryPolicy
 from ..llm.runtime import LlmAdapter
 from ..llm.transport import send_stream
+from ..hop_budget import HopBudgetExhausted, HopBudgetUnverified
 from ..llm.types import GenerateOptions, StreamChunk
 from .serialize import serialize_request
 from .sse import parse_sse
@@ -126,9 +127,12 @@ class AnthropicMessagesAdapter(LlmAdapter):
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
                 request = client.build_request("POST", url, headers=headers, content=payload)
-                response = await send_stream(client, request, options,
+                response, _aid = await send_stream(client, request, options,
                                              model=str(body.get("model") or ""),
-                                             api_base=connection.base_url)
+                                             api_base=connection.base_url,
+                                             adapter="anthropic")
+            except (HopBudgetExhausted, HopBudgetUnverified):
+                raise        # 预算控制结果穿透——不许包成传输失败去重试
             except Exception as exc:  # noqa: BLE001
                 raise LlmError(
                     f"API request to {connection.base_url} failed", "TRANSPORT", cause=exc

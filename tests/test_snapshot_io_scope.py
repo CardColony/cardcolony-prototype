@@ -96,5 +96,5 @@ def test_p4_daily_backup_still_includes_log_files():
     assert hasattr(data_snapshot, "_iter_work_log_files"), "应有按 work 取留痕的口子"
     src = inspect.getsource(data_snapshot._snapshot_sync_impl)
     assert "_iter_work_log_files(wid)" in src, "manifest/日备应按需取留痕"
-    assert "list(state_paths) + list(log_paths)" in src, (
+    assert "_publish_daily(daily, wid, state_paths + log_paths)" in src, (
         "日备的文件集必须＝可变状态 ＋ 留痕（恢复点要完整）")

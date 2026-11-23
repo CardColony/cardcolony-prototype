@@ -34,6 +34,7 @@ from ..llm.errors import (
 from ..llm.retry import ResolvedRetryPolicy
 from ..llm.runtime import LlmAdapter
 from ..llm.transport import send_stream
+from ..hop_budget import HopBudgetExhausted, HopBudgetUnverified
 from ..llm.types import SerializeTimingChunk
 from ..llm.types import GenerateOptions, StreamChunk
 from .serialize import RequestDefaults, serialize_request
@@ -97,6 +98,13 @@ def provider_retry_after_ms(value: Optional[str]) -> Optional[float]:
     if value.isdigit():
         delay = int(value) * 1000
         return float(delay) if delay > 0 else None
+    # [批五·裁定穿透] 小数秒（"1.5"）也是合法秒数——原实现只认整数，
+    # 1.5s 被丢成 None 后按固定 backoff 提前重发（实测 3s→1.9s）。
+    try:
+        delay_f = float(value) * 1000
+        return delay_f if delay_f > 0 else None
+    except (TypeError, ValueError):
+        pass
     try:
         when = parsedate_to_datetime(value)
     except (TypeError, ValueError):
@@ -192,9 +200,12 @@ class OpenAICompatAdapter(LlmAdapter):
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
                 request = client.build_request("POST", url, headers=headers, content=payload)
-                response = await send_stream(client, request, options,
+                response, _aid = await send_stream(client, request, options,
                                              model=str(body.get("model") or ""),
-                                             api_base=connection.base_url)
+                                             api_base=connection.base_url,
+                                             adapter="openai_compat")
+            except (HopBudgetExhausted, HopBudgetUnverified):
+                raise        # 预算控制结果穿透——不许包成传输失败去重试
             except Exception as exc:  # noqa: BLE001
                 if _is_cancelled(options.signal):
                     raise LlmError("request aborted by caller", "ABORTED", cause=exc) from exc

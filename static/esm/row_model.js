@@ -4,7 +4,7 @@
  * 六字段（expanded/source/loading/error/loaded/selected）全部由 props(store)
  * 实时投影自三层状态——对行对象 Object.freeze 后 props 仍正确（零状态铁证，V-S4）。
  */
-import { NAV_ROW_HEIGHT, NAV_PHEAD_HEIGHT } from "./state_layers.js?v=32";
+import { NAV_ROW_HEIGHT, NAV_PHEAD_HEIGHT } from "./state_layers.js?v=33";
 
 export function createRowModel(card, store, ctx = {}) {
   const row = {
@@ -32,6 +32,7 @@ export function createRowModel(card, store, ctx = {}) {
 
     key() {
       if (this.kind === "project") return "p:" + this.card.work_id;
+      if (this.kind === "coordination") return "coordination:" + this.wid;
       // [职能入口 2026-10-22] 职能不是卡（不进 cards 表），键用 function_id。
       if (this.kind === "function") return "f:" + this.wid + ":" + this.card.function_id;
       // [评审入口 2026-10-29] 评审卡也不进 cards 表（离树），键用 review_card_id。

@@ -382,8 +382,8 @@ def test_f1_partial_daily_dir_is_discarded(sandbox, monkeypatch):
     r = data_snapshot.snapshot_sync("lockres-f", work_id=wid)
 
     assert r["daily"] is False, "日备不完整不得标成已完成"
-    assert any(getattr(q, "name", "").startswith("daily_") for q in pruned), \
-        f"残缺日备须整份作废（须调 _safe_rmtree）：pruned={pruned}"
+    assert any(q.name.startswith(".daily_") for q in pruned), pruned
+    assert not (data_snapshot.SNAPSHOT_ROOT / wid / f"daily_{data_snapshot._day_stamp()}").exists()
     assert any(f["stage"] == "daily" for f in r["failed"]), r["failed"]
     # 批次本体仍是「好文件进了、坏的记账」，且指纹不更新
     assert _batch_dst(wid, "a.json").exists()

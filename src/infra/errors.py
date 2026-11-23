@@ -53,3 +53,5 @@ class AppError(Exception):
 
 class ModelError(AppError):
     """模型调用相关错误。"""
+
+    partial_content: str | None = None

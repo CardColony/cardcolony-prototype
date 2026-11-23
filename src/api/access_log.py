@@ -136,7 +136,7 @@ def install_access_log(app: FastAPI) -> None:
     @app.middleware("http")
     async def _access_log(request, call_next):  # noqa: ANN001
         path = request.url.path
-        if any(path.startswith(p) for p in _SKIP_PREFIX):
+        if path == "/api/live" or any(path.startswith(p) for p in _SKIP_PREFIX):
             return await call_next(request)
         t0 = time.perf_counter()
         status = 0

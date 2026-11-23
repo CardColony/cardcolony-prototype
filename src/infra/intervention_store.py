@@ -89,6 +89,15 @@ CREATE INDEX IF NOT EXISTS ix_actions_matter ON actions(matter_id);
 -- 的策略，同 policy/scope/target 的不同 fire_key 动作必须共存）：
 -- 两连接同时查无行再各插 ⇒ 后者撞索引，record_action 读回同一编号。
 
+CREATE TABLE IF NOT EXISTS hop_attempt_budget (
+    card_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    pair_id TEXT NOT NULL,
+    logical_hop INTEGER NOT NULL,
+    used INTEGER NOT NULL,
+    PRIMARY KEY (card_id, session_id, pair_id, logical_hop)
+);
+
 CREATE TABLE IF NOT EXISTS errors (
     err_id      INTEGER PRIMARY KEY AUTOINCREMENT,
     dedup_key   TEXT NOT NULL UNIQUE,
@@ -748,6 +757,112 @@ class InterventionStore:
             logger.warning("[intervention] 读事项动作失败 work=%s: %s",
                            work_id, exc)
             return []
+
+    def claim_anomaly_decision(
+            self, work_id: str, *,
+            policy_id: str, scope_key: str, fire_key: str, target: str,
+            mode: str, wake: bool, message: str, matter_id: str = "",
+            step: dict,
+    ) -> tuple[str, bool, str]:
+        """按卡、会话、回合、跳次、异常与任务在同一事务内查并登记。"""
+        pair, round_, anomaly = (
+            str(step.get(k) or "").strip() for k in ("pair_id", "round", "anomaly"))
+        if not (target and pair and round_ and anomaly):
+            return "", False, ""
+        sid = str(step.get("sid") or target)
+        task = str(step.get("task_id") or "")
+        biz_key = "anomaly:" + json.dumps(
+            [sid, pair, round_, anomaly, task], ensure_ascii=False, separators=(",", ":"))
+        now = time.time()
+        try:
+            self._conn(work_id)
+            with closing(sqlite3.connect(
+                    str(self.db_path(work_id)), timeout=10.0)) as conn, conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute("BEGIN IMMEDIATE")
+                hit = conn.execute(
+                    "SELECT action_id,policy_id FROM actions WHERE target=?"
+                    " AND policy_id IN ('turn_remediation','pseudo_call_reinvoke')"
+                    " AND biz_key=? ORDER BY created_ts LIMIT 1",
+                    (target, biz_key)).fetchone()
+                if hit is None and sid == target:
+                    # 旧账只在能还原原跳时沿用。旧 runner 的 message.rounds
+                    # 是触发跳，receipt.round 则是随后发出的补救跳。
+                    rows = conn.execute(
+                        "SELECT action_id,policy_id,message FROM actions WHERE target=?"
+                        " AND ((policy_id='pseudo_call_reinvoke' AND biz_key=?)"
+                        " OR (policy_id='turn_remediation' AND biz_key=''"
+                        " AND instr(fire_key,?)=1)) ORDER BY created_ts",
+                        (target, f"{pair}|{round_}|{anomaly}",
+                         f"remediation|{target}|{pair}|"))
+                    for row in rows:
+                        if row["policy_id"] == "pseudo_call_reinvoke":
+                            if task:
+                                continue
+                        else:
+                            try:
+                                previous = json.loads(row["message"] or "{}")
+                            except (TypeError, ValueError):
+                                continue
+                            if not isinstance(previous, dict):
+                                continue
+                            bound = previous.get("bound")
+                            old_task = (bound.get("task_id") if isinstance(bound, dict) else "")
+                            if (str(previous.get("rounds") or "") != round_
+                                    or str(old_task or "") != task):
+                                continue
+                        hit = row
+                        break
+                if hit:
+                    return (str(hit["action_id"]), False,
+                            str(hit["policy_id"] or ""))
+                aid = "act-" + uuid.uuid4().hex[:12]
+                # runner 的旧事实键只有回合，策略则保留原事件键，
+                # 关闭试点后重放同一事件仍命中原动作。
+                if policy_id == "turn_remediation":
+                    fire_key = f"{fire_key}|{biz_key}"
+                conn.execute(
+                    "INSERT INTO actions(action_id,matter_id,policy_id,"
+                    "scope_key,fire_key,biz_key,step_json,target,mode,wake,"
+                    "message,spec,state,created_ts,updated_ts,created_iso,"
+                    "updated_iso)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?,?)",
+                    (aid, matter_id, policy_id, scope_key, fire_key, biz_key,
+                     json.dumps(step, ensure_ascii=False), target, mode,
+                     1 if wake else 0, message, "",
+                     now, now, _iso(now), _iso(now)))
+                return aid, True, str(policy_id)
+        except sqlite3.Error as exc:  # noqa: BLE001
+            logger.warning("[intervention] 原子决定登记失败 work=%s: %s",
+                           work_id, exc)
+            return "", False, ""
+
+    def reserve_hop_attempt(self, identity: dict, used: int) -> tuple[bool, Optional[int]]:
+        """在实际出站前落已用额度。宿主内存与台账不一致时保留原记录。"""
+        work_id = str(identity.get("work_id") or "")
+        key = (str(identity.get("card_id") or ""),
+               str(identity.get("session_id") or ""),
+               str(identity.get("pair_id") or ""), int(identity.get("logical_hop") or 0))
+        if not work_id or not all(key):
+            return False, None
+        try:
+            self._conn(work_id)
+            with closing(sqlite3.connect(str(self.db_path(work_id)), timeout=0.25)) as conn, conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT used FROM hop_attempt_budget WHERE card_id=?"
+                    " AND session_id=? AND pair_id=? AND logical_hop=?", key).fetchone()
+                prior = row[0] if row else 0
+                if prior != used:
+                    return False, prior
+                conn.execute(
+                    "INSERT INTO hop_attempt_budget VALUES(?,?,?,?,?)"
+                    " ON CONFLICT(card_id,session_id,pair_id,logical_hop)"
+                    " DO UPDATE SET used=excluded.used", (*key, used + 1))
+                return True, used + 1
+        except (OSError, sqlite3.Error) as exc:
+            logger.warning("[intervention] 同跳尝试记账失败 work=%s: %s", work_id, exc)
+            return False, None
 
     def count_open(self, work_id: str) -> int:
         conn = self._conn(work_id)

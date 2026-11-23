@@ -17,6 +17,12 @@ set BASE_PORT=5701
 set ECO_RUNNER_BASE_PORT=%BASE_PORT%
 set /a LAST=%ECO_RUNNER_COUNT%-1
 
+rem ---- backup storage roots on E: mechanical disk (2026-11-22 disk relief) ----
+rem    snapshots + db quarantine copies are the bulk of D: usage (~224GiB);
+rem    keep paths pure ASCII (see header note).
+if not defined ECO_SNAPSHOT_ROOT set ECO_SNAPSHOT_ROOT=E:\AI_station_backups\data_snapshots
+if not defined ECO_DB_QUAR_ROOT set ECO_DB_QUAR_ROOT=E:\AI_station_backups\db_quarantine
+
 if not exist logs mkdir logs
 
 rem ---- 0) kill watchdog first: it would otherwise see the dead service and
@@ -62,7 +68,7 @@ call .venv\Scripts\activate.bat
 rem ---- 1) runners first: minimized windows, stdout -> logs\runnerN_stdout.log ----
 rem    ECO_RUNNER_URL/URLS/ECO_PORT cleared so stale forwarding config can't skew topology.
 for /l %%i in (0,1,%LAST%) do (
-    start "CardColony-runner%%i" /min cmd /c "set ECO_ROLE=runner&& set ECO_RUNNER_COUNT=%ECO_RUNNER_COUNT%&& set ECO_RUNNER_INDEX=%%i&& set ECO_RUNNER_URL=&& set ECO_RUNNER_URLS=&& set ECO_PORT=&& python runner_main.py %%i >> logs\runner%%i_stdout.log 2>&1"
+    start "CardColony-runner%%i" /min cmd /c "set ECO_ROLE=runner&& set ECO_RUNNER_COUNT=%ECO_RUNNER_COUNT%&& set ECO_RUNNER_INDEX=%%i&& set ECO_RUNNER_URL=&& set ECO_RUNNER_URLS=&& set ECO_PORT=&& set ECO_STDOUT_LOG=logs\runner%%i_stdout.log&& python runner_main.py %%i >> logs\runner%%i_boot.log 2>&1"
     echo starting runner%%i ^(port %BASE_PORT%+%%i^)...
 )
 
@@ -82,11 +88,11 @@ echo [WARN] runner ports not all up within 60s, starting web anyway.
 
 rem ---- 2b) condense dedicated process (ECO_ROLE=condense, sole owner of
 rem    condensation; bare health probe on 127.0.0.1:5710) ----
-start "CardColony-condense" /min cmd /c "set ECO_ROLE=condense&& set ECO_RUNNER_COUNT=%ECO_RUNNER_COUNT%&& set ECO_RUNNER_URL=&& set ECO_RUNNER_URLS=&& set ECO_PORT=&& python condense_main.py >> logs\condense_stdout.log 2>&1"
+start "CardColony-condense" /min cmd /c "set ECO_ROLE=condense&& set ECO_RUNNER_COUNT=%ECO_RUNNER_COUNT%&& set ECO_RUNNER_URL=&& set ECO_RUNNER_URLS=&& set ECO_PORT=&& set ECO_STDOUT_LOG=logs\condense_stdout.log&& python condense_main.py >> logs\condense_boot.log 2>&1"
 echo starting condense (probe port 5710)...
 
 rem ---- 3) web on 5700 (visible console) ----
-start "CardColony-web" cmd /c "set ECO_ROLE=web&& set ECO_RUNNER_COUNT=%ECO_RUNNER_COUNT%&& set ECO_RUNNER_URL=&& set ECO_RUNNER_URLS=&& set ECO_PORT=&& python main.py"
+start "CardColony-web" /min cmd /c "set ECO_ROLE=web&& set ECO_RUNNER_COUNT=%ECO_RUNNER_COUNT%&& set ECO_RUNNER_URL=&& set ECO_RUNNER_URLS=&& set ECO_PORT=&& set ECO_STDOUT_LOG=logs\service_stdout.log&& python main.py >> logs\service_boot.log 2>&1"
 
 echo web starting...
 set OK=0
@@ -108,7 +114,7 @@ if %OK%==1 (
 )
 
 rem ---- 4) watchdog + clear manual-stop flag ----
-start "CardColony-watchdog" /min cmd /c "python watchdog.py >> logs\watchdog_stdout.log 2>&1"
+start "CardColony-watchdog" /min cmd /c "set ECO_STDOUT_LOG=logs\watchdog_stdout.log&& python watchdog.py >> logs\watchdog_boot.log 2>&1"
 del logs\.manual_stop >nul 2>&1
 echo watchdog started
 

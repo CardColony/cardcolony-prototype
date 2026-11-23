@@ -47,6 +47,7 @@ import re
 from typing import Any, Awaitable, Callable, Optional
 
 from . import memory_domain as md
+from .stage_cache import StageResponse
 
 logger = logging.getLogger("storage.condense_two_layer")
 
@@ -499,9 +500,10 @@ MAX_STAGE_RETRIES = 3
 
 
 async def run_two_layer(blocks: list[dict[str, Any]],
-                        call_llm: Callable[[str, str], Awaitable[str]],
+                        call_llm: Callable[[str, str], Awaitable[str | StageResponse]],
                         session_id: str = "",
-                        domain_full: str = "") -> dict[str, Any]:
+                        domain_full: str = "",
+                        *, stage_ctx: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """跑 S2a → L1 → L2。`call_llm(system, user) -> text`（异步，由调用方注入）。
 
     返回 `{"ok": bool, "nodes": [...], "descriptions": [...], "stage": 失败在哪一段,
@@ -511,6 +513,11 @@ async def run_two_layer(blocks: list[dict[str, Any]],
 
     `domain_full`（F4）：「memory 全景」文本（调用方现算），拼进三段消息头——
     凝练产出不再与已有结论重复/碎片化；空串＝无全景（老调用方兼容）。
+
+    [批六·阶段复用] ``stage_ctx={"work_id","card_id","model","shard"}``
+    在场且 ``COST_MEMORY_STAGE_CACHE=1`` 时，S2a/L1/L2 各按输入指纹
+    查/写阶段缓存：命中即复用（零出站），校验通过才落盘，中途失败
+    恢复只重发未过校验的段。``stage_bytes`` 随结果回报各段实际输入。
     """
     seqs = [int((b.get("seq") if isinstance(b, dict) else b) or 0) for b in blocks]
     if not seqs:
@@ -525,6 +532,34 @@ async def run_two_layer(blocks: list[dict[str, Any]],
     domain_head = f"【memory 全景】\n{domain_full}\n\n" if domain_full.strip() else ""
     total_retries = 0
 
+    # [批六] 阶段缓存门面：ctx 在场且开关开 ⇒ 每段一次 lookup/store。
+    # 键由宿主构造：窗口逐块内容指纹＋全景指纹＋提示指纹＋模型座。
+    _sc = None
+    if stage_ctx is not None:
+        from . import stage_cache as _stage_cache
+        if _stage_cache.stage_on():
+            _sc = _stage_cache
+    _wid = str((stage_ctx or {}).get("work_id") or "")
+    _cid = str((stage_ctx or {}).get("card_id") or "")
+    _seat = str((stage_ctx or {}).get("model") or "")
+    _shard = str((stage_ctx or {}).get("shard") or "")
+    _route = str((stage_ctx or {}).get("route") or "")
+    _opts_fp = str((stage_ctx or {}).get("options_fp") or "")
+    _orig_fp = str((stage_ctx or {}).get("origin_fp") or "")
+    stage_bytes: dict[str, int] = {}
+
+    def _sc_key(stage: str, prompt: str, extra: Any) -> str:
+        return _sc.stage_key(
+            work_id=_wid, card_id=_cid, session_id=session_id,
+            stage=stage, shard=_shard, inputs=extra, model_seat=_seat,
+            route=_route, prompt_fp=_sc.sha(prompt), options_fp=_opts_fp)
+
+    def _reply_parts(reply: str | StageResponse) -> tuple[str, str | None]:
+        if isinstance(reply, StageResponse):
+            return reply.text, reply.origin_call
+        # 仅脱离生产线路的阶段调用允许使用纯文本替身。
+        return reply, None if _route else ""
+
     # S2a 的输入按**窗口下标**标注（`[idx i]`，0 起连续无洞）——与 S2A_PROMPT
     # 的字面口径一致。
     s2a_body = domain_head + "\n\n".join(f"[idx {i}]\n{_text(i)}" for i in range(len(seqs)))
@@ -534,10 +569,22 @@ async def run_two_layer(blocks: list[dict[str, Any]],
     # 的来源。abort ⇒ 整批作废、mark 不动（调用方按 ok=False 处理）。）
     groups: Optional[list[tuple[int, int]]] = None
     g_err = ""
-    for attempt in (1, 2):
+    _s2a_key = (_sc_key("cond_s2a", S2A_PROMPT, {
+        "blocks": _sc.blocks_fp(blocks), "domain": _sc.sha(domain_head),
+        "origin": _orig_fp})            # 原块可见性凭据：仅改隔离态也失效
+        if _sc else "")
+    if _sc:
+        hit = _sc.lookup(_wid, _cid, stage="cond_s2a", key=_s2a_key,
+                         require_origin=bool(_route),
+                         revalidate=lambda p: parse_groups(
+                             p.get("text") or "", seqs) is not None)
+        if hit is not None:
+            groups = parse_groups(hit.get("text") or "", seqs)
+    for attempt in (() if groups is not None else (1, 2)):
         try:
-            g_text = await call_llm(
-                S2A_PROMPT, s2a_body + (f"\n\n# 上次产出被拒（机械校验）\n{g_err}" if g_err else ""))
+            _s2a_user = s2a_body + (f"\n\n# 上次产出被拒（机械校验）\n{g_err}" if g_err else "")
+            stage_bytes["s2a"] = stage_bytes.get("s2a", 0) + len(_s2a_user.encode("utf-8"))
+            g_text, origin = _reply_parts(await call_llm(S2A_PROMPT, _s2a_user))
         except CondenseTruncated:
             raise                    # [F8a] 截断是终态反馈：整批作废，不许当解析失败重试
         except Exception as exc:  # noqa: BLE001
@@ -548,6 +595,10 @@ async def run_two_layer(blocks: list[dict[str, Any]],
             continue
         groups = parse_groups(g_text, seqs)
         if groups is not None:
+            if _sc and origin is not None:
+                _sc.store_valid(_wid, _cid, stage="cond_s2a", key=_s2a_key,
+                                input_fp={"blocks": len(seqs)},
+                                product={"text": g_text}, origin_call=origin)
             break
         g_err = (f"产出未过机械校验：end 必须是严格递增、且都在 0..{len(seqs) - 1} 的"
                  f"窗口下标；输出格式 {{\"groups\":[{{\"end\":N}},...]}}。请严格按格式重出。")
@@ -574,12 +625,23 @@ async def run_two_layer(blocks: list[dict[str, Any]],
     # 超限才整批作废——原版 retries>3 才 abortL3）
     l1: Optional[list[dict[str, Any]]] = None
     l1_err = ""
-    for attempt in range(1 + MAX_STAGE_RETRIES):
+    _l1_key = (_sc_key("cond_l1", L1_PROMPT, {
+        "groups": _sc.canon(groups), "body": _sc.sha(domain_head + _grouped())})
+        if _sc else "")
+    if _sc:
+        hit = _sc.lookup(_wid, _cid, stage="cond_l1", key=_l1_key,
+                         require_origin=bool(_route),
+                         revalidate=lambda p: parse_l1(
+                             p.get("text") or "", len(groups)) is not None)
+        if hit is not None:
+            l1 = parse_l1(hit.get("text") or "", len(groups))
+    for attempt in range(0 if l1 is not None else 1 + MAX_STAGE_RETRIES):
         try:
-            l1_text = await call_llm(
-                L1_PROMPT, domain_head + _grouped() +
-                (f"\n\n以上共 {len(groups)} 组，每组写一条。"
-                 + (f"\n\n# 上次产出被拒\n{l1_err}" if l1_err else "")))
+            _l1_user = (domain_head + _grouped() +
+                        (f"\n\n以上共 {len(groups)} 组，每组写一条。"
+                         + (f"\n\n# 上次产出被拒\n{l1_err}" if l1_err else "")))
+            stage_bytes["l1"] = stage_bytes.get("l1", 0) + len(_l1_user.encode("utf-8"))
+            l1_text, origin = _reply_parts(await call_llm(L1_PROMPT, _l1_user))
         except CondenseTruncated:
             raise                    # [F8a] 同上：截断透传（整批作废、mark 不动）
         except Exception as exc:  # noqa: BLE001
@@ -590,6 +652,10 @@ async def run_two_layer(blocks: list[dict[str, Any]],
             continue
         l1 = parse_l1(l1_text, len(groups))
         if l1 is not None:
+            if _sc and origin is not None:
+                _sc.store_valid(_wid, _cid, stage="cond_l1", key=_l1_key,
+                                input_fp={"groups": len(groups)},
+                                product={"text": l1_text}, origin_call=origin)
             break
         l1_err = (f"L1 组数或格式不符：必须恰好 {len(groups)} 组，每组以【块N】开头、"
                   f"组内「开始：/经过：/完成：/教训：」分栏。请严格按格式重出。")
@@ -602,13 +668,32 @@ async def run_two_layer(blocks: list[dict[str, Any]],
     # L2 细节（F7：同样重试；超限 ⇒ 只丢细节，结论照常）
     l2: Optional[list[list[dict[str, Any]]]] = None
     l2_err = ""
-    for attempt in range(1 + MAX_STAGE_RETRIES):
+    _l1_json = json.dumps({"l1": l1}, ensure_ascii=False)
+    # [批六·缩量试点 COST_MEMORY_COMPACT_PROMPTS] L2 取细节职责，
+    # 全景头在三段里逐字重发是确定重复——开态只留一句占位。
+    _l2_head = ("【memory 全景】（同 L1，已省略）\n\n"
+                if (_sc and _sc.compact_on()) else domain_head)
+    _l2_key = (_sc_key("cond_l2", L2_PROMPT, {
+        "groups": _sc.canon(groups), "l1": _sc.sha(_l1_json),
+        "body": _sc.sha(_l2_head + _grouped())}) if _sc else "")
+    if _sc:
+        hit = _sc.lookup(_wid, _cid, stage="cond_l2", key=_l2_key,
+                         require_origin=bool(_route),
+                         revalidate=lambda p: parse_l2(
+                             p.get("text") or "", len(groups)) is not None)
+        if hit is not None:
+            l2 = parse_l2(hit.get("text") or "", len(groups))
+    for attempt in range(0 if l2 is not None else 1 + MAX_STAGE_RETRIES):
         try:
-            l2_text = await call_llm(
-                L2_PROMPT, domain_head + _grouped() + "\n\n# L1 三栏\n" +
-                json.dumps({"l1": l1}, ensure_ascii=False) +
-                (f"\n\n# 上次产出被拒\n{l2_err}" if l2_err else ""))
+            _l2_user = (_l2_head + _grouped() + "\n\n# L1 三栏\n" + _l1_json +
+                        (f"\n\n# 上次产出被拒\n{l2_err}" if l2_err else ""))
+            stage_bytes["l2"] = stage_bytes.get("l2", 0) + len(_l2_user.encode("utf-8"))
+            l2_text, origin = _reply_parts(await call_llm(L2_PROMPT, _l2_user))
             l2 = parse_l2(l2_text, len(groups))
+            if l2 is not None and _sc and origin is not None:
+                _sc.store_valid(_wid, _cid, stage="cond_l2", key=_l2_key,
+                                input_fp={"groups": len(groups)},
+                                product={"text": l2_text}, origin_call=origin)
         except CondenseTruncated:
             raise                    # [F8a] L2 截断同样整批作废（「只丢细节」只适用于解析失败）
         except Exception as exc:  # noqa: BLE001
@@ -629,4 +714,5 @@ async def run_two_layer(blocks: list[dict[str, Any]],
     nodes, descs = assemble(seqs, groups, l1, l2, session_id)
     return {"ok": True, "stage": "done", "nodes": nodes, "descriptions": descs,
             "groups": groups, "retries": total_retries,
+            "stage_bytes": stage_bytes,     # [批六] 各段实际输入字节（命中段无该项）
             "consumed": positions[groups[-1][1]] + 1}

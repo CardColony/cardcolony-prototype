@@ -16,9 +16,13 @@ direct（命令权下行）。
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 
+import httpx
 import pytest
+from fastapi import FastAPI
 
 from src.api import card_tools, message_runner
 from src.permissions import policy
@@ -291,3 +295,68 @@ async def test_backfill_skips_when_creator_gone(sandbox):
     assert not meta.get("created_by")
     links = _links_of(wid, cid)
     assert not any(l.get("target") == "card_999" for l in links)
+
+
+async def test_cold_navigation_while_creator_history_is_scanning(sandbox, monkeypatch):
+    from src.api import access_log, routes
+    from src.infra import event_hub, loops, procs
+
+    wid = await _mk_work()
+    root = work_store.work_card_id_of(wid)
+    creator = await _mk_fn(wid)
+    cid = await _mk_sub(wid, root)
+
+    def seed(conn):
+        conn.execute(event_hub._DDL)
+        conn.execute("DELETE FROM work_events WHERE card_id=? AND type='card_created'", (cid,))
+        conn.execute(
+            "INSERT INTO work_events(work_id,card_id,seq,type,data) VALUES(?,?,?,?,?)",
+            (wid, cid, 900, "card_created", json.dumps({"by": creator})),
+        )
+
+    await card_db.run_write(wid, seed)
+    card_db.reset_caches()
+    loop = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    release = threading.Event()
+    scan = card_db._read_creator_history
+    scans = []
+
+    def gated_scan(conn):
+        scans.append(1)
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(10)
+        return scan(conn)
+
+    monkeypatch.setattr(card_db, "_read_creator_history", gated_scan)
+    logged = []
+
+    async def record_access(name, rec):
+        logged.append(rec["p"])
+
+    monkeypatch.setattr(access_log, "write_log", record_access)
+    app = FastAPI()
+    app.include_router(routes.router)
+    access_log.install_access_log(app)
+    assert "/api/live" in loops._NATIVE_GET_TPLS
+    assert "/api/live" in procs._WEB_LOCAL_GET_TPLS
+
+    task = asyncio.create_task(asyncio.to_thread(card_db._migrate_creator_history, wid))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            for path in ("/api/live", "/api/nav/version", "/api/nav", f"/api/works/{wid}/canvas"):
+                res = await asyncio.wait_for(client.get(path), timeout=3)
+                assert res.status_code == 200, res.text
+        assert not task.done()
+        assert "/api/nav" in logged and "/api/live" not in logged
+        assert not _cards(wid)[cid].get("created_by")
+    finally:
+        release.set()
+        await task
+
+    card_db.reset_caches()
+    await asyncio.to_thread(card_db._migrate_creator_history, wid)
+    assert len(scans) == 1
+    assert _cards(wid)[cid]["created_by"] == creator
+    assert policy.check_linked(creator, cid, _cards(wid)) is True

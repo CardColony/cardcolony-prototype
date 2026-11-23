@@ -617,6 +617,9 @@ textarea.ws-edit:focus { outline: none; border-color: var(--c-setting); }
    .msgs-round 轮组容器、.msgs-more 分页入口三件已**删除**（不是注释掉）：
    内容列改由 .flow-view-column 的 748px 承担、轮组容器随扁平节点表退役、
    分页入口改 .flow-view-older。三者的新规则见本文件末尾的 flow 样式段。 */
+/* [隔离联验] 打开原件时高亮定位到的回执消息 */
+.msg.receipt-focus { outline: 2px solid #d05656; outline-offset: 2px; }
+
 .msg {
   max-width: 100%;
   margin: 2px 0;

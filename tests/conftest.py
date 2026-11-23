@@ -92,8 +92,11 @@ def sandbox(tmp_path, monkeypatch):
         data_snapshot, "_FINGERPRINT_FILE", base / ".snapshot_fingerprints.json"
     )
 
-    # prompt 日志（审计双通道之一）
+    # 提示词、观测及模型成本台账都写入本用例的日志目录。
+    from src.infra import observe
+
     monkeypatch.setattr(prompt_log, "LOGS_DIR", logs)
+    monkeypatch.setattr(observe, "LOGS_DIR", logs)
 
     # [调用来源与真实回执 2026-11-19] 派发台账随沙箱（铁律一：不写真实仓库）
     from src.api import tool_receipt as _tr

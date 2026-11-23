@@ -235,6 +235,11 @@ def read_blocks_tx(conn: Any, card_id: str, from_seq: int,
         _read_rows_tx(conn, card_id, from_seq, through_seq)))
 
 
+def read_origin_span_tx(conn: Any, card_id: str, start: int,
+                        end: int) -> list[dict[str, Any]]:
+    return _rows_to_events(_read_rows_tx(conn, card_id, start, end))
+
+
 def _rows_to_events(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """session_blocks 行 → 事件形（seq/type/time/content/data，两读口共用）。"""
     events: list[dict[str, Any]] = []
@@ -264,24 +269,27 @@ def read_origin_seqs(work_id: str, card_id: str,
     再过滤（card_017/2913：5 块覆盖 → 41 块 42 万字符）。缺块由调用方
     比对 seq 集合得出（空洞保持空洞）。
     """
+    if not seqs:
+        return []
+    try:
+        return card_db.read_sync(
+            work_id, lambda conn: read_origin_seqs_tx(conn, card_id, seqs), []) or []
+    except Exception as exc:  # noqa: BLE001 读不到＝没有（不阻断）
+        logger.warning("[origin] 按块号取数失败（视同空）card=%s: %s", card_id, exc)
+        return []
+
+
+def read_origin_seqs_tx(conn: Any, card_id: str,
+                        seqs: list[int]) -> list[dict[str, Any]]:
     want = sorted({int(s) for s in seqs})
     if not want:
         return []
-
-    def _fn(conn: Any) -> list[dict[str, Any]]:
-        q = ",".join("?" * len(want))
-        cur = conn.execute(
-            f"SELECT seq, type, time, content, data FROM session_blocks "
-            f"WHERE card_id = ? AND seq IN ({q}) ORDER BY seq",
-            (card_id, *want))
-        return [dict(r) for r in cur.fetchall()]
-
-    try:
-        rows = card_db.read_sync(work_id, _fn, []) or []
-    except Exception as exc:  # noqa: BLE001 读不到＝没有（不阻断）
-        logger.warning("[origin] 按块号取数失败（视同空）card=%s: %s", card_id, exc)
-        rows = []
-    return _rows_to_events(rows)
+    q = ",".join("?" * len(want))
+    rows = conn.execute(
+        f"SELECT seq, type, time, content, data FROM session_blocks "
+        f"WHERE card_id = ? AND seq IN ({q}) ORDER BY seq",
+        (card_id, *want))
+    return _rows_to_events([dict(r) for r in rows])
 
 
 def trace_entry(work_id: str, card_id: str, seq_from: int,

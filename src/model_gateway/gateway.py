@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -79,6 +80,7 @@ from .llm_devincli import (
     DevinCliConnectionOptions,
 )
 from .mavis_lease import get_default_client
+from .hop_budget import HopBudget, HopBudgetExhausted, HopBudgetUnverified
 
 logger = get_logger(__name__)
 
@@ -645,6 +647,37 @@ class ModelGateway:
         provider = str(mc.get("provider") or _vendor_of(mc))
         return "declared_text" if provider in self._declared_text_vendors else "native"
 
+    def supports_hop_budget(self, primary: str, fallbacks: list[str] | None) -> bool:
+        """仅接入整条候选链均经过 HTTP 发送闸的回合。"""
+        return (os.environ.get("MOCK_LLM") != "1"
+                and all(name in self._models
+                        and _vendor_of(self._models[name]) not in self._declared_text_vendors
+                        for name in _dedup_chain(primary, fallbacks)))
+
+    def cache_route(self, model_name: str) -> dict[str, str]:
+        """请求缓存的线路身份与适配器应回报的实际发送字段。"""
+        selected = self._models[model_name]
+        vendor = _vendor_of(selected)
+        request_model = str(selected.get("model") or model_name)
+        connection = self._lookup(vendor, request_model)
+        protocol = self._endpoint_protocol(model_name)
+        if protocol == "mock":
+            transport = "mock"
+        else:
+            transport = "cli" if vendor in self._declared_text_vendors else "http"
+        base_url = ""
+        if transport == "http":
+            default = "" if vendor == MAVIS_VENDOR else _DEFAULT_DEEPSEEK_BASE_URL
+            base_url = str(connection.get("base_url") or default)
+        config_bytes = json.dumps([selected, connection], sort_keys=True,
+                                  ensure_ascii=False, default=str).encode("utf-8")
+        return {
+            "model_used_entry": model_name, "vendor": vendor,
+            "request_model": request_model, "endpoint_protocol": protocol,
+            "transport": transport, "api_base": base_url,
+            "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+        }
+
     def _result_from(self, assembler: BlockAssembler, model_name: str, started: float,
                      tools: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
         blocks = assembler.blocks()
@@ -745,22 +778,36 @@ class ModelGateway:
         """
         chain = _dedup_chain(model_name, fallbacks)
         last: ModelError | None = None
-        for idx, mname in enumerate(chain):
-            try:
-                res = await self._call_once(mname, *args, **kwargs)
-                # [层内兜底] 把**实际成功的模型**带回去：切过人之后日志/界面
-                # 必须记「真跑的是谁」，不能还写着首选（否则排查又被误导）。
-                if isinstance(res, dict):
-                    res.setdefault("model_used", mname)
-                return res
-            except _SendGuardRejected as exc:
-                raise exc.error from None
-            except ModelError as exc:
-                last = exc
-                if idx + 1 >= len(chain):
-                    break
-                logger.warning("[model] 层内兜底：%s 失败 ⇒ 换 %s（%s）",
-                               mname, chain[idx + 1], str(exc))
+        # [批七·成本台账] 本跳活账：同层换座/重试都记进同一任务身份；
+        # 物理尝试在 send_stream 实际发送边界入账，终帧/用量在流末补记。
+        # ledger_task＝上游（runner/宿主）给的可信任务身份，pop 出来不
+        # 往 _call_once 透传。
+        from ..infra import cost_ledger as _cl
+        _led_task = dict(kwargs.pop("ledger_task", None) or {})
+        _led_task.setdefault("outer_retry", _cl.OUTER_RETRY.get())
+        with _cl.AttemptLedger(task={
+                **_led_task,
+                "work_id": kwargs.get("work_id") or "",
+                "card_id": kwargs.get("card_id") or "",
+                "caller": kwargs.get("caller") or "",
+                "trace_id": kwargs.get("trace_id") or ""}) as _led:
+            for idx, mname in enumerate(chain):
+                try:
+                    res = await self._call_once(mname, *args,
+                                                ledger=_led, **kwargs)
+                    # [层内兜底] 把**实际成功的模型**带回去：切过人之后日志/界面
+                    # 必须记「真跑的是谁」，不能还写着首选（否则排查又被误导）。
+                    if isinstance(res, dict):
+                        res.setdefault("model_used", mname)
+                    return res
+                except _SendGuardRejected as exc:
+                    raise exc.error from None
+                except ModelError as exc:
+                    last = exc
+                    if idx + 1 >= len(chain):
+                        break
+                    logger.warning("[model] 层内兜底：%s 失败 ⇒ 换 %s（%s）",
+                                   mname, chain[idx + 1], str(exc))
         raise last if last is not None else ModelError(
             ErrorCode.MODEL_CALL_FAILED, f"模型 {model_name} 调用失败")
 
@@ -787,6 +834,7 @@ class ModelGateway:
         work_id: str = "",
         card_id: str = "",
         before_send: Any = None,
+        ledger: Any = None,
     ) -> dict[str, Any]:
         # [F22 · 2026-10-31 观测重建] 新增**可选** keyword-only 形参 trace_id/caller：
         # 只加不改——既有调用方零感知（不传＝自动生成 trace_id、caller 空）。
@@ -836,12 +884,15 @@ class ModelGateway:
             # 首事件沿用了失败尝试的记录）。
             _obs.reset_attempt_timings(_trace)
             _think_sp = _make_think_splitter()
+            ledger_attempt = {"seat": model_name, "trace_id": _trace,
+                              "gateway_attempt": attempt + 1}
             try:
                 options = self._build_options(
                     model_name, system_prompt, user_prompt, temperature, max_tokens,
                     tools, prior_messages, turn_tail, turn_once, stream=False,
                     reasoning_effort=reasoning_effort,
                 )
+                options = replace(options, ledger=ledger, ledger_attempt=ledger_attempt)
                 _build_opts_ms = (time.monotonic() - _ser0) * 1000.0
                 assembler = BlockAssembler()
                 emitted: list[str] = []
@@ -896,6 +947,11 @@ class ModelGateway:
                     raise ModelCallFailure(failure.message, _classify(failure))
 
                 result = self._result_from(assembler, model_name, started, tools)
+                from ..infra import cost_ledger as _cl
+                usage = assembler.usage
+                if aid := ledger_attempt.get("attempt_id"):
+                    _cl.note_result(aid, ledger=ledger, terminal=assembler.has_finish,
+                                    usage_raw=getattr(usage, "raw", None))
                 content = result["content"]
                 # DeepSeek 等推理模型返回 reasoning_content 而非 content 的兜底
                 if not content:
@@ -920,7 +976,6 @@ class ModelGateway:
                 _emit("success", attempt)
                 result["truncated_reply"] = self._truncated_reply(result, max_tokens)
                 # [F22] 因果链回执：trace/caller/usage 真值随 result 回传 + JSONL 落账
-                usage = assembler.usage
                 result["trace_id"] = _trace
                 result["caller"] = caller
                 result["usage_in"] = getattr(usage, "input_tokens", None) if usage else None
@@ -954,6 +1009,11 @@ class ModelGateway:
                 raise
             except ModelCallFailure as exc:
                 reason = exc.reason
+                from ..infra import cost_ledger as _cl
+                _cl.note_result(ledger_attempt.get("attempt_id") or _cl.UNBOUND,
+                                ledger=ledger,
+                                failure=str(reason or "model_failure"),
+                                seat=model_name)
                 logger.warning("model_call_retry", model_name=model_name,
                                attempt=attempt + 1, error=exc.message)
                 _emit("retry", attempt, reason=reason)
@@ -967,6 +1027,9 @@ class ModelGateway:
                 )
             except Exception as exc:  # noqa: BLE001 组装/序列化层异常
                 reason = _classify_message(str(exc))
+                from ..infra import cost_ledger as _cl
+                _cl.note_result(ledger_attempt.get("attempt_id") or _cl.UNBOUND,
+                                ledger=ledger, seat=model_name, failure=reason)
                 _emit("retry", attempt, reason=reason)
                 if self._should_give_up(attempt, max_attempts, reason, rg_enabled, rg_budget, rg_caps, loop_start):
                     # [模型设置 2026-10-19 产品裁定] 无降级模型：重试耗尽即如实失败。
@@ -1023,6 +1086,7 @@ class ModelGateway:
         fallbacks: list[str] | None = None,
         work_id: str = "",
         card_id: str = "",
+        hop_budget: Any = None,
         **kwargs: Any,
     ) -> AsyncIterator[dict[str, Any]]:
         """流式调用；``fallbacks`` = **同层**兜底链。
@@ -1030,29 +1094,54 @@ class ModelGateway:
         [层内兜底 2026-10-21] 与 ``call`` 同一语义，但多一条硬约束：
         **一旦已经吐过增量就不再换模型**——否则用户会看到半句话接另一个模型的
         开头，等于把同一轮输出两遍。只有「一个字都还没出就失败」才换下一个。
+
+        [批五·同跳预算 COST_HOP_RETRY_BUDGET] ``hop_budget`` 在场时：本跳
+        所有重试＋层内换座共用同一尝试额度（领用在发送边界）；余额耗尽
+        ⇒ 停止换座如实上抛失败，预算对象记满账目供对账。
         """
         chain = _dedup_chain(model_name, fallbacks)
         last: ModelError | None = None
-        for idx, mname in enumerate(chain):
-            emitted = False
-            try:
-                async for ev in self._stream_once(mname, *args,
-                                                  work_id=work_id, card_id=card_id,
-                                                  **kwargs):
-                    if "chunk_type" in ev:
-                        emitted = True
-                    elif isinstance(ev, dict):
-                        ev.setdefault("model_used", mname)   # 终帧：实际使用的模型
-                    yield ev
-                return
-            except _SendGuardRejected as exc:
-                raise exc.error from None
-            except ModelError as exc:
-                last = exc
-                if emitted or idx + 1 >= len(chain):
-                    break
-                logger.warning("[model] 层内兜底（流式）：%s 失败 ⇒ 换 %s（%s）",
-                               mname, chain[idx + 1], str(exc))
+        # [批七·成本台账] 本跳活账（同 call() 口径）：发送边界/终帧/用量
+        # 沿 contextvar 入账；已吐正文后不再换座的语义不动。
+        from ..infra import cost_ledger as _cl
+        _led_task = dict(kwargs.pop("ledger_task", None) or {})
+        _led_task.setdefault("outer_retry", _cl.OUTER_RETRY.get())
+        with _cl.AttemptLedger(task={
+                **_led_task,
+                "work_id": work_id or "", "card_id": card_id or "",
+                "caller": kwargs.get("caller") or "",
+                "trace_id": kwargs.get("trace_id") or ""}) as _led:
+            for idx, mname in enumerate(chain):
+                emitted = False
+                try:
+                    async for ev in self._stream_once(
+                            mname, *args,
+                            work_id=work_id, card_id=card_id,
+                            hop_budget=hop_budget,
+                            budget_next_seat=idx + 1 < len(chain),
+                            ledger=_led,
+                            **kwargs):
+                        if "chunk_type" in ev:
+                            emitted = True
+                        elif isinstance(ev, dict):
+                            ev.setdefault("model_used", mname)   # 终帧：实际使用的模型
+                        yield ev
+                    return
+                except _SendGuardRejected as exc:
+                    raise exc.error from None
+                except ModelError as exc:
+                    last = exc
+                    # 预算用尽 ⇒ 换座也没额度出站，如实失败（账目在预算对象里）。
+                    # [批五·裁定穿透] 确定性拒绝（auth/deterministic）不换座——
+                    # 同一裁定在下一座同样成立（401/insufficient_balance 实录）。
+                    if emitted or idx + 1 >= len(chain) or (
+                            hop_budget is not None
+                            and (hop_budget.remaining() <= 0
+                                 or getattr(exc, "reason", "")
+                                 in HopBudget.NO_RESEND_REASONS)):
+                        break
+                    logger.warning("[model] 层内兜底（流式）：%s 失败 ⇒ 换 %s（%s）",
+                                   mname, chain[idx + 1], str(exc))
         raise last if last is not None else ModelError(
             ErrorCode.MODEL_CALL_FAILED, f"模型 {model_name} 流式调用失败")
 
@@ -1079,6 +1168,9 @@ class ModelGateway:
         work_id: str = "",
         card_id: str = "",
         before_send: Any = None,
+        hop_budget: Any = None,
+        budget_next_seat: bool = False,
+        ledger: Any = None,
     ) -> AsyncIterator[dict[str, Any]]:
         # [F22 · 2026-10-31] 新增**可选** on_chunk/trace_id/caller（只加不改）：
         # on_chunk ＝ 每个 chunk 事件旁路（凝练 F8 静默判死的计数依据）；
@@ -1124,22 +1216,36 @@ class ModelGateway:
                 reasoning_effort=reasoning_effort,
             )
             transport_facts: dict[str, Any] = {}
-            if on_transport is not None:
-                def observe_dispatch(facts: dict[str, Any]) -> None:
-                    transport_facts.update({
-                        "model_used_entry": model_name,
-                        "endpoint_model": str(mc.get("model") or ""),
-                        "vendor": _vendor_of(mc),
-                        "endpoint_protocol": self._endpoint_protocol(model_name),
-                        "trace_id": _trace,
-                        "attempt": attempt + 1,
-                        **facts,
-                    })
+            ledger_attempt = {"seat": model_name, "trace_id": _trace,
+                              "gateway_attempt": attempt + 1}
+            def observe_dispatch(facts: dict[str, Any]) -> None:
+                # [批五] 实发确认进预算账：gate() 记尝试，这里记 sent。
+                if hop_budget is not None:
+                    hop_budget.confirm_sent()
+                transport_facts.update({
+                    "model_used_entry": model_name,
+                    "endpoint_model": str(mc.get("model") or ""),
+                    "vendor": _vendor_of(mc),
+                    "endpoint_protocol": self._endpoint_protocol(model_name),
+                    "trace_id": _trace,
+                    "attempt": attempt + 1,
+                    **facts,
+                })
+                if on_transport is not None:
                     on_transport(dict(transport_facts))
 
-                options = replace(options, on_dispatch=observe_dispatch)
+            options = replace(options, on_dispatch=observe_dispatch,
+                              ledger=ledger, ledger_attempt=ledger_attempt)
+            if hop_budget is not None:
+                # [批五·发送边界扣账] attempt_gate 在适配器 client.send
+                # 前原子领用；余额不足抛 HopBudgetExhausted（控制结果，
+                # 不进重试/换座——在 _SendGuardRejected 之前传播）。
+                options = replace(
+                    options,
+                    attempt_gate=(lambda seat=model_name: hop_budget.gate(seat)))
             _build_opts_ms = (time.monotonic() - _ser0) * 1000.0
             assembler = BlockAssembler()
+            _emitted = False
             try:
                 response_stream = self._runtime.stream(options)
                 if before_send is not None:
@@ -1150,7 +1256,8 @@ class ModelGateway:
                         # 不计入端点首事件台账（编码发生在网络请求之前）。
                         _json_dumps_ms = float(getattr(chunk, "ms", 0.0))
                         continue
-                    if chunk.type == "response-meta" and transport_facts:
+                    if (chunk.type == "response-meta" and transport_facts
+                            and on_transport is not None):
                         transport_facts.setdefault("response_model", str(chunk.model))
                         on_transport(dict(transport_facts))
                     _obs.call_chunk(_trace)
@@ -1173,15 +1280,36 @@ class ModelGateway:
                                 on_reasoning(chunk.text)
                             except Exception:  # noqa: BLE001
                                 pass
+                        _emitted = True
                         yield {"chunk_type": "reasoning", "chunk": chunk.text, "text": chunk.text}
                     elif chunk.type == "text-delta":
+                        _emitted = True
                         yield {"chunk_type": "content", "chunk": chunk.text, "text": chunk.text}
+                    elif hop_budget is not None and chunk.type == "tool-call-delta":
+                        _emitted = True
                     assembler.push(chunk)
+                if hop_budget is not None and hop_budget.recovery_error is not None:
+                    raise hop_budget.recovery_error
                 failure = _failure_of(assembler)
                 if failure is not None:
-                    raise ModelCallFailure(failure.message, _classify(failure))
+                    raise ModelCallFailure(
+                        failure.message, _classify(failure),
+                        getattr(failure, "provider_retry_after_ms", None))
+                if hop_budget is not None and not assembler.has_finish:
+                    raise ModelCallFailure("模型流结束前未收到终帧", "stream_incomplete")
                 result = self._result_from(assembler, model_name, started, tools)
                 result["terminal_received"] = assembler.has_finish
+                # [批七] 终帧＋端点原始用量入账（无活动台账 no-op）——
+                # usage 取 assembler 归一化前的 wire 原文（raw），缺字段
+                # 记未知、显式 0 留 0。
+                from ..infra import cost_ledger as _cl
+                if aid := ledger_attempt.get("attempt_id"):
+                    _cl.note_result(aid, ledger=ledger, terminal=assembler.has_finish,
+                                    usage_raw=getattr(assembler.usage, "raw", None))
+                if hop_budget is not None:
+                    if assembler.has_finish:
+                        hop_budget.note_terminal()
+                    hop_budget.settle("ok")
                 self.stats.record(model_name, result["tokens_used"], result["latency_ms"], True)
                 _emit("success", attempt)
                 # [F22] 因果链回执 + JSONL 落账（usage 真值随行）
@@ -1214,25 +1342,124 @@ class ModelGateway:
             except _SendGuardRejected:
                 _obs.call_end(_trace)
                 raise
+            except (HopBudgetExhausted, HopBudgetUnverified):
+                # [批五] 预算闸拒：可上抛的控制结果——不进本座重试，
+                # 不算模型失败；外层换座/重发见预算账目自行收口。
+                from ..infra import cost_ledger as _cl
+                _cl.note_control("budget_exhausted", ledger=ledger,
+                                 seat=model_name)
+                _obs.call_end(_trace)
+                raise
             except ModelCallFailure as exc:
-                if attempt < max_attempts - 1:
-                    await asyncio.sleep(backoff)
+                from ..infra import cost_ledger as _cl
+                _cl.note_result(ledger_attempt.get("attempt_id") or _cl.UNBOUND,
+                                ledger=ledger,
+                                failure=str(exc.reason or "model_failure"),
+                                seat=model_name)
+                if hop_budget is not None:
+                    hop_budget.settle(exc.reason)
+                # [批五·已发增量保护] 本尝试已吐可见正文/思考后断流 ⇒
+                # 按原跳收口：已输出内容与回执保住，绝不从头发第二次
+                # （两段输出会都进流）。换座/外层重发同判 exc.emitted。
+                if hop_budget is not None and _emitted:
+                    _obs.call_end(_trace)
+                    _err = ModelError(
+                        ErrorCode.MODEL_CALL_FAILED,
+                        f"模型 {model_name} 已输出部分增量后断流: {exc.message}",
+                    )
+                    _err.reason = exc.reason
+                    _err.retry_after_ms = exc.retry_after_ms
+                    _err.emitted = True
+                    raise _err from None
+                if _budget_retry_ok(attempt, max_attempts, exc.reason,
+                                    hop_budget, budget_next_seat):
+                    # [批五·裁定穿透] Retry-After 优先于固定退避——只在
+                    # 预算试点内生效；关态逐字同旧（固定 backoff）。
+                    _ra = (float(exc.retry_after_ms or 0) / 1000.0
+                           if hop_budget is not None else 0.0)
+                    await asyncio.sleep(max(backoff, _ra))
                     continue
                 # [模型设置 2026-10-19 产品裁定] 无降级模型：流式重试耗尽即如实失败。
                 _obs.call_end(_trace)
-                raise ModelError(
+                _err = ModelError(
                     ErrorCode.MODEL_CALL_FAILED,
                     f"模型 {model_name} 流式重试 {max_attempts} 次后仍失败: {exc.message}",
-                ) from None
+                )
+                # [批五·裁定穿透] 失败类与退避随错误对象上传——换座与
+                # 外层同位置重发据此执行同一裁定（确定性拒绝不重发）。
+                _err.reason = exc.reason
+                _err.retry_after_ms = exc.retry_after_ms
+                _err.emitted = _emitted
+                raise _err from None
             except Exception as exc:  # noqa: BLE001
-                if attempt < max_attempts - 1:
-                    await asyncio.sleep(backoff)
+                if hop_budget is not None and hop_budget.recovery_error is not None:
+                    _obs.call_end(_trace)
+                    raise hop_budget.recovery_error from None
+                _reason = _classify(exc)
+                from ..infra import cost_ledger as _cl
+                _ra_ms = getattr(exc, "provider_retry_after_ms", None)
+                # [批五·裁定穿透] 发送/流式段的适配器把原始异常包成
+                # TRANSPORT（"API request/stream failed"）——结构化裁定与
+                # Retry-After 沿 __cause__ 链取回：内层有非通用类别时
+                # 以内层为准（insufficient_balance 被包成 TRANSPORT 的
+                # 实案：不重发不换座）。
+                _cause = getattr(exc, "__cause__", None)
+                if _cause is not None:
+                    if _ra_ms is None:
+                        _ra_ms = getattr(
+                            _cause, "provider_retry_after_ms", None)
+                    _rc = _classify(_cause)
+                    if _rc not in ("error", "connection"):
+                        _reason = _rc
+                _cl.note_result(ledger_attempt.get("attempt_id") or _cl.UNBOUND,
+                                ledger=ledger, failure=str(_reason or "error"), seat=model_name)
+                if hop_budget is not None:
+                    hop_budget.settle(_reason)
+                # [批五·已发增量保护] 同 ModelCallFailure 分支——断流发生
+                # 在已吐可见增量之后 ⇒ 按原跳收口不再发。
+                if hop_budget is not None and _emitted:
+                    _obs.call_end(_trace)
+                    _err = ModelError(
+                        ErrorCode.MODEL_CALL_FAILED,
+                        f"模型 {model_name} 已输出部分增量后断流: {exc}",
+                    )
+                    _err.reason = _reason
+                    _err.retry_after_ms = _ra_ms
+                    _err.emitted = True
+                    raise _err from exc
+                if _budget_retry_ok(attempt, max_attempts, _reason,
+                                    hop_budget, budget_next_seat):
+                    _ra = (float(_ra_ms or 0) / 1000.0
+                           if hop_budget is not None else 0.0)
+                    await asyncio.sleep(max(backoff, _ra))
                     continue
                 _obs.call_end(_trace)
-                raise ModelError(
+                _err = ModelError(
                     ErrorCode.MODEL_CALL_FAILED,
                     f"模型 {model_name} 流式重试 {max_attempts} 次后仍失败: {exc}",
-                ) from exc
+                )
+                _err.reason = _reason
+                _err.retry_after_ms = _ra_ms
+                _err.emitted = _emitted
+                raise _err from exc
+
+
+def _budget_retry_ok(attempt: int, max_attempts: int, reason: str,
+                     hop_budget: Any, budget_next_seat: bool) -> bool:
+    """本次失败后要不要在本座再试一次（预算模式感知）。
+
+    关态（``hop_budget is None``）⇒ 逐字同旧：``attempt < max_attempts-1``。
+    开态附加两条：
+      - 确定性拒绝（auth/deterministic）不自动重发——同一请求注定同一拒绝；
+      - 有合规下座时把**最后一次**尝试留给它（额度 2 ⇒ A→B，3 ⇒ A→A→B）。
+    """
+    if attempt >= max_attempts - 1:
+        return False
+    if hop_budget is None:
+        return True
+    if reason in HopBudget.NO_RESEND_REASONS:
+        return False
+    return hop_budget.remaining() > (1 if budget_next_seat else 0)
 
 
 def _dedup_chain(primary: str, fallbacks: list[str] | None) -> list[str]:
@@ -1255,10 +1482,13 @@ def _make_think_splitter():
 class ModelCallFailure(Exception):
     """一次调用失败（内部信号，驱动重试；[2026-10-19 裁定] 无降级）。"""
 
-    def __init__(self, message: str, reason: str) -> None:
+    def __init__(self, message: str, reason: str,
+                 retry_after_ms: float | None = None) -> None:
         super().__init__(message)
         self.message = message
         self.reason = reason
+        # [批五·裁定穿透] Retry-After 随结构化失败传过内层/换座/外层重发。
+        self.retry_after_ms = retry_after_ms
 
 
 # ============================================================
@@ -1347,7 +1577,28 @@ class MockAdapter(LlmAdapter):
                 user_prompt = str(m.get("content") or "")
         # 旧 MockGateway 用**配置键**作模型名（`f"[mock:{model_name}] ..."`），此处还原。
         label = self._key_by_wire.get(options.model, options.model)
-        content = f"[mock:{label}] {user_prompt}"
+        # [联调任务书] ECO_LLM_FIXTURE：隔离进程按提示词关键字返回固定正文
+        # （测试替身只固定模型输出；收件/事件/唤醒/恢复仍走真实服务）。
+        fixture_file = os.environ.get("ECO_LLM_FIXTURE", "").strip()
+        fixture_body = ""
+        if fixture_file and os.path.exists(fixture_file):
+            try:
+                import json as _json
+                spec = _json.loads(open(fixture_file, encoding="utf-8").read())
+                caller = str(getattr(options, "caller", "") or "")
+                # 按 caller 精确匹配，再按任何一条 contains 子串匹配提示词
+                entries = spec.get("routes") or []
+                for e in entries:
+                    if str(e.get("caller") or "") and str(e.get("caller")) != caller:
+                        continue
+                    contains = e.get("contains") or []
+                    if contains and not any(str(k) in user_prompt for k in contains):
+                        continue
+                    fixture_body = str(e.get("content") or "")
+                    break
+            except Exception:  # noqa: BLE001 夹具读不出 ⇒ 回退普通 mock 回显
+                fixture_body = ""
+        content = fixture_body or f"[mock:{label}] {user_prompt}"
         for seg in re.findall(r".{1,8}", content):
             if seg:
                 yield TextDelta(index=0, text=seg)
@@ -1389,12 +1640,28 @@ def _classify(failure) -> str:
         return "503"
     if code == "TRANSPORT":
         return "connection"
+    if code == "INVALID_REQUEST":
+        # [批五] 确定性参数/协议拒绝——同一请求重发注定同一拒绝。
+        # 分级表无此类 ⇒ 沿缺省尝试上限，仅预算模式据此停重发。
+        return "deterministic"
+    if code == "QUOTA":
+        # [批五·裁定穿透] 配额/余额耗尽（card_013 insufficient_balance
+        # 实录）——适配器本就裁定"不在可重试码集里"，预算口径同判
+        # deterministic：不重发不换座。
+        return "deterministic"
     return _classify_message(str(getattr(failure, "message", "")))
 
 
 def _classify_message(msg: str) -> str:
     """把错误信息归类成简短 reason（承自旧 `_classify_error`）。"""
     low = msg.lower()
+    # [批五·裁定穿透] 余额/配额类确定性拒绝（card_013 insufficient_balance
+    # 实录）：同一份请求重发只会得同一裁定——不重发不换座。置于通用
+    # 规则之前，"insufficient" 等词不应被 rate/error 泛匹配吞掉。
+    if ("insufficient_balance" in low or "insufficient balance" in low
+            or "payment required" in low or "余额不足" in low
+            or "额度不足" in low or "402" in low):
+        return "deterministic"
     if "503" in low or "service unavailable" in low or "overload" in low:
         return "503"
     if "timeout" in low or "timed out" in low:

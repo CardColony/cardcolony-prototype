@@ -2144,6 +2144,17 @@ async def step(state: RunState) -> StepOutcome:
                     if (isinstance(_pre_cur, int) and 0 <= _pre_cur < len(_pre_steps)
                             and isinstance(_pre_steps[_pre_cur], dict)):
                         _done_step_id = str(_pre_steps[_pre_cur].get("id") or "")
+            # [返工①] 目标回合统筹消息号随 report_up 注入
+            if name == "report_up":
+                _cmid = (state.source or {}).get("coordination_msg_id")
+                if _cmid:
+                    args = {**args, "_coordination_msg_id": str(_cmid)}
+            # [QA 回执归属] 宿主把差事编号注入 report 参数
+            if name == "report" and str((state.source or {}).get("kind")
+                                        or "") == "deploy":
+                _did = (state.source or {}).get("deployment_id")
+                if _did is not None:
+                    args = {**args, "_deployment_id": int(_did)}
             tool_result = await card_tools.execute_tool(
                 state.work_id, str(state.act_as or "") or state.card_id,
                 name, args, cards_meta,
@@ -2908,6 +2919,24 @@ async def finish(state: RunState) -> dict[str, Any]:
 # 错误收口（段③的 except 分支）
 # ============================================================
 
+async def save_interrupted_reply(state: "RunState",
+                                 partial: Any = None) -> None:
+    """模型调用中断时把已收到的残段落盘（无残片则不写）。
+
+    routes 异常路径调用：落盘失败不阻断后续 handle_error/hop_accounting。
+    """
+    text = str(partial or "").strip()
+    if not text:
+        return
+    try:
+        from ..storage import session_facade
+        await session_facade.append(
+            state.work_id, _sid(state),
+            {"content": text, "actor": "assistant"})
+    except Exception:  # noqa: BLE001 残片落盘失败不阻断收口
+        pass
+
+
 def handle_error(state: RunState, exc: Exception) -> None:
     """工具循环异常收口（error 埋点，不阻断错误返回）。
 
@@ -3210,7 +3239,9 @@ async def deliver_now(work_id: str, card_id: str, *,
                       steer_text: str = "",
                       source_kind: str = "internal",
                       source: dict[str, Any] | None = None,
-                      msg_type: str = "") -> bool:
+                      msg_type: str = "",
+                      admission: Any = None,
+                      action_key: str = "") -> bool:
     """**立即**把该卡未处理的消息投递成一轮。返回是否真的送达（起轮或插话）。
 
     [发消息即唤醒 2026-10-22 · D20/D24/D25] 这是「通信」与「投递」的分界线：
@@ -3309,6 +3340,10 @@ async def deliver_now(work_id: str, card_id: str, *,
     # 会再走这里,信不丢。
     try:
         if session_facade.turn_holder(work_id, card_id):
+            if admission is not None:
+                # [治理行动] 带行动键的唤醒只认目标回合过闸确认——
+                # 绝不借 steer 插进正在跑的普通回合（否则普通回合被记成接纳）
+                return False
             if (source or {}).get("basis_task"):
                 # 在途回合绑定的是另一任务，派工留在原会话按原编号接续。
                 return False
@@ -3375,10 +3410,15 @@ async def deliver_now(work_id: str, card_id: str, *,
                  # text 模式 pending 恒空——实跑踩过 list index out of range
                  "from": str(((pending[0] if pending else {}) or {})
                              .get("from_card") or "")})
+        if action_key and isinstance(_src, dict):
+            _src = {**_src, "action_key": str(action_key),
+                    "supervisor_action_key": str(action_key)}
         task = _spawn_tracked(
             _routes._run_message(work_id, card_id, prompt, None,
                                  append_user=False, source=_src,
-                                 source_kind=source_kind),
+                                 source_kind=source_kind,
+                                 **({"admission": admission}
+                                    if admission is not None else {})),
             work_id=work_id, card_id=card_id)
         task._card_msg_target = card_id  # type: ignore[attr-defined]
         task.add_done_callback(_log_trigger_task_done)

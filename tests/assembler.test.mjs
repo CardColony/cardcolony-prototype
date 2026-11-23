@@ -873,3 +873,186 @@ test("prepend：返回 added/touched 供渲染层只挂新行", () => {
   assert.equal(res.added.length, 2);
   assert.equal(res.touched.length, 0);
 });
+
+test("prepend：『调用A→调用B→回执B→回执A』跨页不互换（批尾统一配对）", () => {
+  reset();
+  const T = (i) => new Date(1700000000000 + i * 1000).toISOString();
+  const a = createAssembler();
+  a.rebuild([                                            // 新页窗口：两条孤儿回执
+    recTs("tool_result", T(5), { output: "RB" }, { seq: 5 }),
+    recTs("tool_result", T(6), { output: "RA" }, { seq: 6 }),
+  ]);
+  a.prepend([                                            // 旧页：调用A、调用B
+    recTs("tool_call", T(3), { name: "fA" }, { seq: 3 }),
+    recTs("tool_call", T(4), { name: "fB" }, { seq: 4 }),
+  ]);
+  const tools = list(a).filter((n) => n.kind === "tool");
+  assert.equal(tools.length, 2);
+  /* 重建语义「回执绑最近前置未闭调用」：RB(T5) 绑 fB(T4)、RA(T6) 绑 fA(T3)——
+     修复前 fA 到场即抢首个孤儿 RB ⇒ 互换。 */
+  assert.equal(tools[0].call.name, "fA");
+  assert.equal(tools[0].result.output, "RA");
+  assert.equal(tools[1].call.name, "fB");
+  assert.equal(tools[1].result.output, "RB");
+  const b = createAssembler();                           // 与全量重建逐项一致
+  b.rebuild([
+    recTs("tool_call", T(3), { name: "fA" }, { seq: 3 }),
+    recTs("tool_call", T(4), { name: "fB" }, { seq: 4 }),
+    recTs("tool_result", T(5), { output: "RB" }, { seq: 5 }),
+    recTs("tool_result", T(6), { output: "RA" }, { seq: 6 }),
+  ]);
+  assert.deepEqual(a.snapshot().order, b.snapshot().order, "键序 == 全量重建");
+});
+
+test("prepend：旧页回执不挂新页尚未闭合的调用（位次界）", () => {
+  reset();
+  const T = (i) => new Date(1700000000000 + i * 1000).toISOString();
+  const a = createAssembler();
+  a.rebuild([                                            // 新页：未闭合的调用B
+    recTs("tool_call", T(9), { name: "fB" }, { seq: 9 }),
+  ]);
+  a.prepend([                                            // 旧页：调用A＋回执A
+    recTs("tool_call", T(2), { name: "fA" }, { seq: 2 }),
+    recTs("tool_result", T(3), { output: "RA" }, { seq: 3 }),
+  ]);
+  const tools = list(a).filter((n) => n.kind === "tool");
+  assert.equal(tools.length, 2);
+  assert.equal(tools[0].call.name, "fA");
+  assert.equal(tools[0].result && tools[0].result.output, "RA",
+    "回执A 归位到调用A——修复前会被新页的调用B 吸走");
+  assert.equal(tools[1].call.name, "fB");
+  assert.equal(tools[1].result, null, "fB 仍未闭合（没有更早的回执）");
+  const b = createAssembler();
+  b.rebuild([
+    recTs("tool_call", T(2), { name: "fA" }, { seq: 2 }),
+    recTs("tool_result", T(3), { output: "RA" }, { seq: 3 }),
+    recTs("tool_call", T(9), { name: "fB" }, { seq: 9 }),
+  ]);
+  assert.deepEqual(a.snapshot().order, b.snapshot().order, "键序 == 全量重建");
+});
+
+/** 切点对账：四个事件按三种切法分「新页(rebuild) + 旧页(prepend)」，
+    逐一切点与全量重建逐项对账行序、回执归属和详情 seq。 */
+function assertSameAsRebuild(tools, refTools, tag) {
+  assert.equal(tools.length, refTools.length, tag + "：节点数");
+  tools.forEach((n, i) => {
+    const r = refTools[i];
+    assert.equal(n.call && n.call.name, r.call && r.call.name, `${tag}#${i} 调用名`);
+    assert.equal(n.result && n.result.output, r.result && r.result.output,
+      `${tag}#${i} 回执归属`);
+    assert.equal(n._resultSeq, r._resultSeq, `${tag}#${i} 详情回取 seq`);
+  });
+}
+
+test("prepend：『调用A→调用B→回执A→回执B』带 call_id——三切点均与重建一致", () => {
+  reset();
+  const T = (i) => new Date(1700000000000 + i * 1000).toISOString();
+  const evs = [
+    recTs("tool_call", T(3), { name: "fA", tool_call_id: "id-A" }, { seq: 3 }),
+    recTs("tool_call", T(4), { name: "fB", tool_call_id: "id-B" }, { seq: 4 }),
+    recTs("tool_result", T(5), { output: "RA", tool_call_id: "id-A" }, { seq: 5 }),
+    recTs("tool_result", T(6), { output: "RB", tool_call_id: "id-B" }, { seq: 6 }),
+  ];
+  const ref = createAssembler();
+  ref.rebuild(evs);
+  const refTools = list(ref).filter((n) => n.kind === "tool");
+  for (const cut of [1, 2, 3]) {
+    const a = createAssembler();
+    a.rebuild(evs.slice(cut));          // 新页先装（切点在调用之间 ⇒ 回执无调用在场）
+    a.prepend(evs.slice(0, cut));       // 旧页补入
+    assertSameAsRebuild(
+      list(a).filter((n) => n.kind === "tool"), refTools, `cut=${cut}`);
+    assert.deepEqual(a.snapshot().order, ref.snapshot().order,
+      `cut=${cut} 键序 == 全量重建`);
+  }
+});
+
+test("prepend：同时间戳无 id 调用/回执——三切点均与重建一致", () => {
+  reset();
+  const T = "2026-11-22T00:00:00.000Z";
+  const evs = [
+    recTs("tool_call", T, { name: "f1" }, { seq: 3 }),
+    recTs("tool_call", T, { name: "f2" }, { seq: 4 }),
+    recTs("tool_result", T, { output: "R1" }, { seq: 5 }),
+    recTs("tool_result", T, { output: "R2" }, { seq: 6 }),
+  ];
+  const ref = createAssembler();
+  ref.rebuild(evs);
+  const refTools = list(ref).filter((n) => n.kind === "tool");
+  for (const cut of [1, 2, 3]) {
+    const a = createAssembler();
+    a.rebuild(evs.slice(cut));
+    a.prepend(evs.slice(0, cut));
+    /* 无 id ⇒ 沿用全量重建配对语义：同 ts 切点错挂的回执要被前插调用抢回。 */
+    assertSameAsRebuild(
+      list(a).filter((n) => n.kind === "tool"), refTools, `cut=${cut}`);
+    assert.deepEqual(a.snapshot().order, ref.snapshot().order,
+      `cut=${cut} 同 ts 键序 == 全量重建`);
+  }
+});
+
+function assertLegacyToolPairsAcrossAllPageBoundaries(laterResultTs) {
+  reset();
+  const callTs = "2026-11-22T00:00:00.000Z";
+  /* 六事件：callA callB callC R1 R2 R3（无 call_id）。
+     重建语义：Ri 绑「位次最优的前置未闭调用」⇒ A→R1、B→R2、C→R3。 */
+  const evs = [
+    recTs("tool_call", callTs, { name: "fA" }, { seq: 3 }),
+    recTs("tool_call", callTs, { name: "fB" }, { seq: 4 }),
+    recTs("tool_call", callTs, { name: "fC" }, { seq: 5 }),
+    recTs("tool_result", callTs, { output: "R1" }, { seq: 6 }),
+    recTs("tool_result", laterResultTs, { output: "R2" }, { seq: 7 }),
+    recTs("tool_result", laterResultTs, { output: "R3" }, { seq: 8 }),
+  ];
+  const ref = createAssembler();
+  ref.rebuild(evs);
+  const refTools = list(ref).filter((n) => n.kind === "tool");
+  /* 5 个事件间隙，每个可为页界 ⇒ 2^5-1=31 种 ≥2 页的连续分页组合。
+     回放真实翻页序：rebuild(最后一页) 再逐页 prepend 更旧的页。 */
+  for (let mask = 1; mask < 32; mask++) {
+    const pages = [];
+    let cur = [evs[0]];
+    for (let g = 0; g < 5; g++) {
+      if (mask & (1 << g)) { pages.push(cur); cur = []; }
+      cur.push(evs[g + 1]);
+    }
+    pages.push(cur);
+    const a = createAssembler();
+    a.rebuild(pages[pages.length - 1]);
+    for (let pi = pages.length - 2; pi >= 0; pi--) a.prepend(pages[pi]);
+    assertSameAsRebuild(
+      list(a).filter((n) => n.kind === "tool"), refTools, `mask=${mask}`);
+    assert.deepEqual(a.snapshot().order, ref.snapshot().order,
+      `mask=${mask} 键序 == 全量重建`);
+  }
+}
+
+test("prepend：同 ts 无 id 三调用三回执——31 种分页组合全与重建一致", () => {
+  assertLegacyToolPairsAcrossAllPageBoundaries("2026-11-22T00:00:00.000Z");
+});
+
+test("prepend：跨 ts 无 id 回执不重复认领待归并调用——31 种分页组合与重建一致", () => {
+  assertLegacyToolPairsAcrossAllPageBoundaries("2026-11-22T00:00:01.000Z");
+});
+
+test("prepend：旧页包含完整的同 ts 无 id 工具批次，按记录序配对", () => {
+  reset();
+  const ts = "2026-11-22T00:00:00.000Z";
+  const older = [
+    recTs("tool_call", ts, { name: "fA" }, { seq: 1 }),
+    recTs("tool_call", ts, { name: "fB" }, { seq: 2 }),
+    recTs("tool_result", ts, { output: "R1" }, { seq: 3 }),
+    recTs("tool_result", ts, { output: "R2" }, { seq: 4 }),
+  ];
+  const newer = [
+    recTs("user_message", "2026-11-22T00:00:01.000Z", { content: "后续消息" }, { seq: 5 }),
+  ];
+  const ref = createAssembler();
+  ref.rebuild([...older, ...newer]);
+  const a = createAssembler();
+  a.rebuild(newer);
+  a.prepend(older);
+  assertSameAsRebuild(list(a).filter((n) => n.kind === "tool"),
+    list(ref).filter((n) => n.kind === "tool"), "旧页工具批次");
+  assert.deepEqual(a.snapshot().order, ref.snapshot().order);
+});

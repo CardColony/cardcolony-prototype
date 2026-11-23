@@ -135,8 +135,11 @@ _REVISIONS_DDL = (
     " assignment_id TEXT NOT NULL,"
     " rev INTEGER NOT NULL,"
     " plan TEXT NOT NULL,"
-    " saved_at TEXT, saved_by TEXT)"
+    " saved_at TEXT, saved_by TEXT,"
+    " detail TEXT NOT NULL DEFAULT '')"
 )
+# [2026-11-23 · 计划板] 既有库补列（CREATE 不覆盖已存在表）
+_REVISIONS_ALTERS = ("detail TEXT NOT NULL DEFAULT ''",)
 _REVISIONS_IDX = (
     "CREATE INDEX IF NOT EXISTS idx_coord_rev_card"
     " ON coordination_plan_revisions(work_id, plan_card_id, rev)",
@@ -177,6 +180,13 @@ def _ensure(conn: sqlite3.Connection) -> None:
     conn.execute(_REVISIONS_DDL)
     for idx in _REVISIONS_IDX:
         conn.execute(idx)
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(coordination_plan_revisions)").fetchall()}
+    for col_sql in _REVISIONS_ALTERS:
+        name = col_sql.split()[0]
+        if name not in cols:
+            conn.execute(
+                f"ALTER TABLE coordination_plan_revisions ADD COLUMN {col_sql}")
     conn.execute(_OBSERVATIONS_DDL)
     for idx in _OBSERVATIONS_IDX:
         conn.execute(idx)
@@ -384,22 +394,23 @@ def _require_appt(conn: sqlite3.Connection, work_id: str, plan_card_id: str,
 async def control_op(work_id: str, plan_card_id: str, *, assignment_id: str,
                      op: str, mode: str = "", observe: Any = None,
                      instruct: Any = None, next_review_at: str = "",
+                     models: Any = None,
                      note: str = "", expected_rev: Optional[int] = None,
                      ) -> dict[str, Any]:
-    """状态与控制操作：pause/resume/revoke/finish/wake/set_mode/set_grant。
+    """管理统筹状态、授权、模型与下次回看。
 
     每次成功操作 op_seq+1（旧执行令牌失效）；**每次状态变更都递增 rev**
-    （pause/resume/revoke/finish/set_mode/set_grant——[2026-11-21 · 用户令]
+    （包括状态、模式、授权、模型和回看时间的变更。
     旧页面拿旧版本再提交必得 409）；wake 是入账，不递增。
 
     [读入版本 2026-11-21 · 用户令] 任务书「任命以外的变更带当前任命标识和
-    **读入版本**」：变更类操作（pause/resume/revoke/finish/set_mode/set_grant）
+    **读入版本**」：变更类操作
     校验 expected_rev——不匹配 ⇒ conflict 带最新版本（防旧面板盲发控制）。
     expected_rev=None 表示调用方未带（直调兼容）；HTTP 层要求必带。
     wake 是入账不是变更，不校验版本。
     """
     _REV_CHECK_OPS = ("pause", "resume", "revoke", "finish", "set_mode",
-                      "set_grant", "set_review_at")
+                     "set_grant", "set_review_at", "set_models")
     now = _now()
 
     def _fn(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -457,6 +468,13 @@ async def control_op(work_id: str, plan_card_id: str, *, assignment_id: str,
             sets.append("mode=?")
             args.append(str(mode))
             sets.append("rev=rev+1")
+        elif op == "set_models":
+            if row["state"] not in ACTIVE_STATES:
+                raise CoordinationError("denied", "任命已结束，不能再改模型")
+            configured = _validate_models(models)
+            validate_model_routes(configured)
+            sets.extend(("models=?", "rev=rev+1"))
+            args.append(_dumps(configured))
         elif op == "set_review_at":
             date = _parse_future_time(next_review_at)
             current = datetime.fromisoformat(row["next_review_at"])
@@ -494,15 +512,34 @@ async def control_op(work_id: str, plan_card_id: str, *, assignment_id: str,
     return await card_db.run_write(work_id, _fn)
 
 
+def _board_items_for(conn, assignment_id: str, plan: dict) -> list[dict]:
+    from . import coordination_board
+
+    items = coordination_board.materialize_items(plan.get("items"))
+    if not any("source_cards" not in it for it in items):
+        return items
+    legacy_model_items = set()
+    for row in conn.execute(
+            "SELECT detail FROM coordination_plan_revisions WHERE assignment_id=? AND saved_by='model'",
+            (assignment_id,)):
+        legacy_model_items.update(_loads(row["detail"], {}).get("changed") or [])
+    for item in items:
+        # 旧版模型改板未记录来源，原件留在用户板面，模型出站按未知来源处理。
+        if item["item_id"] in legacy_model_items:
+            item.setdefault("source_cards", None)
+        elif "_coord_sources" in plan:
+            item.setdefault("source_cards", plan["_coord_sources"])
+    return items
+
+
 async def save_plan(work_id: str, plan_card_id: str, *, assignment_id: str,
                     expected_rev: int, plan: Any,
                     by: str = "user", source_cards: Optional[set[str]] = None) -> dict[str, Any]:
     """保存完整新计划（乐观并发）：expected_rev 不匹配 ⇒ CONFLICT+最新版本。"""
     if not isinstance(plan, dict):
         raise CoordinationError("validation", "plan 必须是对象（完整的新计划）")
-    plan = {key: value for key, value in plan.items() if key != "_coord_sources"}
-    if source_cards is not None:
-        plan["_coord_sources"] = sorted(source_cards)
+    plan = {key: value for key, value in plan.items()
+            if key not in ("_coord_sources", "_board_requirement_sources")}
     now = _now()
 
     def _fn(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -518,16 +555,33 @@ async def save_plan(work_id: str, plan_card_id: str, *, assignment_id: str,
                 f"计划版本已过期（你提交的是 {expected_rev}，当前 {cur_rev}）"
                 "——请读取最新版本后再改",
                 current_rev=cur_rev, plan=_loads(row["plan"], {}))
+        # 兼容尚无条目的旧版首份计划。已有条目沿计划板更新。
+        from . import coordination_board as _board
+        previous = _loads(row["plan"], {})
+        old_items = _board_items_for(conn, assignment_id, previous)
+        if not old_items:
+            old_items = _board.materialize_items(plan.get("items"))
+            for item in old_items:
+                item.pop("source_cards", None)
+                if source_cards is not None:
+                    item["source_cards"] = sorted(source_cards)
+        updated = {**plan, "items": old_items}
+        if source_cards is not None:
+            updated["_coord_sources"] = sorted(source_cards)
+        elif "_coord_sources" in previous:
+            updated["_coord_sources"] = previous["_coord_sources"]
+        if "_board_requirement_sources" in previous:
+            updated["_board_requirement_sources"] = previous["_board_requirement_sources"]
         new_rev = cur_rev + 1
         conn.execute(
             "UPDATE coordination_appointments"
             " SET plan=?, rev=rev+1, updated_at=?, op_seq=op_seq+1"
-            " WHERE id=?", (_dumps(plan), now, row["id"]))
+            " WHERE id=?", (_dumps(updated), now, row["id"]))
         conn.execute(
             "INSERT INTO coordination_plan_revisions"
             " (work_id,plan_card_id,assignment_id,rev,plan,saved_at,saved_by)"
             " VALUES (?,?,?,?,?,?,?)",
-            (work_id, plan_card_id, assignment_id, new_rev, _dumps(plan),
+            (work_id, plan_card_id, assignment_id, new_rev, _dumps(updated),
              now, str(by)))
         row2 = conn.execute(
             "SELECT * FROM coordination_appointments WHERE id=?",
@@ -535,6 +589,207 @@ async def save_plan(work_id: str, plan_card_id: str, *, assignment_id: str,
         return {"ok": True, "appointment": _row_to_appt(row2)}
 
     return await card_db.run_write(work_id, _fn)
+
+
+def _verify_board_item(conn, work_id: str, plan_card_id: str, assignment_id: str,
+                       item: dict, old: dict, requirements: dict,
+                       allowed: Optional[set[str]], reads: dict[str, dict]) -> None:
+    import hashlib
+    import re
+    from . import event_log
+
+    iid = item["item_id"]
+    prior_sources = item.get("source_cards", [])
+    sources = set(prior_sources) if isinstance(prior_sources, list) else set()
+    if allowed is not None and any(item.get(k) != old.get(k)
+                                   for k in ("title", "next_result", "result_note")):
+        sources.update(allowed)
+
+    def accept_source(cid: str) -> None:
+        if not cid or (allowed is not None and cid not in allowed):
+            raise CoordinationError("validation", f"事项 {iid} 的来源超出观察范围")
+        sources.add(cid)
+
+    owner = item["owner_card"]
+    if owner and owner != old.get("owner_card"):
+        if not conn.execute("SELECT 1 FROM cards WHERE card_id=?", (owner,)).fetchone():
+            raise CoordinationError("validation", f"事项 {iid} 的责任卡不存在")
+        accept_source(owner)
+    completing = item["status"] == "done" and old.get("status") != "done"
+    if completing or item["requirement_refs"] != old.get("requirement_refs", []):
+        canonical = []
+        for ref in item["requirement_refs"]:
+            read = reads.get(ref)
+            if read and read.get("action") == "coord_read_card":
+                cid = read["card_id"]
+                version = read.get("version") or {}
+                body = read.get("requirements") or ""
+                fingerprint = hashlib.sha256(body.encode("utf-8")).hexdigest()[:12]
+                if body.strip() and fingerprint == version.get("sha256"):
+                    ref = f"req:{work_id}:{cid}:{fingerprint}"
+                    requirements[ref] = {"card_id": cid, "version": version, "text": body}
+            record = requirements.get(ref)
+            if not record:
+                # 用户可引用当前正稿的卡号；存档统一转换为带版本的坐标。
+                parts = ref.split(":")
+                cid = parts[2] if len(parts) == 4 and parts[:2] == ["req", work_id] else ref
+                if not re.fullmatch(r"card_[A-Za-z0-9_-]+", cid):
+                    raise CoordinationError("validation", f"事项 {iid} 的需求引用不可核验: {ref}")
+                current = conn.execute(
+                    "SELECT requirements,requirements_state,updated_at FROM cards WHERE card_id=?",
+                    (cid,)).fetchone()
+                body = str(current["requirements"] or "") if current else ""
+                fingerprint = hashlib.sha256(body.encode("utf-8")).hexdigest()[:12]
+                if not body.strip() or (len(parts) == 4 and parts[3] != fingerprint):
+                    raise CoordinationError("validation", f"事项 {iid} 的需求版本不可核验: {ref}")
+                ref = f"req:{work_id}:{cid}:{fingerprint}"
+                record = {"card_id": cid, "text": body, "version": {
+                    "sha256": fingerprint, "state": current["requirements_state"],
+                    "updated_at": current["updated_at"]}}
+                requirements[ref] = record
+            accept_source(record["card_id"])
+            canonical.append(ref)
+        item["requirement_refs"] = list(dict.fromkeys(canonical))
+
+    if completing or item["evidence_refs"] != old.get("evidence_refs", []):
+        for ref in item["evidence_refs"]:
+            parts = ref.split(":")
+            if len(parts) == 2 and parts[0] == "receipt" and conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='coordination_evidence'"
+                    ).fetchone():
+                receipt = conn.execute(
+                    "SELECT from_card FROM coordination_evidence WHERE work_id=? AND plan_card_id=?"
+                    " AND assignment_id=? AND item_id=? AND reply_msg_id=? AND status='verified'",
+                    (work_id, plan_card_id, assignment_id, iid, parts[1])).fetchone()
+                if receipt:
+                    accept_source(receipt["from_card"])
+                    continue
+            if (len(parts) == 4 and parts[:2] == ["event", work_id]
+                    and re.fullmatch(r"(card|fn)_[A-Za-z0-9_-]+", parts[2])
+                    and parts[3].isascii() and parts[3].isdigit() and len(parts[3]) <= 18):
+                cid, seq = parts[2], int(parts[3])
+                accept_source(cid)
+                event = next((ev for ev in event_log.timeline(
+                    work_id, cid, from_seq=seq, before=seq + 1)
+                    if ev.get("seq") == seq), None)
+                if event and ((event.get("data") or {}).get("item_id") == iid
+                              or (cid == owner and not completing)):
+                    continue
+            raise CoordinationError("validation", f"事项 {iid} 的证据引用不可核验: {ref}")
+
+    if completing and conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='coordination_qa'"
+            ).fetchone():
+        qa = conn.execute(
+            "SELECT verdict FROM coordination_qa WHERE work_id=? AND plan_card_id=?"
+            " AND assignment_id=? AND item_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (work_id, plan_card_id, assignment_id, iid)).fetchone()
+        if qa and qa["verdict"] != "passed":
+            raise CoordinationError("validation", f"事项 {iid} 的最新 QA 尚未通过")
+    item["source_cards"] = sorted(sources) if isinstance(prior_sources, list) else None
+
+
+async def board_apply(work_id: str, plan_card_id: str, *, assignment_id: str,
+                      expected_rev: int, changes: Any, reason: str = "",
+                      by: str = "user", source_cards: Optional[set[str]] = None,
+                      requirement_reads: Optional[dict[str, dict]] = None) -> dict[str, Any]:
+    """计划板批量变更（与 save_plan 同一版本保存入口）：单事务
+    校验整批 → 落库 → 版本推进。任一条不合法 ⇒ 整批零写入。
+
+    [2026-11-23 · 统筹计划板任务书]
+    - 状态闸同 save_plan：active/paused 可写（用户面板在暂停期仍可维护，
+      强模型只在活跃回合里调到这层）；revoked/finished 一律拒绝。
+    - expected_rev 不匹配 ⇒ conflict，带回当前版本与当前条目投影。
+    - 新条目 ID 由宿主分配（模型给的 item_id 撞名即拒，不覆盖既有事项）。
+    - 历史：完成/受阻/重开/排序/插入都进 coordination_plan_revisions，
+      detail 记 kind/reason/changed/allocated——可回读操作者、时间、理由。
+    """
+    from . import coordination_board as _board
+    now = _now()
+
+    def _fn(conn: sqlite3.Connection) -> dict[str, Any]:
+        _ensure(conn)
+        row = _require_appt(conn, work_id, plan_card_id, assignment_id)
+        if row["state"] not in (("active",) if source_cards is not None else ACTIVE_STATES):
+            raise CoordinationError(
+                "denied", f"当前状态 {row['state']} 的任命不能再改计划板")
+        cur_rev = int(row["rev"])
+        plan = _loads(row["plan"], {})
+        items_now = _board_items_for(conn, assignment_id, plan)
+        for item in items_now:
+            item.setdefault("source_cards", plan.get("_coord_sources", []))
+        visible = _board.visible_items({"plan": {"items": items_now}}, source_cards)
+        if int(expected_rev) != cur_rev:
+            raise CoordinationError(
+                "conflict",
+                f"计划版本已过期（你读入的是 {expected_rev}，当前 {cur_rev}）"
+                "——请重读当前板后再改",
+                current_rev=cur_rev, items=visible)
+        merged, changed, allocated, errors = _board.apply_changes(
+            items_now, changes)
+        if errors:
+            raise CoordinationError(
+                "validation", "；".join(errors),
+                errors=errors, current_rev=cur_rev)
+        old = {item["item_id"]: item for item in items_now}
+        visible_ids = {item["item_id"] for item in visible}
+        requirements = dict(plan.get("_board_requirement_sources") or {})
+        for it in merged:
+            iid = it["item_id"]
+            if iid not in changed:
+                continue
+            if iid in old and iid not in visible_ids:
+                raise CoordinationError("denied", "事项不可编辑")
+            _verify_board_item(conn, work_id, plan_card_id, assignment_id, it,
+                               old.get(iid, {}), requirements, source_cards,
+                               requirement_reads or {})
+        plan["items"] = merged
+        if requirements:
+            plan["_board_requirement_sources"] = requirements
+        new_rev = cur_rev + 1
+        conn.execute(
+            "UPDATE coordination_appointments"
+            " SET plan=?, rev=rev+1, updated_at=?, op_seq=op_seq+1"
+            " WHERE id=?", (_dumps(plan), now, row["id"]))
+        conn.execute(
+            "INSERT INTO coordination_plan_revisions"
+            " (work_id,plan_card_id,assignment_id,rev,plan,saved_at,saved_by,"
+            " detail) VALUES (?,?,?,?,?,?,?,?)",
+            (work_id, plan_card_id, assignment_id, new_rev, _dumps(plan),
+             now, str(by),
+             _dumps({"kind": "board_apply", "reason": str(reason or ""),
+                     "changed": changed, "allocated": allocated})))
+        return {"ok": True, "rev": new_rev, "changed": changed,
+                "allocated": allocated}
+
+    return await card_db.run_write(work_id, _fn)
+
+
+def board_item_receipts(work_id: str, plan_card_id: str, assignment_id: str,
+                        item_id: str, allowed: set[str]) -> dict:
+    """单项查板的可引用执行回执与 QA 结论。"""
+    def _read(conn):
+        keys = (work_id, plan_card_id, assignment_id, item_id)
+        try:
+            evidence = conn.execute(
+                "SELECT from_card,reply_msg_id FROM coordination_evidence WHERE work_id=?"
+                " AND plan_card_id=? AND assignment_id=? AND item_id=? AND status='verified'",
+                keys).fetchall()
+        except sqlite3.OperationalError:
+            evidence = []
+        result = {"verified_receipts": [f"receipt:{e['reply_msg_id']}" for e in evidence
+                                        if e["from_card"] in allowed]}
+        try:
+            qa = conn.execute(
+                "SELECT target_card,verdict FROM coordination_qa WHERE work_id=? AND plan_card_id=?"
+                " AND assignment_id=? AND item_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
+                keys).fetchone()
+        except sqlite3.OperationalError:
+            qa = None
+        if qa and qa["target_card"] in allowed:
+            result["qa_verdict"] = qa["verdict"] or "unverified"
+        return result
+    return card_db.read_sync(work_id, _read, {})
 
 
 def _overdue(next_review_at: str) -> bool:
@@ -609,33 +864,36 @@ async def consume_wake(work_id: str, assignment_id: str, kind: str, key: str) ->
 
 # ---------------------------------------------------------------- 调用账本
 
-async def add_observation(work_id: str, plan_card_id: str, *,
-                          assignment_id: str, kind: str, status: str,
-                          batch_id: str = "", decision: str = "",
-                          item_id: str = "", reason: str = "",
-                          evidence_refs: Any = None, question: str = "",
-                          model_used: str = "", usage: Any = None,
-                          detail: Any = None) -> dict[str, Any]:
-    """记一条模型调用账（弱模型观察 / 强模型起轮）。只记账，不产生效果。"""
+async def add_observation(work_id: str, plan_card_id: str,
+                          **observation: Any) -> dict[str, Any]:
+    """记一条模型调用或统筹操作的账。"""
+    return await card_db.run_write(
+        work_id, lambda conn: add_observation_tx(conn, work_id, plan_card_id, **observation))
+
+
+def add_observation_tx(conn: sqlite3.Connection, work_id: str, plan_card_id: str, *,
+                       assignment_id: str, kind: str, status: str,
+                       batch_id: str = "", decision: str = "",
+                       item_id: str = "", reason: str = "",
+                       evidence_refs: Any = None, question: str = "",
+                       model_used: str = "", usage: Any = None,
+                       detail: Any = None) -> dict[str, Any]:
+    """在调用方事务内记账。"""
+    _ensure(conn)
     now = _now()
-
-    def _fn(conn: sqlite3.Connection) -> dict[str, Any]:
-        _ensure(conn)
-        cur = conn.execute(
-            "INSERT INTO coordination_observations"
-            " (work_id,plan_card_id,assignment_id,kind,batch_id,decision,"
-            "  item_id,status,reason,evidence_refs,question,model_used,"
-            "  usage,detail,created_at,updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (work_id, plan_card_id, str(assignment_id), str(kind),
-             str(batch_id or ""), str(decision or ""), str(item_id or ""),
-             str(status), str(reason or ""),
-             _dumps(list(evidence_refs or [])), str(question or ""),
-             str(model_used or ""), _dumps(usage or {}),
-             _dumps(detail or {}), now, now))
-        return {"ok": True, "id": int(cur.lastrowid)}
-
-    return await card_db.run_write(work_id, _fn)
+    cur = conn.execute(
+        "INSERT INTO coordination_observations"
+        " (work_id,plan_card_id,assignment_id,kind,batch_id,decision,"
+        "  item_id,status,reason,evidence_refs,question,model_used,"
+        "  usage,detail,created_at,updated_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (work_id, plan_card_id, str(assignment_id), str(kind),
+         str(batch_id or ""), str(decision or ""), str(item_id or ""),
+         str(status), str(reason or ""),
+         _dumps(list(evidence_refs or [])), str(question or ""),
+         str(model_used or ""), _dumps(usage or {}),
+         _dumps(detail or {}), now, now))
+    return {"ok": True, "id": int(cur.lastrowid)}
 
 
 def list_observations(work_id: str, plan_card_id: str, *,
@@ -711,6 +969,7 @@ def panel(work_id: str, plan_card_id: str, *,
                 "saved_at": row["saved_at"],
                 "saved_by": row["saved_by"],
                 "assignment_id": row["assignment_id"],
+                "detail": _loads(row["detail"], {}) if "detail" in row.keys() else {},
             }
 
         return card_db.read_sync(work_id, _hid_fn, None) or {
@@ -739,6 +998,7 @@ def panel(work_id: str, plan_card_id: str, *,
                 "saved_at": row["saved_at"],
                 "saved_by": row["saved_by"],
                 "assignment_id": row["assignment_id"],
+                "detail": _loads(row["detail"], {}) if "detail" in row.keys() else {},
             }
 
         return card_db.read_sync(work_id, _rev_fn, None) or {
@@ -766,7 +1026,7 @@ def panel(work_id: str, plan_card_id: str, *,
                 # 每条带 history_id（回读键）与 assignment_id（区分哪次任命）。
                 for r in conn.execute(
                         "SELECT id, rev, assignment_id, saved_at, saved_by,"
-                        " length(plan) AS plan_len"
+                        " length(plan) AS plan_len, detail"
                         " FROM coordination_plan_revisions"
                         " WHERE work_id=? AND plan_card_id=?"
                         " ORDER BY id DESC LIMIT 50",
@@ -778,6 +1038,7 @@ def panel(work_id: str, plan_card_id: str, *,
                         "saved_at": r["saved_at"],
                         "saved_by": r["saved_by"],
                         "plan_len": int(r["plan_len"] or 0),
+                        "detail": _loads(r["detail"], {}),
                     })
             except sqlite3.OperationalError:
                 revs = []
@@ -789,7 +1050,7 @@ def panel(work_id: str, plan_card_id: str, *,
             "state": (appt or {}).get("state", "none"),
             "mode": (appt or {}).get("mode", ""),
             "plan": {k: v for k, v in (appt or {}).get("plan", {}).items()
-                     if k != "_coord_sources"},
+                     if k not in ("_coord_sources", "_board_requirement_sources")},
             "grants": {
                 "observe": (appt or {}).get("observe_scope", {}),
                 "instruct": (appt or {}).get("instruct_scope", {}),
@@ -803,6 +1064,22 @@ def panel(work_id: str, plan_card_id: str, *,
             "updated_at": (appt or {}).get("updated_at", ""),
             "overdue": _overdue((appt or {}).get("next_review_at", "")),
         }
+        # [2026-11-23 · 计划板] 面板板面投影（读侧归一，不改库）：
+        # 未完成＝todo/doing/blocked 按 (priority,item_id) 序；
+        # 已完成单独成区——原 item_id 与关联证据原样保留。
+        from . import coordination_board as _board
+        raw_items = _board_items_for(conn, appt["assignment_id"], appt["plan"]) if appt else []
+        if appt and "items" in out["plan"]:
+            out["plan"]["items"] = raw_items
+        _items = _board.project_items(raw_items)
+        out["board"] = {
+            "rev": out["rev"],
+            "items": _items,
+            "requirements": (appt or {}).get("plan", {}).get("_board_requirement_sources", {}),
+            "unfinished": [it for it in _items
+                           if it["status"] in _board.ITEM_STATUSES[:3]],
+            "done": [it for it in _items if it["status"] == "done"],
+        }
         if appt is not None:
             last_turn = conn.execute("SELECT status,detail,created_at FROM coordination_observations"
                                      " WHERE assignment_id=? AND kind='strong_turn'"
@@ -812,10 +1089,7 @@ def panel(work_id: str, plan_card_id: str, *,
                 out["last_turn"] = {"status": last_turn["status"],
                                     "trigger": detail.get("trigger", ""),
                                     "at": last_turn["created_at"]}
-            origin = conn.execute("SELECT saved_by,rev FROM coordination_plan_revisions"
-                                  " WHERE assignment_id=? ORDER BY id DESC LIMIT 1",
-                                  (appt["assignment_id"],)).fetchone()
-            if origin and str(origin["saved_by"]).startswith("strong:"):
+            if "_coord_sources" in appt["plan"]:
                 initial = conn.execute("SELECT plan FROM coordination_plan_revisions"
                                        " WHERE assignment_id=? AND rev=0 LIMIT 1",
                                        (appt["assignment_id"],)).fetchone()
@@ -831,6 +1105,7 @@ def panel(work_id: str, plan_card_id: str, *,
         "plan": {}, "grants": {}, "models": {}, "last_review": {},
         "next_review_at": "", "pending": [], "actions": [],
         "created_at": "", "updated_at": "", "overdue": False,
+        "board": {"rev": 0, "items": [], "unfinished": [], "done": []},
     })
 
 

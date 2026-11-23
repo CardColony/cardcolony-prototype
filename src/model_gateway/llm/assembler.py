@@ -35,6 +35,7 @@ from .types import (
     ToolCallDelta,
     TokenUsage,
     UsageChunk,
+    merge_usage,
 )
 
 __all__ = ["BlockAssembler"]
@@ -105,7 +106,10 @@ class BlockAssembler:
             return
         if kind == "usage":
             assert isinstance(chunk, UsageChunk)
-            self._usage = chunk.usage
+            # [批七·分帧用量] Anthropic 等端点把 usage 拆两帧发
+            # （start=输入/缓存、delta=输出）——按端点契约合并，
+            # 不许后帧覆盖丢前帧字段。
+            self._usage = merge_usage(self._usage, chunk.usage)
             return
         if kind == "response-meta":
             assert isinstance(chunk, ResponseMetaChunk)

@@ -42,8 +42,15 @@ _ids_cache: dict[str, tuple[float, frozenset[str]]] = {}
 _IDS_TTL_SEC = 60.0
 
 
-def review_card_ids(work_id: str) -> frozenset[str]:
+def review_card_ids(work_id: str, *, conn: Any = None) -> frozenset[str]:
     """该 work 里 ``card_type='review'`` 的卡 id 集合（60s 缓存；查库失败保守给空）。"""
+    def _read(db: Any) -> frozenset[str]:
+        return frozenset(str(r["card_id"]) for r in db.execute(
+            "SELECT card_id FROM cards WHERE work_id=? AND card_type=?",
+            (work_id, _REVIEW_TYPE)) if r["card_id"])
+
+    if conn is not None:
+        return _read(conn)
     now = time.time()
     hit = _ids_cache.get(work_id)
     if hit and hit[0] > now:
@@ -52,13 +59,7 @@ def review_card_ids(work_id: str) -> frozenset[str]:
     try:
         from . import card_db
 
-        def _fn(conn: Any) -> list[str]:
-            return [str(r["card_id"]) for r in conn.execute(
-                "SELECT card_id FROM cards WHERE work_id=? AND card_type=?",
-                (work_id, _REVIEW_TYPE))]
-
-        rows = card_db.read_sync(work_id, _fn, [])
-        ids = frozenset(x for x in (rows or []) if x)
+        ids = card_db.read_sync(work_id, _read, frozenset())
     except Exception as exc:  # noqa: BLE001
         logger.warning("[review_scope] 评审卡集合查询失败（保守放行）work=%s: %s",
                        work_id, exc)
@@ -101,7 +102,7 @@ def _is_review_block(block: dict[str, Any], ids: frozenset[str]) -> bool:
 
 def drop_stale_review(work_id: str, card_id: str,
                       blocks: list[dict[str, Any]],
-                      keep: int | None = None) -> list[dict[str, Any]]:
+                      keep: int | None = None, *, conn: Any = None) -> list[dict[str, Any]]:
     """评审流量治理过滤：返回「该留在上下文/凝练池里的」块列表（原列表不改）。
 
     ``keep`` 两个口径：
@@ -116,8 +117,9 @@ def drop_stale_review(work_id: str, card_id: str,
     """
     if not blocks:
         return blocks
-    ids = review_card_ids(work_id)
-    if is_review_card(work_id, card_id):
+    ids = review_card_ids(work_id) if conn is None else review_card_ids(work_id, conn=conn)
+    self_is_review = is_review_card(work_id, card_id) if conn is None else str(card_id) in ids
+    if self_is_review:
         if keep == 0:
             return []
         # 评审卡全流过程化：seq 窗口截尾。

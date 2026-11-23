@@ -527,25 +527,70 @@ def test_repo_config_shape_is_valid(monkeypatch):
     assert "wb-cn:glm-5.3-flash" not in prios
     assert "wb-intl:glm-5.3-flash" not in prios
     assert prios.get("wb-cn:hy4flash-free") == 33
-    assert prios.get("wb-cn:hy4flash") == 34
+    assert prios.get("wb-cn:hy4flash") == 87  # 收费档垫底：所有免费档在前
     assert prios.get("wb-intl:hy4flash-free") == 35
     # ★ cc inkling-2-small:free 11-20 上游 404 免费撤档 ⇒ 已从表删（防回加）
     assert "wb-cc:thinkingmachines/inkling-2-small:free" not in prios
     # ★ 表里**存在**的候选：优先级必须按档位语义严格递增（表序＝优先级序）
     expected_order = [
-        "wb-devin:swe-2-flash-max", "wb-oc:flint-40b-free",
-        "wb-oc:deepseek-v4.1-flash-free", "wb-oc:big-pickle",
-        "wb-oc:glm-5.3-flash-free", "wb-oc:mimo-v2.6-flash-free",
-        # ★ [2026-11-20 批量真调 ok 的新免费档]（目录 53 个免费档，
-        #   验证窗口里真调通过才进表；其余 43 档挂起时段未验 ⇒ 待验）
-        "wb-oc:hy4-flash-free", "wb-oc:longcat-2.5-free",
-        "wb-oc:nemotron-3.5-lightning-free", "wb-oc:nemotron-3.5-super-vl-free",
-        "wb-oc:iceman-free", "wb-oc:tidepool-alpha-free",
-        "wb-cc:recursive/flint-v1.0:free",   # inkling-2-small:free 11-20 404 撤档已删
-        "wb-cc:reflection/beam:free",
-        "wb-cc:stealth/glyph-cluster:free",
-        "wb-cn:hy4flash-free", "wb-cn:hy4flash",
-        "wb-intl:hy4flash-free", "wb-intl:hy3",
+        'wb-devin:swe-2-flash-max',
+        'wb-oc:flint-40b-free',
+        'wb-oc:deepseek-v4.1-flash-free',
+        'wb-oc:big-pickle',
+        'wb-oc:glm-5.3-flash-free',
+        'wb-oc:mimo-v2.6-flash-free',
+        'wb-oc:hy4-flash-free',
+        'wb-oc:longcat-2.5-free',
+        'wb-oc:nemotron-3.5-lightning-free',
+        'wb-oc:nemotron-3.5-super-vl-free',
+        'wb-oc:iceman-free',
+        'wb-oc:tidepool-alpha-free',
+        'wb-cc:recursive/flint-v1.0:free',
+        'wb-cc:stealth/glyph-cluster:free',
+        'wb-cn:hy4flash-free',
+        'wb-intl:hy4flash-free',
+        'wb-oc:cat-jam-free',
+        'wb-oc:crouton-alpha-free',
+        'wb-oc:deepseek-v4-flash-free',
+        'wb-oc:exo-free',
+        'wb-oc:fledge-alpha-free',
+        'wb-oc:glm-4.7-free',
+        'wb-oc:glm-5-free',
+        'wb-oc:grok-code',
+        'wb-oc:hy3-free',
+        'wb-oc:hy3-preview-free',
+        'wb-oc:inkling-2-small-free',
+        'wb-oc:kimi-k2.5-free',
+        'wb-oc:laguna-s-2.1-free',
+        'wb-oc:ling-2.6-flash-free',
+        'wb-oc:ling-3.0-flash-fin-free',
+        'wb-oc:ling-3.0-flash-free',
+        'wb-oc:ling-3.0-tiny-free',
+        'wb-oc:ling-3.1-flash-free',
+        'wb-oc:ll-alpha-free',
+        'wb-oc:longcat-2.0-free',
+        'wb-oc:longcat-2.5-preview-free',
+        'wb-oc:mimo-v2-flash-free',
+        'wb-oc:mimo-v2-omni-free',
+        'wb-oc:mimo-v2-pro-free',
+        'wb-oc:mimo-v2.5-free',
+        'wb-oc:minimax-m2.1-free',
+        'wb-oc:minimax-m2.5-free',
+        'wb-oc:minimax-m3-free',
+        'wb-oc:minimax-m3.1-flash-free',
+        'wb-oc:muse-spark-1.2-contributor-free',
+        'wb-oc:muse-spark-1.3-contributor-free',
+        'wb-oc:nemotron-3-super-free',
+        'wb-oc:nemotron-3-ultra-free',
+        'wb-oc:north-mini-code-free',
+        'wb-oc:pulse-alpha-free',
+        'wb-oc:qwen3.6-plus-free',
+        'wb-oc:ring-2.6-1t-free',
+        'wb-oc:space-bunny-free',
+        'wb-oc:step-5-preview-free',
+        'wb-oc:trinity-large-preview-free',
+        'wb-oc:x-preview-f-free',
+        'wb-cn:hy4flash',
     ]
     order = sorted(prios.items(), key=lambda kv: kv[1])
     assert [k for k, _ in order] == [k for k in expected_order if k in prios]
@@ -580,14 +625,67 @@ def test_repo_config_shape_is_valid(monkeypatch):
     assert oc.oc_use_builtin_provider is True
     assert oc.oc_provider_id == "opencode"
     assert list(oc.oc_models) == [
-        "flint-40b-free", "deepseek-v4.1-flash-free", "big-pickle",
-        "glm-5.3-flash-free", "mimo-v2.6-flash-free",
-        # ★ [2026-11-20 批量真调 ok 新档]（与候选表 oc 段一致）
-        "hy4-flash-free", "longcat-2.5-free",
-        "nemotron-3.5-lightning-free", "nemotron-3.5-super-vl-free",
-        "iceman-free", "tidepool-alpha-free"]
+        'flint-40b-free',
+        'deepseek-v4.1-flash-free',
+        'big-pickle',
+        'glm-5.3-flash-free',
+        'mimo-v2.6-flash-free',
+        'hy4-flash-free',
+        'longcat-2.5-free',
+        'nemotron-3.5-lightning-free',
+        'nemotron-3.5-super-vl-free',
+        'iceman-free',
+        'tidepool-alpha-free',
+        'cat-jam-free',
+        'crouton-alpha-free',
+        'deepseek-v4-flash-free',
+        'exo-free',
+        'fledge-alpha-free',
+        'glm-4.7-free',
+        'glm-5-free',
+        'grok-code',
+        'hy3-free',
+        'hy3-preview-free',
+        'inkling-2-small-free',
+        'kimi-k2.5-free',
+        'laguna-s-2.1-free',
+        'ling-2.6-flash-free',
+        'ling-3.0-flash-fin-free',
+        'ling-3.0-flash-free',
+        'ling-3.0-tiny-free',
+        'ling-3.1-flash-free',
+        'll-alpha-free',
+        'longcat-2.0-free',
+        'longcat-2.5-preview-free',
+        'mimo-v2-flash-free',
+        'mimo-v2-omni-free',
+        'mimo-v2-pro-free',
+        'mimo-v2.5-free',
+        'minimax-m2.1-free',
+        'minimax-m2.5-free',
+        'minimax-m3-free',
+        'minimax-m3.1-flash-free',
+        'muse-spark-1.2-contributor-free',
+        'muse-spark-1.3-contributor-free',
+        'nemotron-3-super-free',
+        'nemotron-3-ultra-free',
+        'north-mini-code-free',
+        'pulse-alpha-free',
+        'qwen3.6-plus-free',
+        'ring-2.6-1t-free',
+        'space-bunny-free',
+        'step-5-preview-free',
+        'trinity-large-preview-free',
+        'x-preview-f-free',
+    ]
     assert list(oc.oc_api_key_envs) == ["OPENCODE_API_KEY", "OPENCODE2_API_KEY",
                                         "OPENCODE3_API_KEY"]
+    # ★ [2026-11-22 用户令] cc 三席：三把钥匙全接 + 三并发槽（此前只用两席）
+    cc = cfg.executor("wb-cc")
+    assert list(cc.cc_api_key_envs) == ["COMMAND_CODE_API_KEY",
+                                        "COMMAND_CODE2_API_KEY",
+                                        "COMMAND_CODE3_API_KEY"]
+    assert cc.cc_max_concurrent == 3
     assert oc.oc_pool_size == 3
     # ★ Devin 执行体：CLI + SWE-2 Max（用户套餐里免费）
     dv = cfg.executor("wb-devin")
