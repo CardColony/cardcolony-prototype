@@ -57,7 +57,10 @@ async def test_work_level_carries_card_frames_when_opted_in(work):
     card_frames = [f for f in frames if f.get("card") == cid]
     assert card_frames, f"工作级流没有带出这张卡的帧：{frames}"
     assert card_frames[0]["type"] == "tool_call", card_frames[0]
-    assert (card_frames[0].get("data") or {}).get("tool") == "x", card_frames[0]
+    # [SSE 瘦身 2026-11-09 用户令] 卡级帧是「去重拉」触发器——只带
+    # seq/ts/type/card 四字段，data 载荷刻意剥掉（防浏览器主线程
+    # JSON.parse 打满）。断言瘦身契约：触发字段齐、data 不在。
+    assert "data" not in card_frames[0], card_frames[0]
 
 
 async def test_work_level_native_frames_have_no_card_field(work):

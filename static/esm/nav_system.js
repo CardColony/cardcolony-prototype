@@ -7,7 +7,7 @@ import { escapeHtml } from "./util.js?v=30";
 import { notify, request } from "./api.js?v=57";
 import { createNavStateStore, storageGet, storageSet } from "./state_layers.js?v=33";
 import { createNavAsync } from "./nav_async.js?v=30";
-import { createNavRenderer } from "./nav_render.js?v=66";
+import { createNavRenderer } from "./nav_render.js?v=68";
 import { createNavFind } from "./nav_find.js?v=31";
 import { createNavBreadcrumb, ancestorCards } from "./nav_breadcrumb.js?v=30";
 import { cardInSnapshot } from "./nav_badge.js?v=30";
@@ -119,7 +119,7 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
 
   function gotoCard(cid, wid, focusChild) {
     if (!cid) return;
-    if (new URLSearchParams(location.search).get("coordination") === "1") {
+    if (window.__CARD_ID__ === "coordination") {
       location.assign(`/work/${encodeURIComponent(wid || WID())}/card/${encodeURIComponent(cid)}`);
       return;
     }
@@ -538,7 +538,7 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
          改前这里拼了三个条件（在对话页 且 当前卡存在 且 卡号相同），少比了项目号
          ——而所有项目的根卡都叫 card_001 ⇒ 点 B 项目被判成"已经在看"，毫无反应。 */
       if (navStore.select.is(phead.dataset.wid, rootCid)
-          && new URLSearchParams(location.search).get("coordination") !== "1") return;
+          && window.__CARD_ID__ !== "coordination") return;
       gotoCard(rootCid, phead.dataset.wid, false);
       return;
     }
@@ -620,6 +620,25 @@ export function createNavSystem({ workId, navTree, api, getCurrentCard, open, in
   // 则首渲就带转圈，不必等 nav 全量（冷启 ~13s）回来再补一次。
   renderNav();
   navRenderer.probeRunning();
+  if (document.body.classList.contains("page-chat")) {
+    let polling = false;
+    const updateCoordination = async () => {
+      const wid = WID();
+      if (polling || document.hidden || !reachable() || !wid || wid === "draft") return;
+      polling = true;
+      try {
+        const resp = await request("GET", `/api/works/${encodeURIComponent(wid)}/coordination/agent/runs?active=1`);
+        if (resp?.ok && wid === WID()) {
+          const data = await resp.json();
+          navRenderer.setCoordinationRuns(wid, data.runs || []);
+        }
+      } catch { /* 下次读取以服务器状态为准。 */ }
+      finally { polling = false; }
+    };
+    updateCoordination();
+    const timer = setInterval(updateCoordination, 5000);
+    window.addEventListener("pagehide", () => clearInterval(timer), { once: true });
+  }
   }
 
   // ═══ [迭代四 F4①②③] 通知按钮＋面板：拉 K4 端点、渲染列表、点击跳卡、已读推进 ═══

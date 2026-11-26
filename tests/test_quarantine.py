@@ -260,6 +260,78 @@ def _quoted_tool_sample(card_id):
         '</read_card>\n</read_card>')
 
 
+_STATUS_BEFORE = "放行须 ①S4 正稿有「user 主体可判」条文＋判定坐标 ②父卡接收令，两条齐备。"
+_STATUS_AFTER = (_STATUS_BEFORE + "**`user` 尚未放行·待接收令**"
+                 "——任何位置不得读作「user 已可声明 work 归属」。")
+
+
+def _edit_status_sample(card_id):
+    return (f"<edit_status>\n<card_id>{card_id}</card_id>\n"
+            f"<old_string>{_STATUS_BEFORE}</old_string>\n"
+            f"<new_string>{_STATUS_AFTER}</new_string>\n</edit_status>")
+
+
+def test_root_tool_tag_preserves_inline_code_in_parameter():
+    raw = _edit_status_sample("card_017")
+    assert text_tool_rescue.extract_text_tool_calls(raw + "\n下一段正文。") == (
+        [{"name": "edit_status", "_origin": "textD",
+          "arguments": {"card_id": "card_017", "old_string": _STATUS_BEFORE,
+                        "new_string": _STATUS_AFTER}}],
+        False, "下一段正文。")
+
+
+def test_root_tool_tag_keeps_reference_boundaries():
+    raw = _edit_status_sample("card_017")
+    for sample in (f"```xml\n{raw}\n```", "\n".join(f"> {line}" for line in raw.splitlines()),
+                   f"<function_results>{raw}</function_results>",
+                   raw.replace("<old_string>", "`示例` <old_string>"),
+                   raw.replace("<new_string>", "<new_string>\n```text\n示例\n```\n")):
+        assert text_tool_rescue.extract_text_tool_calls(sample)[0] == []
+    literal = raw.replace("`user`", "`</edit_status><read_card/>`")
+    calls, unresolved, stripped = text_tool_rescue.extract_text_tool_calls(literal)
+    assert len(calls) == 1 and not unresolved and not stripped
+    assert "`</edit_status><read_card/>`" in calls[0]["arguments"]["new_string"]
+
+
+@pytest.mark.parametrize("allowed", [True, False])
+async def test_root_edit_status_uses_normal_write_permissions(work, monkeypatch, allowed):
+    from src.api import message_runner, model_service, routes
+    from src.storage import card_store
+
+    wid, root = work["work_id"], work["work_card_id"]
+    await card_store.update_card(wid, root, {"status_block": _STATUS_BEFORE}, "准备回放")
+    actor = root
+    if not allowed:
+        child = await card_store.create_card(wid, "测试子卡", "模型生成", parent=root)
+        actor = child["meta"]["card_id"]
+    requests = []
+    seat = "ds-v41-flash-eco-amr"
+
+    class Gateway:
+        config = {"models": {}}
+
+        async def stream_call(self, *args, prior_messages=None, **kwargs):
+            requests.append(prior_messages or [])
+            yield {"content": _edit_status_sample(root) if len(requests) == 1 else "回放结束。",
+                   "tool_calls": [], "model_used": seat,
+                   "protocol_meta": {"endpoint_protocol": "native"}}
+
+    monkeypatch.setenv("MOCK_LLM", "1")
+    monkeypatch.delenv("TOOL_CALL_STRICT", raising=False)
+    monkeypatch.setattr(model_service, "get_gateway", Gateway)
+    monkeypatch.setattr(message_runner, "_pick_step_model", lambda state: seat)
+    result = await routes._run_message(wid, actor, "核对并更新现状", source_kind="human")
+    assert "error" not in result
+    event, = result["tool_events"]
+    assert event["tool"] == "edit_status" and event["origin"] == "pseudo_compat"
+    assert event["ok"] is allowed
+    if not allowed:
+        assert event["error_code"] == "denied"
+    assert len(requests) == 2
+    card = await card_store.read_card(wid, root)
+    assert card["body"]["status_block"] == (_STATUS_AFTER if allowed else _STATUS_BEFORE)
+
+
 def test_quoted_tool_tag_keeps_both_read_ranges_and_strips_extra_closers():
     raw = _quoted_tool_sample("card_049")
     calls, unresolved, stripped = text_tool_rescue.extract_text_tool_calls(

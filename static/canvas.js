@@ -25,8 +25,8 @@ import { escapeHtml } from "./esm/util.js?v=30";
 // 右栏"读全文"用与对话页同一份 Markdown 渲染（不另造一套）
 import { renderMarkdown } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
-import { RenderNav } from "./esm/nav_system.js?v=75";
-import { notify } from "./esm/api.js?v=57";
+import { RenderNav } from "./esm/nav_system.js?v=78";
+import { notify, markReachable, call as apiCall } from "./esm/api.js?v=57";
 
 let __VIEW_RESTORED__ = false;   // [F2⑥] 视图态仅首次恢复
 // 卡片 → 最近一条活动事件（renderCanvas 每轮重建，供 createNode 查）
@@ -7406,6 +7406,7 @@ const WORK_ID = window.__WORK_ID__;
   let _workEs = null;
   let _workEsHealthy = false;
   let _workEsDropped = false;   // 断过线（重连时要补齐断点窗口）
+  let _workEsLastMsg = 0;       // [半死流探测] 最近一帧（含 ping 事件帧）的时刻
   const _liveQueue = new Map();   // card_id → 最新载荷（同一张卡的多次变化合并）
   let _liveTimer = 0;
 
@@ -7593,6 +7594,9 @@ const WORK_ID = window.__WORK_ID__;
       _workEs = es;
       es.onopen = () => {
         _workEsHealthy = true;
+        _workEsLastMsg = Date.now();
+        // 长连接恢复 ⇒ 可达性闩解开（与 workspace.js 同口径，提示一次「服务已恢复」）
+        if (typeof markReachable === "function") markReachable();
         // [画布 5711 · P1 修] **重连即补齐**。
         //
         // 病根：工作级通道只推"连上之后新发生的事"（不重放）⇒ **断线窗口里发生的
@@ -7613,6 +7617,7 @@ const WORK_ID = window.__WORK_ID__;
       };
       es.onmessage = (m) => {
         _workEsHealthy = true;
+        _workEsLastMsg = Date.now();
         let evt = null;
         try { evt = JSON.parse(m.data); } catch (e) { return; }
         if (!evt) return;
@@ -7646,6 +7651,25 @@ const WORK_ID = window.__WORK_ID__;
     }
   }
   subscribeWorkEvents();
+  // [半死流探测 2026-11-25] SSE 活性哨兵。
+  // 病根（日志实测）：runner 事件循环被同步 SQLite 冻住时，上游 SSE 零帧但
+  // TCP 不断 ⇒ EventSource 不报 onerror、也不自动重连 ⇒ _workEsHealthy 停在
+  // true ⇒ 兜底探针不接管、可达性闩也因没有请求成功而永不解 ⇒ 页面"一直断联"。
+  // 判据：后端每 15s（工作级）推一条真实 ping 事件帧 ⇒ 连续 45s 无帧＝流死。
+  // 处置：判不健康（兜底探针即刻接管）＋撕掉旧连接重订（EventSource 对半死
+  // 连接永不自愈）；重订成功走 onopen ⇒ markReachable 解闩＋补齐。
+  const _SSE_STALE_MS = 45000;
+  setInterval(() => {
+    if (!_workEs || !_workEsLastMsg) return;   // 未开过 ⇒ 交给原生重试
+    if (Date.now() - _workEsLastMsg < _SSE_STALE_MS) return;
+    const dead = _workEs;
+    _workEs = null;
+    _workEsLastMsg = 0;
+    _workEsHealthy = false;
+    _workEsDropped = true;
+    try { dead.close(); } catch (e) { /* 关不掉也要重建 */ }
+    subscribeWorkEvents();
+  }, 10000);
   // 兜底：SSE 不可用或**不健康**时，用卡片版本指纹做低频差分探测。
   // 指纹端点（/api/nav/version）现成，左栏已用它 60s 探测；这里复用同口径，
   // 间隔更短（4s），命中即重拉。
@@ -7654,9 +7678,11 @@ const WORK_ID = window.__WORK_ID__;
   async function liveFallbackProbe() {
     if (_workEsHealthy) return;      // SSE 活着就不轮询
     try {
-      const r = await fetch("/api/nav/version");
-      if (!r.ok) return;
-      const d = await r.json();
+      // [半死流探测 2026-11-25] 走 apiCall 不裸 fetch：成功 ⇒ 可达性闩解开
+      // （断联恢复的第二通路，不必等 SSE 重开）；失败 ⇒ 如实记闩＋上报，
+      // 反正此刻后端确实收不到。silent＝非 2xx 不弹 toast（探测语义）。
+      const d = await apiCall("GET", "/api/nav/version",
+                              undefined, { silent: true });
       const sig = (d.by_work || {})[WORK_ID] || "";
       if (_liveFallbackSig && sig && sig !== _liveFallbackSig) {
         // 静默重拉：画布上已经有内容了，别再弹骨架屏（那是一次"白一下"）。

@@ -24,7 +24,7 @@
  */
 import { escapeHtml } from "./util.js?v=30";
 import { notify } from "./api.js?v=57";
-import { createRowModel } from "./row_model.js?v=37";
+import { createRowModel } from "./row_model.js?v=38";
 import { createVirtualList } from "./nav_virtual.js?v=32";
 import { NAV_ROW_HEIGHT } from "./state_layers.js?v=33";
 // [S3] 呈现族纯函数（R-33 徽章聚合／R-35 空态／R-21 快照存在性）
@@ -114,18 +114,24 @@ export function createNavRenderer(deps) {
 
   let appliedFor = "";    // 当前卡祖先路径只自动应用一次（旧 ensureCurrentPath 语义）
   let emptyEl = null;
+  let coordinationRuns = { wid: "", runs: [], signature: "" };
 
   /* ---------- 行 DOM 构建（R-13：createElement，非字符串拼接） ---------- */
 
   function buildRowEl(row) {
     if (row.kind === "project") return buildProjectEl(row);
-    if (row.kind === "coordination") {
+    if (row.kind === "coordination" || row.kind === "coordination-run") {
       const el = document.createElement("a");
       el.className = "nav-card nav-coordination";
-      el.href = `/work/${encodeURIComponent(row.wid)}/card/${encodeURIComponent(row.card.work_card_id)}?coordination=1`;
+      el.href = `/work/${encodeURIComponent(row.wid)}/coordination`;
+      if (row.kind === "coordination-run") {
+        el.href += "?run=" + encodeURIComponent(row.card.run_id);
+        el.style.paddingInlineStart = "30px";
+      }
       el.style.textDecoration = "none";
       el.style.color = "inherit";
       el.innerHTML = '<span class="nav-ico" aria-hidden="true">◷</span><span class="nav-ctitle">项目统筹</span>';
+      patchRowEl(el, row);
       return el;
     }
     // [职能入口 2026-10-22] 职能不是卡（不进 cards 表），行结构另立。
@@ -512,9 +518,15 @@ export function createNavRenderer(deps) {
   /* ---------- patch（R-15：只改变化字段；R-19 guard 在最前） ---------- */
 
   function patchRowEl(el, row) {
-    if (row.kind === "coordination") {
-      const selected = row.wid === window.__WORK_ID__
-        && new URLSearchParams(location.search).get("coordination") === "1";
+    if (row.kind === "coordination" || row.kind === "coordination-run") {
+      const runId = row.kind === "coordination-run" ? row.card.run_id : null;
+      const selected = row.wid === window.__WORK_ID__ && window.__CARD_ID__ === "coordination"
+        && new URLSearchParams(location.search).get("run") === runId;
+      if (runId) {
+        el.querySelector(".nav-ctitle").textContent = ({
+          checking: "巡检中", waiting: "等待强模型", working: "强模型处理中",
+        })[row.card.phase] || "统筹子会话";
+      }
       el.classList.toggle("current", selected);
       el.classList.toggle("nav-last", !!row.lastInProject);
       if (selected) el.setAttribute("aria-current", "page");
@@ -704,8 +716,13 @@ export function createNavRenderer(deps) {
    * 清空查询即原样还原，靠的就是它从没写过任何状态（query 只活在 temp 内存）。
    * 命中路径行不标黄，只作定位；命中的那一行标黄。 */
   function appendCoordinationRow(rows, project) {
-    if (document.body.classList.contains("page-chat") && project.work_card_id) {
+    if (document.body.classList.contains("page-chat")) {
       rows.push(createRowModel(project, store, { kind: "coordination", wid: project.work_id }));
+      if (coordinationRuns.wid === project.work_id) {
+        for (const run of coordinationRuns.runs) {
+          rows.push(createRowModel(run, store, { kind: "coordination-run", wid: project.work_id }));
+        }
+      }
     }
   }
 
@@ -719,7 +736,7 @@ export function createNavRenderer(deps) {
       const root = p.work_card_id || "";
       const projHit = (p.title || "").toLowerCase().includes(q);
       const hits = all.filter(c => (c.title || "").toLowerCase().includes(q));
-      const coordinationHit = !!root && document.body.classList.contains("page-chat")
+      const coordinationHit = document.body.classList.contains("page-chat")
         && (wid === window.__WORK_ID__ || "项目统筹".includes(q));
       if (!projHit && !hits.length && !coordinationHit) continue;
       rows.push(createRowModel(p, store, {
@@ -727,7 +744,7 @@ export function createNavRenderer(deps) {
       }));
       appendCoordinationRow(rows, p);
       if (!hits.length) {
-        if (rows.at(-1).kind === "coordination") rows.at(-1).lastInProject = true;
+        rows.at(-1).lastInProject = true;
         continue;
       }
       // 命中集 ＋ 各自到根的路径（want: cid → 是否命中）
@@ -1244,6 +1261,12 @@ export function createNavRenderer(deps) {
 
   return {
     refresh, render, probeVersion, probeRunning, toggleProject, toggleCard,
+    setCoordinationRuns(wid, runs) {
+      const signature = JSON.stringify(runs.map((run) => [run.run_id, run.phase]));
+      if (coordinationRuns.wid === wid && coordinationRuns.signature === signature) return;
+      coordinationRuns = { wid, runs, signature };
+      render();
+    },
     expandRows, applyDefaultFold, enforceBudget,
     reslice: () => render(),
     vl,

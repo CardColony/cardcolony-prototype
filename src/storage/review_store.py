@@ -50,7 +50,7 @@ async def review_card_of(work_id: str, child_id: str) -> str:
         return str(row["card_id"]) if row else ""
 
     try:
-        return str(card_db.read_sync(work_id, _fn, "") or "")
+        return str(await card_db.run_read(work_id, _fn, "") or "")
     except Exception as exc:  # noqa: BLE001
         logger.warning("[review] 查伴生卡失败 child=%s: %s", child_id, exc)
         return ""

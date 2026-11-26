@@ -60,7 +60,7 @@ async def archive_worker(work_id: str, card_id: str) -> dict[str, Any]:
             except (TypeError, ValueError):
                 return str(raw)          # 纯文本(实际形态)
         try:
-            final_report = str(card_db.read_sync(work_id, _raw_final, "") or "")
+            final_report = str(await card_db.run_read(work_id, _raw_final, "") or "")
         except Exception:  # noqa: BLE001
             pass
     body = {}

@@ -239,7 +239,8 @@ export function createInputBar({ mount, actions, policy, session, hasQueued, not
     ta.placeholder = disabled
       ? (s.parentOffline ? T.parentOffline : T.unavailable)
       : (canSteerQueue() ? T.steerQueue
-        : (s.running ? T.runningPlaceholder : T.defaultPlaceholder));
+        : (s.running ? (s.runningPlaceholder || T.runningPlaceholder)
+          : (s.defaultPlaceholder || T.defaultPlaceholder)));
   }
 
   function onPrimary() {

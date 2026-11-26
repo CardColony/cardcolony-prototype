@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -119,6 +120,51 @@ def _atomic_write(path: Path, doc: dict[str, Any]) -> None:
         raise
 
 
+@contextmanager
+def _write_lock(path: Path):
+    """Serialize edits to the shared policy document across runner processes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.with_suffix(path.suffix + ".lock").open("a+b") as lock:
+        if os.name == "nt":
+            import msvcrt
+
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        yield
+
+
+def save_policy(raw: dict[str, Any]) -> bool:
+    """Save a validated Harness policy, returning whether that ID already existed."""
+    from . import policy_set
+
+    path = _config_path()
+    with _write_lock(path):
+        doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"policies": []}
+        if isinstance(doc, list):
+            doc = {"policies": doc}
+        if not isinstance(doc, dict) or not isinstance(doc.get("policies"), list):
+            raise ValueError("Harness 策略表格式无效")
+        items = doc["policies"]
+        replaced = False
+        for index, item in enumerate(items):
+            if isinstance(item, dict) and item.get("id") == raw["id"]:
+                if item.get("work") != raw["work"] or (item.get("then") or {}).get("mode") == "inspect" \
+                        and (raw.get("then") or {}).get("mode") != "inspect":
+                    raise ValueError("该策略 ID 已属于其他项目或其他动作")
+                items[index] = raw
+                replaced = True
+                break
+        if not replaced:
+            items.append(raw)
+        _atomic_write(path, doc)
+    policy_set.dispatcher()
+    return replaced
+
+
 def _build_policy(work_id: str, args: dict[str, Any]) -> dict[str, Any]:
     """把工具参数组装成一条策略（带 work，只对本项目生效）。"""
     scope = str(args.get("scope") or "card").strip()
@@ -178,33 +224,10 @@ async def handle(work_id: str, current_id: str, arguments: dict[str, Any],
             + (f"（共 {len(known)} 个，其余见 config/event_catalog.json）"
                if len(known) > 40 else ""))
 
-    # ④ 落盘（同 id 覆盖，其余保留）
-    path = _config_path()
     try:
-        doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"policies": []}
+        replaced = save_policy(raw)
     except (ValueError, OSError) as exc:
-        return _err("internal", f"读策略表失败：{exc}")
-    if not isinstance(doc, dict):
-        doc = {"policies": []}
-    items = [x for x in (doc.get("policies") or []) if isinstance(x, dict)]
-    replaced = False
-    for i, x in enumerate(items):
-        if str(x.get("id")) == raw["id"]:
-            items[i] = raw
-            replaced = True
-            break
-    if not replaced:
-        items.append(raw)
-    doc["policies"] = items
-    try:
-        _atomic_write(path, doc)
-    except OSError as exc:
         return _err("internal", f"写策略表失败：{exc}")
-
-    # ⑤ 热加载：立刻生效
-    errs = policy_set.dispatcher().reload()
-    if errs:
-        logger.warning("[policy_tools] 热加载有错（其余策略照常）：%s", errs)
 
     # ⑥ 试算：拿现有数据回放一遍，告诉它「按现在的样子会不会触发」
     #    这一步是**反馈够不够**的关键——配完只说"保存成功"，它没法知道这条到底

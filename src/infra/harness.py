@@ -169,6 +169,10 @@ async def deliver(work_id: str, target: str, text: str, *,
     "把这句塞进下一轮，并立刻让它开始那一轮"（否则要等它自然跑时才生效）。
     与卡间通信同一条路（用户口径：不自造第二套体系）。
     """
+    if mode == "inspect":
+        from . import coordination_watcher
+
+        return await coordination_watcher.enqueue_harness_inspection(work_id, target, rule_id, action_id)
     if mode == "inject":
         return await _deliver_inject(work_id, target, text,
                                      rule_id=rule_id, wake=wake,
@@ -363,6 +367,8 @@ def deliver_accepted(result: Any) -> bool:
     if not result:
         return False
     s = str(result)
+    if s == "inspect:stale":
+        return False
     if s.startswith("continue:"):
         try:
             return int(s.rsplit(":", 1)[-1]) > 0

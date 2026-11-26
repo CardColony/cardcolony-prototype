@@ -1,482 +1,1376 @@
 {
-  "_meta": {
-    "title": "harness 条件集（值班员）",
-    "version": 3,
-    "updated": "2026-11-01",
-    "desc": "每条策略＝一个值班员。他不翻台账：事情一发生就送到他手上，他往自己的小本子上记一笔；账凑够条件就喊人，喊完把本子撕了重记。[2026-10-31 两代并轨] 旧规则表（harness_rules.json）退役，本表是唯一的策略配置。",
-    "schema": {
-      "id": "策略名，唯一",
-      "active": "是否激活。只有激活的才挂本子、才被喂事件；停用就摘掉，零成本",
-      "desc": "人话说明（触发记录里会带上）",
-      "scope.kind": "本子挂在谁身上：card=一张卡｜relation=一对父子｜work=整个 work",
-      "watch": "本子只收 watch 列的类型——when 里要查的类型（含锚点/期望/否定）都得列进来；triggerable=false 的类型（tool_result、run_start、harness_message…）也能 watch。注意：绝不要把 done 当任务完成——done 是每轮的收口，拿它当锚点等于要求模型每轮都汇报。",
-      "window": "时间窗：24h / 7d / 90m / none。超窗的老账在下次记账时惰性划掉",
-      "when": "条件树：all/any/not/event/count/field/after，可任意嵌套。after＝「最近一次 anchor 之后没有 expect」，表达先后关系（「干完了没汇报」必须用它——用「窗口内没有汇报」会让上一轮的汇报把这一轮盖住）。触发事实本体在 ctx.trigger_data（零件已拍平为顶层键），when 里可用 {\"field\":\"trigger_data.x\"} 读；where 值里 $card/$parent 代入本卡字段。",
-      "then": "触发后做什么：target=发到谁（self/parent/ancestors/links/card:<id>/event:<路径>——event: 从触发事实取卡号，如 event:target）；message=说什么，占位符 {card_id}/{card_title}/{card_type}/{parent}/{trigger_type} 与 {event.<路径>}（取触发事实字段）；wake=要不要叫醒；mode=message(默认，写会话历史)｜inject(塞进下一轮提示词，一次性)｜continue(叫醒评审卡跑下一步——暂时只对评审卡开放)；或 deploy={function=职能code或fn号(可用event:路径),venue=场(event:路径),venue_kind=场型(deploy/…),mandate=差事文(同message占位符),wake=落账后要不要叫进场,exit_kind=退出规格}——部署差事：落差事账＋职能带mandate进该场跑一轮，不送话"
-    },
-    "semantics": {
-      "why_scope_matters": "「父卡对子卡做了什么」的状态不挂在某一张卡上，而是挂在每一对 (父, 子) 上。新子卡建出来自动多一本空本子。",
-      "why_clear_after_fire": "触发后该作用域的本子归零、窗口重置到此刻。只撕那一本，别的本子不动；清零本身防了重复触发，所以原来的防重表退役。",
-      "why_no_timer": "超窗的账在下次记账时顺手划掉。没有事件时本子不动也不需要动——这就是零墙钟要的样子。",
-      "why_seed": "新建/激活一条策略时，从数据集回溯它的窗口把本子补记好；补完若已满足就立刻触发，不用等下一个事件。",
-      "why_trigger_data": "触发这次求值的那条事实整体透传进 ctx.trigger_data：投递侧靠它解析 event: 目标与 {event.*} 占位符；求值侧靠 {\"field\":\"trigger_data.x\"} 做字段判据（与 event 节点的 where 等价，选顺手的写）。求值 ctx 故意不放 trigger_type——放了会让 within:\"turn\" 的窗口把触发事实本身跳过去。"
-    }
+ "_meta": {
+  "title": "harness 条件集（值班员）",
+  "version": 3,
+  "updated": "2026-11-01",
+  "desc": "每条策略＝一个值班员。他不翻台账：事情一发生就送到他手上，他往自己的小本子上记一笔；账凑够条件就喊人，喊完把本子撕了重记。[2026-10-31 两代并轨] 旧规则表（harness_rules.json）退役，本表是唯一的策略配置。",
+  "schema": {
+   "id": "策略名，唯一",
+   "active": "是否激活。只有激活的才挂本子、才被喂事件；停用就摘掉，零成本",
+   "desc": "人话说明（触发记录里会带上）",
+   "scope.kind": "本子挂在谁身上：card=一张卡｜relation=一对父子｜work=整个 work",
+   "watch": "本子只收 watch 列的类型——when 里要查的类型（含锚点/期望/否定）都得列进来；triggerable=false 的类型（tool_result、run_start、harness_message…）也能 watch。注意：绝不要把 done 当任务完成——done 是每轮的收口，拿它当锚点等于要求模型每轮都汇报。",
+   "window": "时间窗：24h / 7d / 90m / none。超窗的老账在下次记账时惰性划掉",
+   "when": "条件树：all/any/not/event/count/field/after，可任意嵌套。after＝「最近一次 anchor 之后没有 expect」，表达先后关系（「干完了没汇报」必须用它——用「窗口内没有汇报」会让上一轮的汇报把这一轮盖住）。触发事实本体在 ctx.trigger_data（零件已拍平为顶层键），when 里可用 {\"field\":\"trigger_data.x\"} 读；where 值里 $card/$parent 代入本卡字段。",
+   "then": "触发后做什么：target=发到谁（self/parent/ancestors/links/card:<id>/event:<路径>——event: 从触发事实取卡号，如 event:target）；message=说什么，占位符 {card_id}/{card_title}/{card_type}/{parent}/{trigger_type} 与 {event.<路径>}（取触发事实字段）；wake=要不要叫醒；mode=message(默认，写会话历史)｜inject(塞进下一轮提示词，一次性)｜continue(叫醒评审卡跑下一步——暂时只对评审卡开放)；或 deploy={function=职能code或fn号(可用event:路径),venue=场(event:路径),venue_kind=场型(deploy/…),mandate=差事文(同message占位符),wake=落账后要不要叫进场,exit_kind=退出规格}——部署差事：落差事账＋职能带mandate进该场跑一轮，不送话"
   },
-  "policies": [
-    {
-      "id": "review_step_not_finished",
-      "active": true,
-      "desc": "只在评审事实 runnable=true 时续跑。席位回合正常结束仅作为 continued 事实，补投后仍缺票则等待新票、稿次或回应。历史事件缺 runnable 时不自动续跑。",
-      "scope": {
-        "kind": "card"
-      },
-      "watch": [
-        "review_round_done"
-      ],
-      "window": "none",
-      "when": {
-        "event": {
-          "types": ["review_round_done"],
-          "where": {"runnable": true},
-          "within": "turn"
-        }
-      },
-      "then": {
-        "target": "self",
-        "mode": "continue",
-        "wake": true,
-        "dedup_fields": ["batch", "draft", "next"],
-        "message": "（续接）评审还没结束，继续跑下一步。"
-      }
-    },
-    {
-      "id": "review_target_responded",
-      "active": false,
-      "desc": "（2026-11-04 停用·被 turn_end.progress 接管）原语义：正卡调 submit_revision 那一刻就点火评审场——回合中段激活，改由回合收口时 review_target_turn_end 的 progress 水位统一接力（「修改草稿的那一轮结束再激活」）。事件照发、事实照记，只是不再直接点火。",
-      "scope": {
-        "kind": "card"
-      },
-      "watch": [
-        "review_target_responded"
-      ],
-      "window": "none",
-      "when": {
-        "event": {
-          "types": [
-            "review_target_responded"
-          ],
-          "within": "turn"
-        }
-      },
-      "then": {
-        "target": "self",
-        "mode": "continue",
-        "wake": true,
-        "message": "（续接）正卡已交回本轮回应，评审继续。"
-      }
-    },
-    {
-      "id": "review_target_turn_end_continue",
-      "active": true,
-      "desc": "正卡回合结束 ⇒ 评审场下一步的判据点移到这里。两种点火：(1) 这轮有实质推进（progress=true：草稿版本涨过或 submit_revision 交回过——含交回后回合崩掉的情形，回应是既成事实不靠 outcome 保）；(2) outcome=ok 且 ask 未清（stall 兜底：正常结束却没干活也没交回——work_027 card_074 停尸案的口子仍兜着）。未推进的回合不再点火；submit_revision 的中途点火并入 progress，统一「那一轮结束再激活」。",
-      "scope": {
-        "kind": "card"
-      },
-      "watch": [
-        "review_target_turn_end"
-      ],
-      "window": "none",
-      "when": {
-        "any": [
-          {
-            "field": "trigger_data.progress",
-            "cmp": "==",
-            "value": true
-          },
-          {
-            "all": [
-              {
-                "field": "trigger_data.outcome",
-                "cmp": "==",
-                "value": "ok"
-              },
-              {
-                "field": "trigger_data.pending_ask",
-                "cmp": "==",
-                "value": true
-              }
-            ]
-          }
-        ]
-      },
-      "then": {
-        "target": "self",
-        "mode": "continue",
-        "wake": true,
-        "message": "（续接）正卡回合已正常结束且评审 ask 未清，评审继续。"
-      }
-    },
-    {
-      "id": "review_draft_drift_continue",
-      "active": true,
-      "desc": "promote_draft 撞版本闸（有席位批的是旧版）⇒ 叫评审场跑下一步——只给 stale 批准席补「只评增量」确认轮。",
-      "scope": {
-        "kind": "card"
-      },
-      "watch": [
-        "review_draft_drift"
-      ],
-      "window": "none",
-      "when": {
-        "event": {
-          "types": [
-            "review_draft_drift"
-          ],
-          "within": "turn"
-        }
-      },
-      "then": {
-        "target": "self",
-        "mode": "continue",
-        "wake": true,
-        "message": "（续接）有席位批准的是旧版草稿，请他们只评增量确认。"
-      }
-    },
-    {
-      "id": "review_all_passed_need_promote",
-      "active": true,
-      "desc": "评审已全员通过但正稿没写 ⇒ 叫它调 promote_draft 定稿（写正稿必须是模型调工具）",
-      "scope": {
-        "kind": "card"
-      },
-      "watch": [
-        "review_all_passed"
-      ],
-      "window": "none",
-      "when": {
-        "event": {
-          "types": [
-            "review_all_passed"
-          ],
-          "where": {
-            "need_promote": true
-          },
-          "within": "turn"
-        }
-      },
-      "then": {
-        "target": "self",
-        "mode": "continue",
-        "wake": true,
-        "message": "（续接）评审已全员通过，但正稿还没写。请调 promote_draft 把草稿转成正稿。",
-        "matter": {
-          "kind": "review_promote",
-          "key": "event:batch",
-          "check_on": [
-            "card_block_edited",
-            "review_batch_closed",
-            "tool_result"
-          ]
-        }
-      }
-    },
-    {
-      "id": "turn_end_without_report",
-      "active": false,
-      "desc": "（S0 校正停用·2026-10-31）done 是每轮收口不是任务完成——拿它当锚点等于要求模型每轮都汇报，与用户裁定冲突。业务交付检查等「明确的交付协议」落地后再接管；本策略保留备查。原语义：一轮 done 收口但没调 report_up ⇒ 提醒汇报。",
-      "scope": {
-        "kind": "card"
-      },
-      "watch": [
-        "run_start",
-        "done",
-        "tool_result",
-        "msg_directive",
-        "harness_message"
-      ],
-      "window": "none",
-      "when": {
-        "all": [
-          {
-            "event": {
-              "types": [
-                "done"
-              ],
-              "where": {
-                "card_type": {
-                  "in": [
-                    "worker",
-                    "sub_project",
-                    "topic"
-                  ]
-                }
-              },
-              "within": "turn"
-            }
-          },
-          {
-            "not": {
-              "event": {
-                "types": [
-                  "tool_result"
-                ],
-                "where": {
-                  "tool": "report_up",
-                  "ok": true
-                },
-                "within": "turn"
-              }
-            }
-          },
-          {
-            "any": [
-              {
-                "event": {
-                  "types": [
-                    "msg_directive"
-                  ],
-                  "where": {
-                    "from": "$parent"
-                  }
-                }
-              },
-              {
-                "event": {
-                  "types": [
-                    "harness_message"
-                  ],
-                  "where": {
-                    "rule_id": "turn_end_without_report"
-                  }
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "then": {
-        "target": "self",
-        "mode": "message",
-        "wake": true,
-        "message": "你这一轮正常完成了所有动作，但没有向上汇报。父卡看不到你写在对话里的内容——请调 report_up(kind=done)，把结果、证据与遗留交给父卡。"
-      }
-    },
-    {
-      "id": "child_created_needs_mission",
-      "active": false,
-      "desc": "（示例，默认停用）新子卡建出来后还没写过卡块 ⇒ 提醒父卡给它写目标与要求。",
-      "scope": {
-        "kind": "card"
-      },
-      "watch": [
-        "card_created",
-        "card_block_edited"
-      ],
-      "window": "none",
-      "when": {
-        "all": [
-          {
-            "event": {
-              "types": [
-                "card_created"
-              ],
-              "where": {
-                "card_type": {
-                  "in": [
-                    "sub_project",
-                    "topic",
-                    "worker"
-                  ]
-                }
-              },
-              "within": "turn"
-            }
-          },
-          {
-            "not": {
-              "event": {
-                "types": [
-                  "card_block_edited"
-                ]
-              }
-            }
-          }
-        ]
-      },
-      "then": {
-        "target": "parent",
-        "mode": "message",
-        "wake": true,
-        "message": "新子卡 {card_id} 建出来了，卡面还是空的——给它写上目标与要求。"
-      }
-    },
-    {
-      "id": "staff_pm_draft_on_card_created",
-      "active": false,
-      "desc": "新子卡建出 ⇒ 注入指令让**模型自己**召 PM 执笔：harness 只管时机（建卡后缺需求文档），召唤动作归卡——它调 create_deploy_card(function=pm) 建执笔卡，PM 进场写需求文档草稿；落笔自动收工、结论回执到本卡。差事卡挂树下可见、过程隔离在执笔卡会话。[2026-11-01 改：harness 递话不派活——卡自己召唤]",
-      "scope": {
-        "kind": "card"
-      },
-      "watch": [
-        "card_created"
-      ],
-      "window": "none",
-      "when": {
-        "event": {
-          "types": [
-            "card_created"
-          ],
-          "where": {
-            "card_type": {
-              "in": [
-                "sub_project"
-              ]
-            }
-          },
-          "within": "turn"
-        }
-      },
-      "then": {
-        "target": "self",
-        "mode": "message",
-        "wake": true,
-        "message": "（指令）本卡还没有需求文档。召产品经理来写：调 create_deploy_card(function=\"pm\", task=\"为这张卡写需求文档——按本卡使命把功能按愿景定义成可验收的需求：每条判得出做到没做到、边界与异常写清、拿不准的前提标【待确认】\")——它会建一张执笔卡进场写，写完自动收工，草稿落本卡面。"
-      }
-    },
-    {
-      "id": "status_block_oversize_reminder",
-      "active": true,
-      "desc": "卡面「现状」块编辑后超 1 万字 ⇒ 每次都提醒：现状是给别的卡看的当前快照，不是记事本。不节流——超阈值期间每写一次就催一次（注意力会漂）。提醒文点名反踩线：完成标准是「没有不符合的内容」，不是「压回阈值下」。直接判本条事实（trigger_data.block）；window 只为兜住状态内存。",
-      "scope": {
-        "kind": "card"
-      },
-      "watch": [
-        "card_block_edited"
-      ],
-      "when": {
-        "all": [
-          {
-            "field": "trigger_data.block",
-            "cmp": "==",
-            "value": "status_block"
-          },
-          {
-            "field": "trigger_data.new_len",
-            "cmp": ">=",
-            "value": 10000
-          }
-        ]
-      },
-      "then": {
-        "target": "self",
-        "mode": "message",
-        "wake": true,
-        "message": "（提醒）你的「现状」块已经超 1 万字（{event.new_len} 字）。核实一下：现状应该是**当前快照**——别的卡靠它知道你现在到哪了，不是记事本。请把笔记、历史流水账等不需要共享给其他卡片的信息挪出（过程记录在影子卡）。注意：压缩的完成标准**不是「压回 1 万字以下」**，而是**清到没有不符合的内容为止**——不要踩着线压：该挪走的内容，不管压完还剩多少字都要清干净。",
-        "matter": {
-          "kind": "status_oversize",
-          "key": "status_block",
-          "check_on": ["card_block_edited"]
-        }
-      },
-      "window": "1h"
-    },
-    {
-      "id": "new_child_wire_relations",
-      "active": true,
-      "desc": "建非执行子卡（sub_project/topic）⇒ 插话提醒**父卡**给新卡画依赖/影响线：list_cards 看全图（含使命），link_rel(source_id=新卡) 替它标出依赖谁/影响谁。执行卡（worker/ui/qa_card/pm_card）与场卡/离树卡不触发——白名单只放组织型子卡。插话模式：父卡多半正在回合里（它刚调的建卡），steer 落进同一轮；不在跑就排队等它下一轮。",
-      "scope": {
-        "kind": "card"
-      },
-      "watch": [
-        "card_created"
-      ],
-      "when": {
-        "all": [
-          {
-            "field": "trigger_data.card_type",
-            "cmp": "in",
-            "value": ["sub_project", "topic"]
-          }
-        ]
-      },
-      "then": {
-        "target": "parent",
-        "mode": "inject",
-        "message": "（指令）你刚建了子卡 {card_id}——给它画好关系线再往下走：先调 list_cards 看全部卡片（每张带使命），想清楚它**依赖谁**（它要消费谁的接口/文档）、**影响谁**（它动会波及谁），然后逐条调 link_rel(source_id=\"{card_id}\", target_id=卡号, kind=依赖或影响, detail=写清具体依赖/影响什么) 替它标上。画错的用 unlink_rel(source_id=\"{card_id}\", target_id=卡号) 拆。"
-      },
-      "window": "1h"
-    },
-    {
-      "id": "pseudo_call_reinvoke",
-      "active": true,
-      "desc": "伪调用未解析（pseudo_call_unparsed）⇒ 把卡叫醒让它走真通道重发。[2026-11-12 用户令] 「中途解析文本」方向撤——新方言层出不穷追不完；已知方言照执行，解析不出来的（arg_key/未知标签对/将来任何新写法）不再同轮回注，落事实后由本策略 message+wake 重调起，措辞与节流全在这。节流靠事实内的 recent（发射侧记的近 1h 伪调用次数）：策略点火即撕本子，状态窗累计的回执/事件都会被抹，只有随事件走的计数算数——第 4 次起闭嘴，防「学不会就无限叫醒」死循环；事件照落，人能看见它一直在写。已知方言（形态C 等）仍走 rescue 执行链——纯文本通道卡（CLI 执行体）的正文协议就是那条，砍了它 CLI 卡永远变不出正常调用。[2026-11-20 返修 · runner/Harness 共用一次补救决定] runner 已接管/已裁定的事实延后发时带 handled=runner——本策略不再二次唤醒（同一事实只干预一次）；回合未接管就交付的裸事实仍照常重调起。",
-      "scope": {
-        "kind": "card"
-      },
-      "watch": [
-        "pseudo_call_unparsed"
-      ],
-      "when": {
-        "all": [
-          {
-            "field": "trigger_data.recent",
-            "cmp": "<=",
-            "value": 3
-          },
-          {
-            "not": {
-              "field": "trigger_data.handled",
-              "cmp": "eq",
-              "value": "runner"
-            }
-          }
-        ]
-      },
-      "then": {
-        "target": "self",
-        "mode": "message",
-        "wake": true,
-        "message": "（提醒）你上一轮的回复里有形似工具调用的文本——那不是一次真实调用，系统没有执行，也不会有工具结果回来。要执行工具：你的通道有 tool_calls 字段的，用它重发同一个调用；你的通道是纯文本协议的，按系统给你的工具协议段格式重写后发送。换别的写法也不会被执行。",
-        "dedup_fields": ["pair_id", "round", "anomaly"]
-      },
-      "window": "1h"
-    },
-    {
-      "id": "idle_exec_auto_archive",
-      "active": true,
-      "desc": "执行卡（worker/ui/qa_card/pm_card）静默 12 小时 ⇒ 自动归档。[2026-11-12 用户令] idle_sweeper 每 6 小时把静默过地板线（11h）的卡落成 card_idle 事实（silent_sec/card_type 随事实走）；本策略只判「执行卡型 × silent_sec≥43200」，then.archive 机械执行 card_store.archive_card（by=harness:本策略）。归档是折叠不是删除：三块/历史/影子进档案、会话与事件原位，unarchive_card 可恢复。卡型名单与阈值都在这里——要加卡型、改时长，只动本文件。归档成功的卡不再产 idle 事实（清扫器跳过 archived），天然停火；归档失败则下一波 card_idle 再触发重试。",
-      "scope": {
-        "kind": "card"
-      },
-      "watch": [
-        "card_idle"
-      ],
-      "when": {
-        "all": [
-          {
-            "field": "trigger_data.card_type",
-            "cmp": "in",
-            "value": [
-              "worker",
-              "ui",
-              "qa_card",
-              "pm_card"
-            ]
-          },
-          {
-            "field": "trigger_data.silent_sec",
-            "cmp": ">=",
-            "value": 43200
-          }
-        ]
-      },
-      "then": {
-        "target": "self",
-        "archive": {
-          "reason": "执行卡静默超 12 小时，自动归档（harness:idle_exec_auto_archive）。归档非删除——unarchive_card 可恢复。"
-        }
-      },
-      "window": "24h"
+  "semantics": {
+   "why_scope_matters": "「父卡对子卡做了什么」的状态不挂在某一张卡上，而是挂在每一对 (父, 子) 上。新子卡建出来自动多一本空本子。",
+   "why_clear_after_fire": "触发后该作用域的本子归零、窗口重置到此刻。只撕那一本，别的本子不动；清零本身防了重复触发，所以原来的防重表退役。",
+   "why_no_timer": "超窗的账在下次记账时顺手划掉。没有事件时本子不动也不需要动——这就是零墙钟要的样子。",
+   "why_seed": "新建/激活一条策略时，从数据集回溯它的窗口把本子补记好；补完若已满足就立刻触发，不用等下一个事件。",
+   "why_trigger_data": "触发这次求值的那条事实整体透传进 ctx.trigger_data：投递侧靠它解析 event: 目标与 {event.*} 占位符；求值侧靠 {\"field\":\"trigger_data.x\"} 做字段判据（与 event 节点的 where 等价，选顺手的写）。求值 ctx 故意不放 trigger_type——放了会让 within:\"turn\" 的窗口把触发事实本身跳过去。"
+  }
+ },
+ "policies": [
+  {
+   "id": "review_step_not_finished",
+   "active": true,
+   "desc": "只在评审事实 runnable=true 时续跑。席位回合正常结束仅作为 continued 事实，补投后仍缺票则等待新票、稿次或回应。历史事件缺 runnable 时不自动续跑。",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "review_round_done"
+   ],
+   "window": "none",
+   "when": {
+    "event": {
+     "types": [
+      "review_round_done"
+     ],
+     "where": {
+      "runnable": true
+     },
+     "within": "turn"
     }
-  ]
+   },
+   "then": {
+    "target": "self",
+    "mode": "continue",
+    "wake": true,
+    "dedup_fields": [
+     "batch",
+     "draft",
+     "next"
+    ],
+    "message": "（续接）评审还没结束，继续跑下一步。"
+   }
+  },
+  {
+   "id": "review_target_responded",
+   "active": false,
+   "desc": "（2026-11-04 停用·被 turn_end.progress 接管）原语义：正卡调 submit_revision 那一刻就点火评审场——回合中段激活，改由回合收口时 review_target_turn_end 的 progress 水位统一接力（「修改草稿的那一轮结束再激活」）。事件照发、事实照记，只是不再直接点火。",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "review_target_responded"
+   ],
+   "window": "none",
+   "when": {
+    "event": {
+     "types": [
+      "review_target_responded"
+     ],
+     "within": "turn"
+    }
+   },
+   "then": {
+    "target": "self",
+    "mode": "continue",
+    "wake": true,
+    "message": "（续接）正卡已交回本轮回应，评审继续。"
+   }
+  },
+  {
+   "id": "review_target_turn_end_continue",
+   "active": true,
+   "desc": "正卡回合结束 ⇒ 评审场下一步的判据点移到这里。两种点火：(1) 这轮有实质推进（progress=true：草稿版本涨过或 submit_revision 交回过——含交回后回合崩掉的情形，回应是既成事实不靠 outcome 保）；(2) outcome=ok 且 ask 未清（stall 兜底：正常结束却没干活也没交回——work_027 card_074 停尸案的口子仍兜着）。未推进的回合不再点火；submit_revision 的中途点火并入 progress，统一「那一轮结束再激活」。",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "review_target_turn_end"
+   ],
+   "window": "none",
+   "when": {
+    "any": [
+     {
+      "field": "trigger_data.progress",
+      "cmp": "==",
+      "value": true
+     },
+     {
+      "all": [
+       {
+        "field": "trigger_data.outcome",
+        "cmp": "==",
+        "value": "ok"
+       },
+       {
+        "field": "trigger_data.pending_ask",
+        "cmp": "==",
+        "value": true
+       }
+      ]
+     }
+    ]
+   },
+   "then": {
+    "target": "self",
+    "mode": "continue",
+    "wake": true,
+    "message": "（续接）正卡回合已正常结束且评审 ask 未清，评审继续。"
+   }
+  },
+  {
+   "id": "review_draft_drift_continue",
+   "active": true,
+   "desc": "promote_draft 撞版本闸（有席位批的是旧版）⇒ 叫评审场跑下一步——只给 stale 批准席补「只评增量」确认轮。",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "review_draft_drift"
+   ],
+   "window": "none",
+   "when": {
+    "event": {
+     "types": [
+      "review_draft_drift"
+     ],
+     "within": "turn"
+    }
+   },
+   "then": {
+    "target": "self",
+    "mode": "continue",
+    "wake": true,
+    "message": "（续接）有席位批准的是旧版草稿，请他们只评增量确认。"
+   }
+  },
+  {
+   "id": "review_all_passed_need_promote",
+   "active": true,
+   "desc": "评审已全员通过但正稿没写 ⇒ 叫它调 promote_draft 定稿（写正稿必须是模型调工具）",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "review_all_passed"
+   ],
+   "window": "none",
+   "when": {
+    "event": {
+     "types": [
+      "review_all_passed"
+     ],
+     "where": {
+      "need_promote": true
+     },
+     "within": "turn"
+    }
+   },
+   "then": {
+    "target": "self",
+    "mode": "continue",
+    "wake": true,
+    "message": "（续接）评审已全员通过，但正稿还没写。请调 promote_draft 把草稿转成正稿。",
+    "matter": {
+     "kind": "review_promote",
+     "key": "event:batch",
+     "check_on": [
+      "card_block_edited",
+      "review_batch_closed",
+      "tool_result"
+     ]
+    }
+   }
+  },
+  {
+   "id": "turn_end_without_report",
+   "active": false,
+   "desc": "（S0 校正停用·2026-10-31）done 是每轮收口不是任务完成——拿它当锚点等于要求模型每轮都汇报，与用户裁定冲突。业务交付检查等「明确的交付协议」落地后再接管；本策略保留备查。原语义：一轮 done 收口但没调 report_up ⇒ 提醒汇报。",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "run_start",
+    "done",
+    "tool_result",
+    "msg_directive",
+    "harness_message"
+   ],
+   "window": "none",
+   "when": {
+    "all": [
+     {
+      "event": {
+       "types": [
+        "done"
+       ],
+       "where": {
+        "card_type": {
+         "in": [
+          "worker",
+          "sub_project",
+          "topic"
+         ]
+        }
+       },
+       "within": "turn"
+      }
+     },
+     {
+      "not": {
+       "event": {
+        "types": [
+         "tool_result"
+        ],
+        "where": {
+         "tool": "report_up",
+         "ok": true
+        },
+        "within": "turn"
+       }
+      }
+     },
+     {
+      "any": [
+       {
+        "event": {
+         "types": [
+          "msg_directive"
+         ],
+         "where": {
+          "from": "$parent"
+         }
+        }
+       },
+       {
+        "event": {
+         "types": [
+          "harness_message"
+         ],
+         "where": {
+          "rule_id": "turn_end_without_report"
+         }
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "then": {
+    "target": "self",
+    "mode": "message",
+    "wake": true,
+    "message": "你这一轮正常完成了所有动作，但没有向上汇报。父卡看不到你写在对话里的内容——请调 report_up(kind=done)，把结果、证据与遗留交给父卡。"
+   }
+  },
+  {
+   "id": "child_created_needs_mission",
+   "active": false,
+   "desc": "（示例，默认停用）新子卡建出来后还没写过卡块 ⇒ 提醒父卡给它写目标与要求。",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "card_created",
+    "card_block_edited"
+   ],
+   "window": "none",
+   "when": {
+    "all": [
+     {
+      "event": {
+       "types": [
+        "card_created"
+       ],
+       "where": {
+        "card_type": {
+         "in": [
+          "sub_project",
+          "topic",
+          "worker"
+         ]
+        }
+       },
+       "within": "turn"
+      }
+     },
+     {
+      "not": {
+       "event": {
+        "types": [
+         "card_block_edited"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "then": {
+    "target": "parent",
+    "mode": "message",
+    "wake": true,
+    "message": "新子卡 {card_id} 建出来了，卡面还是空的——给它写上目标与要求。"
+   }
+  },
+  {
+   "id": "staff_pm_draft_on_card_created",
+   "active": false,
+   "desc": "新子卡建出 ⇒ 注入指令让**模型自己**召 PM 执笔：harness 只管时机（建卡后缺需求文档），召唤动作归卡——它调 create_deploy_card(function=pm) 建执笔卡，PM 进场写需求文档草稿；落笔自动收工、结论回执到本卡。差事卡挂树下可见、过程隔离在执笔卡会话。[2026-11-01 改：harness 递话不派活——卡自己召唤]",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "card_created"
+   ],
+   "window": "none",
+   "when": {
+    "event": {
+     "types": [
+      "card_created"
+     ],
+     "where": {
+      "card_type": {
+       "in": [
+        "sub_project"
+       ]
+      }
+     },
+     "within": "turn"
+    }
+   },
+   "then": {
+    "target": "self",
+    "mode": "message",
+    "wake": true,
+    "message": "（指令）本卡还没有需求文档。召产品经理来写：调 create_deploy_card(function=\"pm\", task=\"为这张卡写需求文档——按本卡使命把功能按愿景定义成可验收的需求：每条判得出做到没做到、边界与异常写清、拿不准的前提标【待确认】\")——它会建一张执笔卡进场写，写完自动收工，草稿落本卡面。"
+   }
+  },
+  {
+   "id": "status_block_oversize_reminder",
+   "active": true,
+   "desc": "卡面「现状」块编辑后超 1 万字 ⇒ 每次都提醒：现状是给别的卡看的当前快照，不是记事本。不节流——超阈值期间每写一次就催一次（注意力会漂）。提醒文点名反踩线：完成标准是「没有不符合的内容」，不是「压回阈值下」。直接判本条事实（trigger_data.block）；window 只为兜住状态内存。",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "card_block_edited"
+   ],
+   "when": {
+    "all": [
+     {
+      "field": "trigger_data.block",
+      "cmp": "==",
+      "value": "status_block"
+     },
+     {
+      "field": "trigger_data.new_len",
+      "cmp": ">=",
+      "value": 10000
+     }
+    ]
+   },
+   "then": {
+    "target": "self",
+    "mode": "message",
+    "wake": true,
+    "message": "（提醒）你的「现状」块已经超 1 万字（{event.new_len} 字）。核实一下：现状应该是**当前快照**——别的卡靠它知道你现在到哪了，不是记事本。请把笔记、历史流水账等不需要共享给其他卡片的信息挪出（过程记录在影子卡）。注意：压缩的完成标准**不是「压回 1 万字以下」**，而是**清到没有不符合的内容为止**——不要踩着线压：该挪走的内容，不管压完还剩多少字都要清干净。",
+    "matter": {
+     "kind": "status_oversize",
+     "key": "status_block",
+     "check_on": [
+      "card_block_edited"
+     ]
+    }
+   },
+   "window": "1h"
+  },
+  {
+   "id": "new_child_wire_relations",
+   "active": true,
+   "desc": "建非执行子卡（sub_project/topic）⇒ 插话提醒**父卡**给新卡画依赖/影响线：list_cards 看全图（含使命），link_rel(source_id=新卡) 替它标出依赖谁/影响谁。执行卡（worker/ui/qa_card/pm_card）与场卡/离树卡不触发——白名单只放组织型子卡。插话模式：父卡多半正在回合里（它刚调的建卡），steer 落进同一轮；不在跑就排队等它下一轮。",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "card_created"
+   ],
+   "when": {
+    "all": [
+     {
+      "field": "trigger_data.card_type",
+      "cmp": "in",
+      "value": [
+       "sub_project",
+       "topic"
+      ]
+     }
+    ]
+   },
+   "then": {
+    "target": "parent",
+    "mode": "inject",
+    "message": "（指令）你刚建了子卡 {card_id}——给它画好关系线再往下走：先调 list_cards 看全部卡片（每张带使命），想清楚它**依赖谁**（它要消费谁的接口/文档）、**影响谁**（它动会波及谁），然后逐条调 link_rel(source_id=\"{card_id}\", target_id=卡号, kind=依赖或影响, detail=写清具体依赖/影响什么) 替它标上。画错的用 unlink_rel(source_id=\"{card_id}\", target_id=卡号) 拆。"
+   },
+   "window": "1h"
+  },
+  {
+   "id": "pseudo_call_reinvoke",
+   "active": true,
+   "desc": "伪调用未解析（pseudo_call_unparsed）⇒ 把卡叫醒让它走真通道重发。[2026-11-12 用户令] 「中途解析文本」方向撤——新方言层出不穷追不完；已知方言照执行，解析不出来的（arg_key/未知标签对/将来任何新写法）不再同轮回注，落事实后由本策略 message+wake 重调起，措辞与节流全在这。节流靠事实内的 recent（发射侧记的近 1h 伪调用次数）：策略点火即撕本子，状态窗累计的回执/事件都会被抹，只有随事件走的计数算数——第 4 次起闭嘴，防「学不会就无限叫醒」死循环；事件照落，人能看见它一直在写。已知方言（形态C 等）仍走 rescue 执行链——纯文本通道卡（CLI 执行体）的正文协议就是那条，砍了它 CLI 卡永远变不出正常调用。[2026-11-20 返修 · runner/Harness 共用一次补救决定] runner 已接管/已裁定的事实延后发时带 handled=runner——本策略不再二次唤醒（同一事实只干预一次）；回合未接管就交付的裸事实仍照常重调起。",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "pseudo_call_unparsed"
+   ],
+   "when": {
+    "all": [
+     {
+      "field": "trigger_data.recent",
+      "cmp": "<=",
+      "value": 3
+     },
+     {
+      "not": {
+       "field": "trigger_data.handled",
+       "cmp": "eq",
+       "value": "runner"
+      }
+     }
+    ]
+   },
+   "then": {
+    "target": "self",
+    "mode": "message",
+    "wake": true,
+    "message": "（提醒）你上一轮的回复里有形似工具调用的文本——那不是一次真实调用，系统没有执行，也不会有工具结果回来。要执行工具：你的通道有 tool_calls 字段的，用它重发同一个调用；你的通道是纯文本协议的，按系统给你的工具协议段格式重写后发送。换别的写法也不会被执行。",
+    "dedup_fields": [
+     "pair_id",
+     "round",
+     "anomaly"
+    ]
+   },
+   "window": "1h"
+  },
+  {
+   "id": "idle_exec_auto_archive",
+   "active": true,
+   "desc": "执行卡（worker/ui/qa_card/pm_card）静默 12 小时 ⇒ 自动归档。[2026-11-12 用户令] idle_sweeper 每 6 小时把静默过地板线（11h）的卡落成 card_idle 事实（silent_sec/card_type 随事实走）；本策略只判「执行卡型 × silent_sec≥43200」，then.archive 机械执行 card_store.archive_card（by=harness:本策略）。归档是折叠不是删除：三块/历史/影子进档案、会话与事件原位，unarchive_card 可恢复。卡型名单与阈值都在这里——要加卡型、改时长，只动本文件。归档成功的卡不再产 idle 事实（清扫器跳过 archived），天然停火；归档失败则下一波 card_idle 再触发重试。",
+   "scope": {
+    "kind": "card"
+   },
+   "watch": [
+    "card_idle"
+   ],
+   "when": {
+    "all": [
+     {
+      "field": "trigger_data.card_type",
+      "cmp": "in",
+      "value": [
+       "worker",
+       "ui",
+       "qa_card",
+       "pm_card"
+      ]
+     },
+     {
+      "field": "trigger_data.silent_sec",
+      "cmp": ">=",
+      "value": 43200
+     }
+    ]
+   },
+   "then": {
+    "target": "self",
+    "archive": {
+     "reason": "执行卡静默超 12 小时，自动归档（harness:idle_exec_auto_archive）。归档非删除——unarchive_card 可恢复。"
+    }
+   },
+   "window": "24h"
+  },
+  {
+   "id": "inspection/work_073/cc7-owner-reports",
+   "desc": "对照统筹计划 rev.7，把本次汇报映射到具体事项；回查原事项、正稿版本、命令和原始输出，区分代码落盘、契约/组件、隔离装配、正式生产及接收方独立验收。R03a 与 R03b、R8 环境阻断与产品判据、B-1 与 U-5 必须分别判断。核对唯一收口人、最早失败、依赖解锁及同实例正常路径，不替责任卡报完成。",
+   "work": "work_073",
+   "active": false,
+   "scope": {
+    "kind": "work"
+   },
+   "watch": [
+    "msg_report",
+    "worker_done",
+    "coder_done",
+    "error",
+    "card_stopped",
+    "card_stopped_self",
+    "card_goal_completed"
+   ],
+   "window": "24h",
+   "when": {
+    "all": [
+     {
+      "field": "trigger_data.type",
+      "value": "msg_report"
+     },
+     {
+      "field": "trigger_data.from",
+      "cmp": "in",
+      "value": [
+       "card_007",
+       "card_009",
+       "card_011",
+       "card_013",
+       "card_015",
+       "card_017",
+       "card_049",
+       "card_051",
+       "card_055",
+       "card_057",
+       "card_059",
+       "card_564",
+       "card_566",
+       "card_568",
+       "card_570",
+       "card_572",
+       "card_581",
+       "card_648",
+       "card_720",
+       "card_726",
+       "card_790",
+       "card_981"
+      ]
+     }
+    ]
+   },
+   "then": {
+    "target": "card:coordination",
+    "message": "对照统筹计划 rev.7，把本次汇报映射到具体事项；回查原事项、正稿版本、命令和原始输出，区分代码落盘、契约/组件、隔离装配、正式生产及接收方独立验收。R03a 与 R03b、R8 环境阻断与产品判据、B-1 与 U-5 必须分别判断。核对唯一收口人、最早失败、依赖解锁及同实例正常路径，不替责任卡报完成。",
+    "wake": true,
+    "mode": "inspect",
+    "assignment_id": "asg_277bd16b51a7",
+    "trigger": "msg_report",
+    "subject": "from",
+    "card_ids": [
+     "card_007",
+     "card_009",
+     "card_011",
+     "card_013",
+     "card_015",
+     "card_017",
+     "card_049",
+     "card_051",
+     "card_055",
+     "card_057",
+     "card_059",
+     "card_564",
+     "card_566",
+     "card_568",
+     "card_570",
+     "card_572",
+     "card_581",
+     "card_648",
+     "card_720",
+     "card_726",
+     "card_790",
+     "card_981"
+    ],
+    "wake_when": "出现新生产证据或可解锁依赖、最早拒因变化、责任悬空或改派、同一拒因重复且无新证据、实现偏离正稿、影响面扩大、缺证完工，或计划状态需要变化时提请统筹；旧证据复述和单纯进度问候不唤醒。",
+    "signature": "db0174d88737e7e3abb7ded9ec22eb6df4eb79f7682161a3083953e627638c43",
+    "saved_at": 1795451654.3917246
+   }
+  },
+  {
+   "id": "inspection/work_073/cc7-worker-receipts",
+   "desc": "核对 worker 回执的原事项、执行命令、exit code、原始日志和证据路径，并映射 rev.7 的 S9/R03a/R03b、生产对话、R8、L4/L6 或横切事项。确认域责任卡是否已收到并转报；隔离测试装配、拒启负例和组件测试不得冒充 canonical 正式启动、真实 run、生产投递或完整 L4/L6。",
+   "work": "work_073",
+   "active": false,
+   "scope": {
+    "kind": "work"
+   },
+   "watch": [
+    "worker_done",
+    "msg_report",
+    "error",
+    "card_stopped",
+    "card_stopped_self"
+   ],
+   "window": "24h",
+   "when": {
+    "all": [
+     {
+      "field": "trigger_data.type",
+      "value": "worker_done"
+     },
+     {
+      "field": "trigger_data.from",
+      "cmp": "in",
+      "value": [
+       "card_1143",
+       "card_1150",
+       "card_1204",
+       "card_1209",
+       "card_1210",
+       "card_1211",
+       "card_1212",
+       "card_321"
+      ]
+     }
+    ]
+   },
+   "then": {
+    "target": "card:coordination",
+    "message": "核对 worker 回执的原事项、执行命令、exit code、原始日志和证据路径，并映射 rev.7 的 S9/R03a/R03b、生产对话、R8、L4/L6 或横切事项。确认域责任卡是否已收到并转报；隔离测试装配、拒启负例和组件测试不得冒充 canonical 正式启动、真实 run、生产投递或完整 L4/L6。",
+    "wake": true,
+    "mode": "inspect",
+    "assignment_id": "asg_277bd16b51a7",
+    "trigger": "worker_done",
+    "subject": "from",
+    "card_ids": [
+     "card_1143",
+     "card_1150",
+     "card_1204",
+     "card_1209",
+     "card_1210",
+     "card_1211",
+     "card_1212",
+     "card_321"
+    ],
+    "wake_when": "回执带来新的正式路径证据、可交接接口、最早失败变化或故障范围变化；域责任卡未接续、同一拒因重复无新证据、声称完成但缺权威证据，或证据只覆盖子项却被扩大为整项完成时唤醒。重复既有绿测不唤醒。",
+    "signature": "db3c07402177642344ec6ce108961c4206c3b3f0432e34dca8fd6c680b98eded",
+    "saved_at": 1795451656.889752
+   }
+  },
+  {
+   "id": "inspection/work_073/cc7-completion-audit",
+   "desc": "对照该卡正稿与计划板对应事项，核完工所依赖的原始证据、验证层级、正负例与接收方独立验收；局部组件、契约、隔离替身、拒启样本不得闭合生产事项，R03a/R03b、B-1/U-5、单卡/协作 L6、完整 L4 不得相互替代。",
+   "work": "work_073",
+   "active": false,
+   "scope": {
+    "kind": "work"
+   },
+   "watch": [
+    "card_goal_completed"
+   ],
+   "window": "7d",
+   "when": {
+    "all": [
+     {
+      "field": "trigger_data.type",
+      "value": "card_goal_completed"
+     },
+     {
+      "field": "trigger_data.card",
+      "cmp": "in",
+      "value": [
+       "card_007",
+       "card_009",
+       "card_011",
+       "card_057",
+       "card_059",
+       "card_648",
+       "card_790"
+      ]
+     }
+    ]
+   },
+   "then": {
+    "target": "card:coordination",
+    "message": "对照该卡正稿与计划板对应事项，核完工所依赖的原始证据、验证层级、正负例与接收方独立验收；局部组件、契约、隔离替身、拒启样本不得闭合生产事项，R03a/R03b、B-1/U-5、单卡/协作 L6、完整 L4 不得相互替代。",
+    "wake": true,
+    "mode": "inspect",
+    "assignment_id": "asg_277bd16b51a7",
+    "trigger": "card_goal_completed",
+    "subject": "card",
+    "card_ids": [
+     "card_007",
+     "card_009",
+     "card_011",
+     "card_057",
+     "card_059",
+     "card_648",
+     "card_790"
+    ],
+    "wake_when": "完工缺权威证据、范围被扩大、仍有未完成判据，或证据齐备可以关闭计划项/解锁下游时才唤醒；与计划板无关的历史完工不唤醒。",
+    "signature": "b2fce9ab911161a7582f2e0d4c817559460222eef52755d9ec54140033840b2a",
+    "saved_at": 1795452197.450454
+   }
+  },
+  {
+   "id": "inspection/work_073/cc7-owner-stopped",
+   "desc": "检查被停止卡持有的 rev.7 事项、停止原因、目标状态、最后已接纳指令和最新正式证据，确认唯一收口人是否仍有效。057 停止要核 R03a/R03b、生产 Web、B-1 与 ACC-1 接续；648/981 停止要核 R8 与 L6；011 停止要核 U-5；007 停止要核全域协调。只恢复状态不等于完成接续。",
+   "work": "work_073",
+   "active": false,
+   "scope": {
+    "kind": "work"
+   },
+   "watch": [
+    "card_stopped",
+    "msg_report",
+    "worker_done",
+    "coder_done",
+    "card_goal_completed"
+   ],
+   "window": "24h",
+   "when": {
+    "all": [
+     {
+      "field": "trigger_data.type",
+      "value": "card_stopped"
+     },
+     {
+      "field": "trigger_data.target",
+      "cmp": "in",
+      "value": [
+       "card_007",
+       "card_009",
+       "card_011",
+       "card_057",
+       "card_059",
+       "card_648",
+       "card_790",
+       "card_981"
+      ]
+     }
+    ]
+   },
+   "then": {
+    "target": "card:coordination",
+    "message": "检查被停止卡持有的 rev.7 事项、停止原因、目标状态、最后已接纳指令和最新正式证据，确认唯一收口人是否仍有效。057 停止要核 R03a/R03b、生产 Web、B-1 与 ACC-1 接续；648/981 停止要核 R8 与 L6；011 停止要核 U-5；007 停止要核全域协调。只恢复状态不等于完成接续。",
+    "wake": true,
+    "mode": "inspect",
+    "assignment_id": "asg_277bd16b51a7",
+    "trigger": "card_stopped",
+    "subject": "target",
+    "card_ids": [
+     "card_007",
+     "card_009",
+     "card_011",
+     "card_057",
+     "card_059",
+     "card_648",
+     "card_790",
+     "card_981"
+    ],
+    "wake_when": "仍有 todo/doing/blocked 事项而没有活跃唯一收口人、关键路径被切断、需要重新定责或必须由用户解除暂停时唤醒；若已有明确接管人、证据和依赖不受影响，则不重复唤醒。",
+    "signature": "a607c5e40c5858af4c5dbbafc517c96a0a805cda2cd9f8bf9b65ae44087a69e0",
+    "saved_at": 1795452197.6740105
+   }
+  },
+  {
+   "id": "inspection/work_073/cc7-owner-halted",
+   "desc": "检查被强制停止卡持有的 rev.7 事项、原因、目标状态、最后已接纳指令和最新正式证据，确认唯一收口人是否仍有效；恢复卡片状态不等于完成接续，必须核清接管责任、下一交付及被阻断依赖。",
+   "work": "work_073",
+   "active": false,
+   "scope": {
+    "kind": "work"
+   },
+   "watch": [
+    "card_halted",
+    "msg_report",
+    "worker_done",
+    "coder_done",
+    "card_goal_completed"
+   ],
+   "window": "24h",
+   "when": {
+    "all": [
+     {
+      "field": "trigger_data.type",
+      "value": "card_halted"
+     },
+     {
+      "field": "trigger_data.card",
+      "cmp": "in",
+      "value": [
+       "card_007",
+       "card_009",
+       "card_011",
+       "card_057",
+       "card_059",
+       "card_648",
+       "card_790",
+       "card_981"
+      ]
+     }
+    ]
+   },
+   "then": {
+    "target": "card:coordination",
+    "message": "检查被强制停止卡持有的 rev.7 事项、原因、目标状态、最后已接纳指令和最新正式证据，确认唯一收口人是否仍有效；恢复卡片状态不等于完成接续，必须核清接管责任、下一交付及被阻断依赖。",
+    "wake": true,
+    "mode": "inspect",
+    "assignment_id": "asg_277bd16b51a7",
+    "trigger": "card_halted",
+    "subject": "card",
+    "card_ids": [
+     "card_007",
+     "card_009",
+     "card_011",
+     "card_057",
+     "card_059",
+     "card_648",
+     "card_790",
+     "card_981"
+    ],
+    "wake_when": "仍有未完成事项而无活跃唯一收口人、关键路径被切断、需要重新定责或必须由用户解除停止时唤醒；已有明确接管且依赖不受影响时不重复唤醒。",
+    "signature": "1f4493da8f8ecee4ae5564143b3885fdfe6ba7a30561fbfc5e2449a3e512429d",
+    "saved_at": 1795455408.8424544
+   }
+  },
+  {
+   "id": "inspection/work_073/cc7-active-idle",
+   "desc": "只查关键收口卡（007／057／648／011）静默 24h 后，板上对应事项是否还有活跃唯一收口人、最后已接纳指令与下一份可验结果；区分真实前置依赖等待与责任悬空，同一静默段不重复处理。",
+   "work": "work_073",
+   "active": false,
+   "scope": {
+    "kind": "work"
+   },
+   "watch": [
+    "card_idle"
+   ],
+   "window": "7d",
+   "when": {
+    "all": [
+     {
+      "field": "trigger_data.type",
+      "value": "card_idle"
+     },
+     {
+      "field": "trigger_data.card",
+      "cmp": "in",
+      "value": [
+       "card_007",
+       "card_011",
+       "card_057",
+       "card_648"
+      ]
+     },
+     {
+      "field": "trigger_data.silent_sec",
+      "cmp": "ge",
+      "value": 86400.0
+     },
+     {
+      "field": "trigger_data.silent_since",
+      "cmp": "gt",
+      "value": 0
+     }
+    ]
+   },
+   "then": {
+    "target": "card:coordination",
+    "message": "只查关键收口卡（007／057／648／011）静默 24h 后，板上对应事项是否还有活跃唯一收口人、最后已接纳指令与下一份可验结果；区分真实前置依赖等待与责任悬空，同一静默段不重复处理。",
+    "wake": true,
+    "mode": "inspect",
+    "assignment_id": "asg_277bd16b51a7",
+    "trigger": "card_idle",
+    "subject": "card",
+    "card_ids": [
+     "card_007",
+     "card_011",
+     "card_057",
+     "card_648"
+    ],
+    "wake_when": "满 24h 静默且对应事项无活跃收口人、无下一交付，或依赖已就绪却无人接验时才唤醒统筹定责；已核实为真实前置等待、责任与下一动作清楚时不唤醒。",
+    "idle_for": "24h",
+    "dedup_fields": [
+     "card",
+     "silent_since"
+    ],
+    "signature": "cb1efa7a6d465d307d5e7436f5b70dbdf8673d49343d3f977d129e992f5cea2e",
+    "saved_at": 1795455409.7920153
+   }
+  },
+  {
+   "id": "inspection/work_073/cc7-backlog-idle",
+   "desc": "只查 009／059／790 三条长期欠账（完整 L4 对账、S10 证据矩阵与分档）静默 48h 后，是否已由域责任卡接管并有下一份可验结果、是否把可独立开展的事项错误地停等外部条件。",
+   "work": "work_073",
+   "active": false,
+   "scope": {
+    "kind": "work"
+   },
+   "watch": [
+    "card_idle"
+   ],
+   "window": "7d",
+   "when": {
+    "all": [
+     {
+      "field": "trigger_data.type",
+      "value": "card_idle"
+     },
+     {
+      "field": "trigger_data.card",
+      "cmp": "in",
+      "value": [
+       "card_009",
+       "card_059",
+       "card_790"
+      ]
+     },
+     {
+      "field": "trigger_data.silent_sec",
+      "cmp": "ge",
+      "value": 172800.0
+     },
+     {
+      "field": "trigger_data.silent_since",
+      "cmp": "gt",
+      "value": 0
+     }
+    ]
+   },
+   "then": {
+    "target": "card:coordination",
+    "message": "只查 009／059／790 三条长期欠账（完整 L4 对账、S10 证据矩阵与分档）静默 48h 后，是否已由域责任卡接管并有下一份可验结果、是否把可独立开展的事项错误地停等外部条件。",
+    "wake": true,
+    "mode": "inspect",
+    "assignment_id": "asg_277bd16b51a7",
+    "trigger": "card_idle",
+    "subject": "card",
+    "card_ids": [
+     "card_009",
+     "card_059",
+     "card_790"
+    ],
+    "wake_when": "满 48h 仍无当前责任、无下一项可验结果或方案与执行责任脱节时才唤醒；已明确接管并在推进、或确属真实外部条件等待时不唤醒。",
+    "idle_for": "48h",
+    "dedup_fields": [
+     "card",
+     "silent_since"
+    ],
+    "signature": "95a86d4ef43f7268b9529d11bf575df2656dd23fd344436ac94651078d22f92f",
+    "saved_at": 1795452197.9093952
+   }
+  },
+  {
+   "id": "inspection/work_073/cc7-owner-self-stopped",
+   "desc": "核查自行停止是否真因任务完成或明确停等，对照 rev.7 未完成事项、最后汇报和原始证据确认是否留下活跃唯一收口人与下一动作。不得把自行停止、暂停或目标完成状态当作事项验收通过。",
+   "work": "work_073",
+   "active": false,
+   "scope": {
+    "kind": "work"
+   },
+   "watch": [
+    "card_stopped_self",
+    "msg_report",
+    "worker_done",
+    "coder_done",
+    "card_goal_completed"
+   ],
+   "window": "24h",
+   "when": {
+    "all": [
+     {
+      "field": "trigger_data.type",
+      "value": "card_stopped_self"
+     },
+     {
+      "field": "trigger_data.card",
+      "cmp": "in",
+      "value": [
+       "card_007",
+       "card_009",
+       "card_011",
+       "card_057",
+       "card_059",
+       "card_648",
+       "card_790",
+       "card_981"
+      ]
+     }
+    ]
+   },
+   "then": {
+    "target": "card:coordination",
+    "message": "核查自行停止是否真因任务完成或明确停等，对照 rev.7 未完成事项、最后汇报和原始证据确认是否留下活跃唯一收口人与下一动作。不得把自行停止、暂停或目标完成状态当作事项验收通过。",
+    "wake": true,
+    "mode": "inspect",
+    "assignment_id": "asg_277bd16b51a7",
+    "trigger": "card_stopped_self",
+    "subject": "card",
+    "card_ids": [
+     "card_007",
+     "card_009",
+     "card_011",
+     "card_057",
+     "card_059",
+     "card_648",
+     "card_790",
+     "card_981"
+    ],
+    "wake_when": "仍持有未完成事项却无人接管、停等原因不是已验证的真实依赖、缺少下一交付或影响关键路径时唤醒；已完成正式交接且不影响其他事项时不唤醒。",
+    "signature": "a2f83fc9a19fbda7ab7704e3caad349c1ba4156bfcd1a2842405d7804c22404f",
+    "saved_at": 1795451658.1475453
+   }
+  },
+  {
+   "id": "inspection/work_073/cc7-action-not-executed",
+   "desc": "核查绑定动作为何未执行、对应哪条正式指令或原事项、责任卡是否实际接纳以及是否已有替代回执。尤其区分统筹计划/巡检保存与真实派工，不能把未执行动作算作介入或进展；检查是否因同一传输/工具拒因反复停滞。",
+   "work": "work_073",
+   "active": false,
+   "scope": {
+    "kind": "work"
+   },
+   "watch": [
+    "action_not_executed",
+    "msg_report",
+    "worker_done",
+    "coder_done",
+    "error"
+   ],
+   "window": "24h",
+   "when": {
+    "all": [
+     {
+      "field": "trigger_data.type",
+      "value": "action_not_executed"
+     },
+     {
+      "field": "trigger_data.card",
+      "cmp": "in",
+      "value": [
+       "card_007",
+       "card_009",
+       "card_011",
+       "card_057",
+       "card_059",
+       "card_1143",
+       "card_1150",
+       "card_1204",
+       "card_1209",
+       "card_1210",
+       "card_1211",
+       "card_1212",
+       "card_648",
+       "card_790",
+       "card_981"
+      ]
+     }
+    ]
+   },
+   "then": {
+    "target": "card:coordination",
+    "message": "核查绑定动作为何未执行、对应哪条正式指令或原事项、责任卡是否实际接纳以及是否已有替代回执。尤其区分统筹计划/巡检保存与真实派工，不能把未执行动作算作介入或进展；检查是否因同一传输/工具拒因反复停滞。",
+    "wake": true,
+    "mode": "inspect",
+    "assignment_id": "asg_277bd16b51a7",
+    "trigger": "action_not_executed",
+    "subject": "card",
+    "card_ids": [
+     "card_007",
+     "card_009",
+     "card_011",
+     "card_057",
+     "card_059",
+     "card_1143",
+     "card_1150",
+     "card_1204",
+     "card_1209",
+     "card_1210",
+     "card_1211",
+     "card_1212",
+     "card_648",
+     "card_790",
+     "card_981"
+    ],
+    "wake_when": "用户要求的介入或关键路径动作实际未执行、没有有效替代回执、责任因此悬空，或同一拒因重复且无新证据时唤醒；已被后续正式回执明确取代且不阻断事项时不唤醒。",
+    "signature": "74c45017e482a5d8d70ea9d5ecf4ee277ae56717404e8611eabe32049745ac43",
+    "saved_at": 1795451657.3984723
+   }
+  },
+  {
+   "id": "inspection/work_073/cc7-repeated-errors",
+   "desc": "比较 24 小时内错误是否为同一最早原因，回查对应正式命令和原始输出，区分产品失败、测试装配/环境错误、工具传输错误及已恢复瞬态；确认同实例正常路径和影响范围，不把所有 error 都当产品缺陷。",
+   "work": "work_073",
+   "active": false,
+   "scope": {
+    "kind": "work"
+   },
+   "watch": [
+    "error",
+    "msg_report",
+    "worker_done",
+    "coder_done"
+   ],
+   "window": "24h",
+   "when": {
+    "all": [
+     {
+      "field": "trigger_data.type",
+      "value": "error"
+     },
+     {
+      "field": "trigger_data.card",
+      "cmp": "in",
+      "value": [
+       "card_007",
+       "card_009",
+       "card_011",
+       "card_057",
+       "card_059",
+       "card_1143",
+       "card_1150",
+       "card_1204",
+       "card_648",
+       "card_790",
+       "card_981"
+      ]
+     },
+     {
+      "count": {
+       "types": [
+        "error"
+       ],
+       "where": {}
+      },
+      "cmp": ">=",
+      "value": 2
+     }
+    ]
+   },
+   "then": {
+    "target": "card:coordination",
+    "message": "比较 24 小时内错误是否为同一最早原因，回查对应正式命令和原始输出，区分产品失败、测试装配/环境错误、工具传输错误及已恢复瞬态；确认同实例正常路径和影响范围，不把所有 error 都当产品缺陷。",
+    "wake": true,
+    "mode": "inspect",
+    "assignment_id": "asg_277bd16b51a7",
+    "trigger": "error",
+    "subject": "card",
+    "card_ids": [
+     "card_007",
+     "card_009",
+     "card_011",
+     "card_057",
+     "card_059",
+     "card_1143",
+     "card_1150",
+     "card_1204",
+     "card_648",
+     "card_790",
+     "card_981"
+    ],
+    "wake_when": "同一错误重复且无新增诊断或下一动作、错误影响扩大到其他模块/work、责任人不清，或正式路径仍被阻断时唤醒；不同且已独立恢复、已有明确接管与新证据的错误不重复唤醒。",
+    "signature": "c437b091e0f398d793b0ce8613cb353257633cdf8b0ade2cf3c1d75efaed6668",
+    "saved_at": 1795451657.0963542
+   }
+  },
+  {
+   "id": "inspection/work_073/cc8-domain-reports",
+   "desc": "只核三域负责卡明确提交给统筹的验收或跨域交接结果，映射当前计划的验收标准、证据层级和接收方；域内派工、子卡汇报、worker 回执和一般施工过程由责任卡自理，不越级追踪。",
+   "work": "work_073",
+   "active": true,
+   "scope": {
+    "kind": "work"
+   },
+   "watch": [
+    "msg_report"
+   ],
+   "window": "24h",
+   "when": {
+    "all": [
+     {
+      "field": "trigger_data.type",
+      "value": "msg_report"
+     },
+     {
+      "field": "trigger_data.from",
+      "cmp": "in",
+      "value": [
+       "card_007",
+       "card_009",
+       "card_648"
+      ]
+     },
+     {
+      "field": {
+       "path": "trigger_data.to",
+       "cmp": "eq",
+       "value": "coordination"
+      }
+     }
+    ]
+   },
+   "then": {
+    "target": "card:coordination",
+    "message": "只核三域负责卡明确提交给统筹的验收或跨域交接结果，映射当前计划的验收标准、证据层级和接收方；域内派工、子卡汇报、worker 回执和一般施工过程由责任卡自理，不越级追踪。",
+    "wake": true,
+    "mode": "inspect",
+    "assignment_id": "asg_277bd16b51a7",
+    "trigger": "msg_report",
+    "subject": "from",
+    "card_ids": [
+     "card_007",
+     "card_009",
+     "card_648"
+    ],
+    "wake_when": "仅当正式结果已满足事项验收或可解锁跨域交接，或提交内容暴露正稿偏离、跨域责任冲突、证据层级冒充、责任链失效时唤醒；普通进度、域内施工过程和重复旧证据不唤醒。",
+    "signature": "7424e395766587ef5c56abcbe5a5b8f2c3506f89f372a2b0ddf0f3257f31c700",
+    "saved_at": 1795452196.9386094
+   }
+  },
+  {
+   "id": "inspection/work_073/cc8-domain-completion",
+   "desc": "对照该域正稿和当前计划，核完工所依赖的生产证据、正负例、故障范围与接收方独立验收；局部组件、契约、隔离替身不得闭合完整域目标。",
+   "work": "work_073",
+   "active": true,
+   "scope": {
+    "kind": "work"
+   },
+   "watch": [
+    "card_goal_completed"
+   ],
+   "window": "7d",
+   "when": {
+    "all": [
+     {
+      "field": "trigger_data.type",
+      "value": "card_goal_completed"
+     },
+     {
+      "field": "trigger_data.card",
+      "cmp": "in",
+      "value": [
+       "card_007",
+       "card_009",
+       "card_648"
+      ]
+     }
+    ]
+   },
+   "then": {
+    "target": "card:coordination",
+    "message": "对照该域正稿和当前计划，核完工所依赖的生产证据、正负例、故障范围与接收方独立验收；局部组件、契约、隔离替身不得闭合完整域目标。",
+    "wake": true,
+    "mode": "inspect",
+    "assignment_id": "asg_277bd16b51a7",
+    "trigger": "card_goal_completed",
+    "subject": "card",
+    "card_ids": [
+     "card_007",
+     "card_009",
+     "card_648"
+    ],
+    "wake_when": "域级验收确已满足、需要关闭计划或安排跨域交接时唤醒；声称完工但缺权威证据、范围扩大或关键判据未过时也唤醒。",
+    "signature": "0947ce78d35f79024357c32700a2fe32b9f10dd2be25d6552d17643f38dd1829",
+    "saved_at": 1795452197.042473
+   }
+  },
+  {
+   "id": "inspection/work_073/cc8-domain-stopped",
+   "desc": "只检查被停域负责卡名下是否仍有未完成计划、是否已有明确接替责任，以及是否需要用户恢复或统筹重新指定唯一域收口；不接管其域内派工。",
+   "work": "work_073",
+   "active": true,
+   "scope": {
+    "kind": "work"
+   },
+   "watch": [
+    "card_stopped"
+   ],
+   "window": "7d",
+   "when": {
+    "all": [
+     {
+      "field": "trigger_data.type",
+      "value": "card_stopped"
+     },
+     {
+      "field": "trigger_data.target",
+      "cmp": "in",
+      "value": [
+       "card_007",
+       "card_009",
+       "card_648"
+      ]
+     }
+    ]
+   },
+   "then": {
+    "target": "card:coordination",
+    "message": "只检查被停域负责卡名下是否仍有未完成计划、是否已有明确接替责任，以及是否需要用户恢复或统筹重新指定唯一域收口；不接管其域内派工。",
+    "wake": true,
+    "mode": "inspect",
+    "assignment_id": "asg_277bd16b51a7",
+    "trigger": "card_stopped",
+    "subject": "target",
+    "card_ids": [
+     "card_007",
+     "card_009",
+     "card_648"
+    ],
+    "wake_when": "未完成事项的域责任链中断、需要重新指定收口或必须由用户恢复时唤醒；已完成交接或停止不影响未完成事项时不唤醒。",
+    "signature": "5fcf2dcfda2e893faf6f98b2792c6b0c6c3118071e5612918e4ecddf86dc3b19",
+    "saved_at": 1795452197.1850276
+   }
+  },
+  {
+   "id": "inspection/work_073/cc8-domain-idle",
+   "desc": "这是域级回看点，不是日常催办。只核该域计划事项是否已有符合验收标准的新结果、是否存在真实前置依赖，以及责任卡是否仍能推进；不检查或指挥其子卡日常过程。",
+   "work": "work_073",
+   "active": true,
+   "scope": {
+    "kind": "work"
+   },
+   "watch": [
+    "card_idle"
+   ],
+   "window": "24h",
+   "when": {
+    "all": [
+     {
+      "field": "trigger_data.type",
+      "value": "card_idle"
+     },
+     {
+      "field": "trigger_data.card",
+      "cmp": "in",
+      "value": [
+       "card_007",
+       "card_009",
+       "card_648"
+      ]
+     },
+     {
+      "field": "trigger_data.silent_sec",
+      "cmp": "ge",
+      "value": 86400.0
+     },
+     {
+      "field": "trigger_data.silent_since",
+      "cmp": "gt",
+      "value": 0
+     }
+    ]
+   },
+   "then": {
+    "target": "card:coordination",
+    "message": "这是域级回看点，不是日常催办。只核该域计划事项是否已有符合验收标准的新结果、是否存在真实前置依赖，以及责任卡是否仍能推进；不检查或指挥其子卡日常过程。",
+    "wake": true,
+    "mode": "inspect",
+    "assignment_id": "asg_277bd16b51a7",
+    "trigger": "card_idle",
+    "subject": "card",
+    "card_ids": [
+     "card_007",
+     "card_009",
+     "card_648"
+    ],
+    "wake_when": "静默满 24 小时后，仅在无有效交付且责任链失效、把可独立工作错误停等、出现正稿偏离或跨域冲突需要统筹裁定时唤醒；子树正常推进、责任清晰或真实依赖等待不唤醒。",
+    "idle_for": "24h",
+    "dedup_fields": [
+     "card",
+     "silent_since"
+    ],
+    "signature": "5ac3089d1adeb553efacda5938a72c44f5f84823a46df556acb1f5057f073627",
+    "saved_at": 1795452197.3647418
+   }
+  }
+ ]
 }

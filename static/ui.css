@@ -1961,6 +1961,14 @@ body.page-chat .inspector .insp-body {
 body.page-chat .inspector.open .insp-body { opacity: 1; }
 body.page-chat .inspector:not(.open) .insp-body { display: none; }
 
+/* 统筹详情与对话并排，保持消息右缘与发送按钮可见。 */
+body.page-chat.coordination-chat .inspector {
+  position: relative;
+  inset: auto;
+}
+body.page-chat.coordination-chat .inspector.open { width: min(348px, 46%); box-shadow: none; }
+body.page-chat.coordination-chat .insp-body { width: 100%; }
+
 /* 右缘竖排标签退役：对话页的卡详情入口统一到顶栏 #topInspBtn。
    保留元素（workspace.js 仍绑 onclick，删元素会 TypeError），只做视觉隐藏。 */
 body.page-chat .insp-tab { display: none; }

@@ -6,7 +6,7 @@
  * Workspace.open 仍导出（canvas.js 已改为整页跳转，不再消费；留作对外薄壳）。 */
 import { API } from "./esm/api.js?v=57";
 import { escapeHtml } from "./esm/util.js?v=30";
-import { EventFlow } from "./stream.js?v=81";
+import { EventFlow } from "./stream.js?v=85";
 import { renderMarkdown, bindCopyButtons } from "./esm/md.js?v=31";
 import { store } from "./esm/store.js?v=30";
 import { notify, postStop } from "./esm/api.js?v=57";
@@ -16,14 +16,14 @@ import { buildExecBackendHtml as buildExecBackendHtmlPure } from "./esm/exec_bac
 //   （原先在装配闭包里 ⇒ 不可单测）；此处不再需要 cardmsg.js 的解析件。
 // [S2/S3] 导航体系整体抽入 esm/nav_system.js（[阶段1 A1.2]）；本文件只留面包屑用的 ancestorCards。
 import { ancestorCards } from "./esm/nav_breadcrumb.js?v=30";
-import { createNavSystem } from "./esm/nav_system.js?v=76";
+import { createNavSystem } from "./esm/nav_system.js?v=78";
 import { loadRulePanel, getRuleCardId, loadRule } from "./esm/rule_panel.js?v=48";
 /* [对话流照抄 dsh 完全版 v3 2026-10-17] 输入系统整件来自 flow/（dsh 移植件）：
    machine＝输入状态机、submission-policy＝忙时 Enter 策略、
    input-bar＝输入卡、queue-store/queue-dock＝排队消息与排队条。 */
 import { ComposerSubmissionPolicy } from "./esm/flow/submission-policy.js?v=1";
 import { InputMachine } from "./esm/flow/machine.js?v=1";
-import { createInputBar } from "./esm/flow/input-bar.js?v=5";
+import { createInputBar } from "./esm/flow/input-bar.js?v=7";
 import { createQueueStore } from "./esm/flow/queue-store.js?v=2";
 import { createQueueDock } from "./esm/flow/queue-dock.js?v=3";
 // [5715 · 抽模块] 消息操作条（复制/重发）与卡详情抽屉开合：原生长在渲染/装配闭包里
@@ -49,6 +49,10 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
   const inspector = document.getElementById("inspector");
   const navTree = document.getElementById("navTree");
   const chatArea = document.getElementById("chatArea");
+  const isCoordination = window.__CARD_ID__ === "coordination";
+  let coordinationConversation = null;
+  let coordinationWritable = false;
+  let coordinationSending = false;
 
   /* ═══ [对话流照抄 dsh 完全版 v3 2026-10-17] 输入系统整件交给 flow/ ═══
    * 退役（任务书 §三）：
@@ -66,8 +70,9 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     // live＝「会话面在场」（dsh: input/keyboard/actions 三面齐备）。本机＝有当前卡。
     // 用 getter 而不是快照字段：currentCard 在 open()/草稿建卡多处被替换，
     // 每次赋值都去同步一个布尔量是「靠下游记得做对」，用 getter 从根上没有这个问题。
-    get live() { return !!currentCard; },
-    blocked: undefined,
+    get live() { return isCoordination ? coordinationWritable : !!currentCard; },
+    defaultPlaceholder: isCoordination ? "和统筹官讨论…" : undefined,
+    runningPlaceholder: isCoordination ? "统筹官正在回复，结束后可发送下一条" : undefined,
     parentOffline: false,
     subagent: null,
   };
@@ -107,6 +112,10 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
   try {
     EventFlow.onRunChange((wid, cid, running) => {
       if (wid !== WORK_ID) return;
+      if (isCoordination && cid === coordinationConversation?.key) {
+        applyRunState(running, cid);
+        return;
+      }
       // [席位会话] 帧的 cid 是会话键（card 或 card@N）：只对「当前卡当前
       // 选中的会话」回写运行态——seat 帧不驱动主会话按钮（并行语义）。
       const selCid = (navStore.select.get() || {}).cid || "";
@@ -1384,10 +1393,6 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
         <span style="font-size:11px;color:var(--dimmer);">连同会话删除；有子卡时系统拒绝；剧本卡无此操作</span>
       </div>` : ""}
 
-      <!-- [项目统筹 2026-11-21 任务一] 卡面「统筹计划」区域：任命表单/状态/
-           计划编辑。内容由 static/esm/coordination.js renderCardRegion 异步
-           填充（fetch 正式入口，GET 面板不唤醒模型）；普通卡才渲染。 -->
-      ${m.card_type !== "project" && !isRoleCard && !String(m.card_id || "").startsWith("fn_") ? `<div id="coordRegion" data-card-id="${escapeHtml(m.card_id || "")}"></div>` : ""}
     `;
 
     bindInspectorEvents();
@@ -1399,20 +1404,6 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     applyConclusionState();
     // [phase8.6-C] 面板已可见时（如保存后重渲染）立即撑高；首次 open 由 active 后统一触发
     autoGrowAll();
-    // [项目统筹 2026-11-21 任务一] 卡详情里的「统筹计划」区域（独立模块，
-    // 动态 import 不进 main 模块图——加载失败不影响卡详情其余部分）。
-    mountCoordRegion();
-  }
-
-  async function mountCoordRegion() {
-    const mount = document.getElementById("coordRegion");
-    if (!mount) return;
-    try {
-      const mod = await import("/static/esm/coordination.js?v=3");
-      await mod.renderCardRegion(mount);
-    } catch (e) {
-      mount.innerHTML = `<div class="coord-err">统筹面板加载失败：${escapeHtml(String(e && e.message || e))}</div>`;
-    }
   }
 
   /* [phase8.6-C] 文本区高度自适应：内容多高就多高，上限由 CSS max-height 兜底。
@@ -2145,6 +2136,12 @@ let _draftBoardSeq = 0;      // 新卡画板键序号（连开两张不复用画
     });
     actions.appendChild(copyBtn);
     el.appendChild(actions);
+    if (window.__CARD_ID__ === "coordination" && /^run_[a-f0-9]{32}$/.test(d.coordination_run || "")) {
+      const link = document.createElement("a");
+      link.href = "/work/" + encodeURIComponent(WORK_ID) + "/coordination?run=" + d.coordination_run;
+      link.textContent = "查看子会话";
+      el.appendChild(link);
+    }
     return el;
   }
 
@@ -2653,17 +2650,18 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   // 【运行中】（运行中就是停止按钮）」）。同一元素同一位置，点一次的含义由当前态决定。
   async function doStop() {
     // [阶段4 A4.1] 回落数据源改读导航选中（不再依赖画布状态 window.GetCanvasState）。
-    const cardId = currentCard ? currentCard.meta.card_id
+    const cardId = isCoordination ? "coordination" : currentCard ? currentCard.meta.card_id
       : ((navStore.select.get() || {}).cid || "");
     if (!cardId) { notify("没有正在查看的卡", "warn"); return; }
     // [席位会话] 停的是**当前选中会话**的回合——seat 停 seat、主停主，
     // 不置卡级 halt（要停整卡另有卡级入口）。
-    const sk = sessionKeyOf(cardId);
+    const sk = isCoordination ? coordinationConversation?.key : sessionKeyOf(cardId);
+    if (!sk) return;
     try {
       /* 先置过渡态再发请求：中止缝在 step 边界，从「点下」到「真正停住」
          有一段真实等待，这段必须表达出来（否则用户会重复点、以为坏了）。 */
       try { EventFlow.setStopping(WORK_ID, sk, true); } catch (e0) { /* 零阻断 */ }
-      await postStop(WORK_ID, cardId, sessionParamOf(cardId) || undefined);
+      await postStop(WORK_ID, cardId, isCoordination ? sk : sessionParamOf(cardId) || undefined);
       notify("正在停止…", "info");
       // 兜底：8 秒仍未收口则撤掉过渡态（避免卡在「正在停止」）
       setTimeout(() => {
@@ -2714,6 +2712,33 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
     });
   }
 
+  async function sendCoordination(content, commitDraft = true) {
+    const text = String(content || "").trim();
+    if (!text || !coordinationWritable || coordinationSending || sessionState.running || !coordinationConversation?.send) return;
+    const { key, send } = coordinationConversation;
+    const wid = WORK_ID;
+    const machine = inputBar.machine;
+    const submittedDraft = inputBar.getDraft();
+    coordinationSending = true;
+    inputBar.clearNotice();
+    EventFlow.optimisticUser(wid, key, text);
+    if (commitDraft) inputBar.commitSent(machine);
+    setRunState(true, key);
+    try {
+      await send(text);
+    } catch (error) {
+      if (!error.accepted) {
+        EventFlow.dropOptimisticUser(wid, key);
+        if (commitDraft && inputBar.machine === machine && !inputBar.getDraft()) inputBar.setDraft(submittedDraft);
+      }
+      inputBar.failSend(error.message);
+    } finally {
+      coordinationSending = false;
+      setRunState(false, key);
+      if (commitDraft) inputBar.focus();
+    }
+  }
+
   function initComposer() {
     const seat = document.getElementById("composerSeat");
     if (!seat) return;
@@ -2745,6 +2770,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
       actions: {
         submit(draft, mode) {
           const text = String(draft == null ? "" : draft);
+          if (isCoordination) { sendCoordination(text); return; }
           if (sessionState.running) {
             /* [5715] 真插话：mode==="steer" 时把这条**投递进正在跑的这一轮**
                （后端 steer 通道：下一次模型调用即可见），而不是干等整轮收口。
@@ -2783,22 +2809,24 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   // 旧 hash 链接（#wid/cid）兼容：一次性重定向到新地址（hash 退役第一步）。
   async function bootRestore() {
     const pathCid = (window.__CARD_ID__ || "").trim();
-    if (pathCid && pathCid !== "draft"
+    if (pathCid !== "coordination" && pathCid !== "draft"
         && new URLSearchParams(location.search).get("coordination") === "1") {
-      document.getElementById("workspace").style.display = "none";
-      document.getElementById("topInspBtn").hidden = true;
-      document.getElementById("procToggleBtn").hidden = true;
-      const crumb = document.getElementById("chatCrumb");
-      crumb.textContent = "项目统筹";
-      const mount = document.createElement("section");
-      mount.className = "coord-page";
-      mount.setAttribute("aria-label", "项目统筹");
-      document.getElementById("workspace").after(mount);
+      location.replace(`/work/${encodeURIComponent(WORK_ID)}/coordination`);
+      return true;
+    }
+    if (isCoordination) {
       try {
-        const mod = await import("/static/esm/coordination_chat.js?v=2");
-        await mod.mountCoordinationPage(mount, WORK_ID);
+        const { mountCoordination } = await import("/static/esm/coordination_chat.js?v=9");
+        coordinationConversation = mountCoordination({
+          wid: WORK_ID, flow: EventFlow,
+          setWritable(value) {
+            coordinationWritable = value;
+            inputBar.refresh();
+          },
+        });
+        if (coordinationConversation.send) switchComposer(coordinationConversation.key);
       } catch (error) {
-        mount.textContent = `统筹加载失败：${error.message}`;
+        notify(`统筹加载失败：${error.message}`, "error");
       }
       return true;
     }
@@ -2892,6 +2920,7 @@ const ACTIVE_STAGES = ["started", "viewpoints", "synthesize", "tools", "cards", 
   window.addEventListener("ui:resend", (e) => {
     const content = e && e.detail && e.detail.content;
     if (!content) return;
+    if (isCoordination) { sendCoordination(content, false); return; }
     if (sessionState.running) return;
     resend(String(content));
   });

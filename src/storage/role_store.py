@@ -224,7 +224,7 @@ async def list_profiles(work_id: str) -> list[dict[str, Any]]:
             (work_id,)).fetchall()
         return [_row_to_profile(r) for r in rows]
 
-    return card_db.read_sync(work_id, _fn, []) or []
+    return await card_db.run_read(work_id, _fn, []) or []
 
 
 async def append_charter(work_id: str, role_id: str, text: str,
@@ -258,7 +258,7 @@ async def charter_history(work_id: str, role_id: str,
             (work_id, role_id, limit)).fetchall()
         return [dict(r) for r in rows]
 
-    return card_db.read_sync(work_id, _fn, []) or []
+    return await card_db.run_read(work_id, _fn, []) or []
 
 
 # ============================================================

@@ -82,21 +82,24 @@ async def test_chat_uses_updated_strong_route_and_retains_conversation(sandbox, 
     from src.api import model_service
     from src.storage import session_facade
 
-    wid, _, fids = await _seeded_work(monkeypatch)
-    plan = await _mk_card(wid, "对话计划")
-    appointed = await coordination_store.appoint(
-        wid, plan, function_id=fids["pm"], **_appoint_kwargs())
+    wid, cards, _ = await _seeded_work(monkeypatch)
+    plan = coordination_store.PROJECT_AGENT_ID
+    appointed = await coordination_store.configure_project_agent(wid, _appoint_kwargs()["models"])
     aid = appointed["appointment"]["assignment_id"]
     calls = []
 
     async def reply(system, content, **kwargs):
         await kwargs["before_send"]()
         calls.append((content, kwargs["model_name"], kwargs["prior_messages"]))
-        assert kwargs["tools"] is None
+        assert {tool["name"] for tool in kwargs["tools"]} == {
+            "coord_read_card", "coord_read_events", "coord_read_dialogue",
+            "coord_plan_board", "coord_submit_instruction", "design_policy",
+            "read_memory", "memory_expand",
+        }
         return {"content": "当前计划仍在核查。"}, kwargs["model_name"]
 
     monkeypatch.setattr(model_service, "call_main", reply)
-    endpoint = f"/api/works/{wid}/cards/{plan}/coordination"
+    endpoint = f"/api/works/{wid}/coordination/agent"
     assert (await client.get(f"{endpoint}/chat")).json() == {"messages": []}
     assert calls == []
     changed = await client.post(endpoint, json={
@@ -123,8 +126,9 @@ async def test_chat_uses_updated_strong_route_and_retains_conversation(sandbox, 
     ]
     history = (await client.get(f"{endpoint}/chat")).json()["messages"]
     assert [item["actor"] for item in history] == ["human", "assistant", "human", "assistant"]
-    assert all("计划进展怎么样？" not in str(block.get("content"))
-               for block in await session_facade.read(wid, plan))
+    for card in cards:
+        assert all("计划进展怎么样？" not in str(block.get("content"))
+                   for block in await session_facade.read(wid, card))
     assert coordination_store.panel(wid, plan)["rev"] == 1
     assert len(calls) == 2
 
@@ -135,8 +139,11 @@ async def test_chat_uses_updated_strong_route_and_retains_conversation(sandbox, 
         return {"content": "迟到回复"}, kwargs["model_name"]
 
     monkeypatch.setattr(model_service, "call_main", pause_before_reply)
-    assert (await send("中途暂停", 1)).status_code == 409
-    assert (await client.get(f"{endpoint}/chat")).json()["messages"] == history
+    rejected_reply = await send("中途暂停", 1)
+    assert rejected_reply.status_code == 409 and rejected_reply.json()["accepted"] is True
+    updated = (await client.get(f"{endpoint}/chat")).json()["messages"]
+    assert updated[:-1] == history
+    assert updated[-1]["actor"] == "human" and updated[-1]["content"] == "中途暂停"
 
 
 # ---------------------------------------------------------------- T1 任命＋不干扰
@@ -605,9 +612,13 @@ async def test_http_panel_and_ops(client, sandbox, monkeypatch):
     wid, cards, fids = await _seeded_work(monkeypatch)
     _stub_wake(monkeypatch)
     plan_card = await _mk_card(wid, "HTTP 面计划")
+    endpoint = f"/api/works/{wid}/coordination/agent"
+    from src.infra import coordination_watcher
+
+    monkeypatch.setattr(coordination_watcher, "_spawn_strong_turn", lambda *a: False)
 
     # 无任命 ⇒ 空面板（200，state=none，不写库）
-    r = await client.get(f"/api/works/{wid}/cards/{plan_card}/coordination")
+    r = await client.get(endpoint)
     assert r.status_code == 200
     assert r.json()["state"] == "none"
 
@@ -615,49 +626,32 @@ async def test_http_panel_and_ops(client, sandbox, monkeypatch):
     r = await client.get(f"/api/works/{wid}/coordination")
     assert r.status_code == 200 and r.json()["plans"] == []
 
-    # appoint（缺模型 ⇒ 400 带缺项说明）
-    r = await client.post(f"/api/works/{wid}/cards/{plan_card}/coordination",
-                          json={"op": "appoint", "function_id": fids["pm"],
-                                "objective": "o"})
+    r = await client.post(endpoint, json={"op": "configure"})
     assert r.status_code == 400
     assert "模型" in r.json()["error"]
 
-    # appoint 完整 ⇒ 200
-    r = await client.post(f"/api/works/{wid}/cards/{plan_card}/coordination",
-                          json={"op": "appoint", "function_id": fids["pm"],
-                                "objective": "按现行需求推进",
-                                "observe": {"scope": "work"},
-                                "instruct": {"scope": "cards",
-                                             "ids": ["card_demo_protocol"]},
-                                "models": {"strong": "strong-test-route",
-                                           "weak": "weak-test-route"},
-                                "mode": "observe",
-                                "next_review_at": _future_ts()})
+    models = _appoint_kwargs()["models"]
+    existing_cards = set(card_store.iter_card_metas(wid))
+    r = await client.post(endpoint, json={"op": "configure", "models": models})
     assert r.status_code == 200, r.text
     aid = r.json()["assignment_id"]
     assert aid.startswith("asg_") and r.json()["state"] == "active"
 
-    # 重复任命（完整参数）⇒ 409（work 级唯一；参数不完整才会先撞 400）
-    r2 = await client.post(f"/api/works/{wid}/cards/{plan_card}/coordination",
-                           json={"op": "appoint", "function_id": fids["pm"],
-                                 "objective": "o2",
-                                 "observe": {"scope": "work"},
-                                 "instruct": {"scope": "cards",
-                                              "ids": ["card_demo_protocol"]},
-                                 "models": {"strong": "strong-test-route",
-                                            "weak": "weak-test-route"},
-                                 "next_review_at": _future_ts()})
+    assert set(card_store.iter_card_metas(wid)) == existing_cards
+    r2 = await client.post(endpoint, json={"op": "configure", "models": models})
     assert r2.status_code == 409
+    legacy = f"/api/works/{wid}/cards/{plan_card}/coordination"
+    assert (await client.post(legacy, json={"op": "appoint"})).status_code == 403
 
     # PATCH：expected_rev 过期 ⇒ 409＋最新
-    r = await client.patch(f"/api/works/{wid}/cards/{plan_card}/coordination",
+    r = await client.patch(endpoint,
                            json={"assignment_id": aid, "expected_rev": 5,
                                  "plan": {"objective": "late"}})
     assert r.status_code == 409
     assert r.json()["current_rev"] == 0
 
     # PATCH 正确版本 ⇒ 200 rev=1
-    r = await client.patch(f"/api/works/{wid}/cards/{plan_card}/coordination",
+    r = await client.patch(endpoint,
                            json={"assignment_id": aid, "expected_rev": 0,
                                  "plan": {"objective": "v1",
                                           "wake_standards": [
@@ -666,69 +660,66 @@ async def test_http_panel_and_ops(client, sandbox, monkeypatch):
     assert r.status_code == 200 and r.json()["rev"] == 1
 
     # [2026-11-21 · 用户令] 控制请求须带读入版本：缺 ⇒ 400
-    r = await client.post(f"/api/works/{wid}/cards/{plan_card}/coordination",
+    r = await client.post(endpoint,
                           json={"op": "pause", "assignment_id": aid})
     assert r.status_code == 400
     assert "expected_rev" in r.json()["error"]
 
     # 控制请求读入版本过期 ⇒ 409 带最新
-    r = await client.post(f"/api/works/{wid}/cards/{plan_card}/coordination",
+    r = await client.post(endpoint,
                           json={"op": "pause", "assignment_id": aid,
                                 "expected_rev": 99})
     assert r.status_code == 409
     assert r.json()["current_rev"] == 1
 
     # 控制请求读入版本正确 ⇒ 200；pause 推进 rev 1→2
-    r = await client.post(f"/api/works/{wid}/cards/{plan_card}/coordination",
+    r = await client.post(endpoint,
                           json={"op": "pause", "assignment_id": aid,
                                 "expected_rev": 1})
     assert r.status_code == 200 and r.json()["state"] == "paused"
 
     # [2026-11-21 · 用户令实测场景] 旧页面拿 rev.1 恢复 ⇒ 409（rev 已推进到 2）
-    r = await client.post(f"/api/works/{wid}/cards/{plan_card}/coordination",
+    r = await client.post(endpoint,
                           json={"op": "resume", "assignment_id": aid,
                                 "expected_rev": 1})
     assert r.status_code == 409
     assert r.json()["current_rev"] == 2
 
     # 拿最新版本恢复 ⇒ 200（rev 2→3）
-    r = await client.post(f"/api/works/{wid}/cards/{plan_card}/coordination",
+    r = await client.post(endpoint,
                           json={"op": "resume", "assignment_id": aid,
                                 "expected_rev": 2})
     assert r.status_code == 200 and r.json()["state"] == "active"
 
     # wake 是入账：不带 expected_rev 也放行
-    r = await client.post(f"/api/works/{wid}/cards/{plan_card}/coordination",
+    r = await client.post(endpoint,
                           json={"op": "wake", "assignment_id": aid,
                                 "note": "HTTP 点名"})
     assert r.status_code == 200
 
     # 越权 op（假 assignment）⇒ 403
-    r = await client.post(f"/api/works/{wid}/cards/{plan_card}/coordination",
+    r = await client.post(endpoint,
                           json={"op": "pause", "assignment_id": "asg_fake",
                                 "expected_rev": 1})
     assert r.status_code == 403
 
     # 面板带 history：版本史只列**计划正文修订**（appoint 版0 + PATCH 版1）；
     # pause/resume 推进的 appointments.rev（=3）不插修订行
-    r = await client.get(
-        f"/api/works/{wid}/cards/{plan_card}/coordination?history=1")
+    r = await client.get(endpoint + "?history=1")
     body = r.json()
     assert body["rev"] == 3 and len(body["history"]) == 2
     assert [h["rev"] for h in body["history"]] == [1, 0]
-    assert body["grants"]["observe"] == {"scope": "work"}
+    assert body["grants"]["observe"] == {"scope": "project"}
     assert any(x["kind"] == "user_wake" for x in body["pending"])
-    assert body["next_review_at"] and body["overdue"] is False
+    assert body["next_review_at"] == "" and body["overdue"] is False
     assert all("history_id" in h and "assignment_id" in h
                for h in body["history"])
 
     # [2026-11-21 · 用户令] 历史版本正文回读：?rev=0 返回任命版正文
-    r = await client.get(
-        f"/api/works/{wid}/cards/{plan_card}/coordination?rev=0")
+    r = await client.get(endpoint + "?rev=0")
     assert r.status_code == 200
     assert r.json()["rev"] == 0
-    assert r.json()["plan"]["objective"].startswith("按现行需求")
+    assert r.json()["plan"]["objective"].startswith("根据项目需求")
     # 不存在的版本 ⇒ 404
-    r = await client.get(
-        f"/api/works/{wid}/cards/{plan_card}/coordination?rev=99")
+    r = await client.get(endpoint + "?rev=99")
     assert r.status_code == 404

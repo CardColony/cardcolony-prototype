@@ -107,10 +107,12 @@ async def _stop_raced(agen: Any, stop_ev: Optional[asyncio.Event],
             yield chunk
             continue
         # 停止信号先到：取消挂起的取帧，交还调用方（它会把已产出的字收口）
-        nxt.cancel()
-        nxt = None
         return
     finally:
+        if nxt is not None:
+            if not nxt.done():
+                nxt.cancel()
+            await asyncio.gather(nxt, return_exceptions=True)
         if stream_key is not None:
             _left = _IN_STREAM.get(stream_key, 0) - 1
             if _left > 0:

@@ -561,9 +561,16 @@ def _card_obj(m: dict, act: dict, child_count: int, wid: str,
 #: 重建——首屏必等、过期必卡，与「响应只给快照、重建在后台」的既定口径相悖。
 #: ⇒ stale-while-revalidate：过期即后台异步重建（在途任务去重），请求**立刻**
 #: 回上一份快照；唯一会等的路径是「服务起后第一份快照还没建好」。
-_NAV_TTL_S = float(os.environ.get("ECO_NAV_TTL_S") or 5)
+_NAV_TTL_S = float(os.environ.get("ECO_NAV_TTL_S") or 30)
+#: [风暴节流 2026-11-25] 重建**间隔下限**：work_073 库已 8.9GB，单轮全量
+#: 重建实测 ~195s；TTL 过期 + 前端高频轮询会让重建**背靠背连跑** ⇒
+#: web 线程池/GIL 持续饱和 ⇒ 事件循环间歇失声 ⇒ 浏览器 Failed to fetch
+#: 突发 ⇒ 可达性闩反复掉。上次完成不满 60s ⇒ 不再开新轮，照旧回旧快照
+#: （SWR 语义不变；env: ECO_NAV_MIN_REBUILD_S）。
+_NAV_MIN_REBUILD_S = float(os.environ.get("ECO_NAV_MIN_REBUILD_S") or 60)
 _nav_cache: dict = {"at": 0.0, "payload": None}
 _nav_tasks: dict = {}
+_nav_last_done: dict = {}   # loop → 上次重建完成时刻（monotonic）
 
 
 def _nav_rebuild() -> "asyncio.Task":
@@ -572,6 +579,10 @@ def _nav_rebuild() -> "asyncio.Task":
     t = _nav_tasks.get(lp)
     if t is not None and not t.done():
         return t
+    if time.monotonic() - _nav_last_done.get(lp, 0.0) < _NAV_MIN_REBUILD_S:
+        async def _noop():
+            return None
+        return asyncio.create_task(_noop())
 
     async def _rebuild():
         try:
@@ -580,6 +591,8 @@ def _nav_rebuild() -> "asyncio.Task":
             _nav_cache["payload"] = payload
         except Exception:  # noqa: BLE001 重建失败保旧快照，下次请求再试
             logger.exception("[nav] 后台重建失败（快照保留旧值）")
+        finally:
+            _nav_last_done[lp] = time.monotonic()
 
     t = asyncio.create_task(_rebuild())
     _nav_tasks[lp] = t
@@ -774,7 +787,8 @@ async def get_nav_children(work_id: str = "", parent: str = ""):
     root_id = w.get("work_card_id", "")
     if parent and not card_store.card_exists(work_id, parent):
         return _err(404, f"卡片不存在: {parent}")
-    metas = list(activity.iter_card_metas(work_id))
+    metas = list(await asyncio.to_thread(
+        activity.iter_card_metas, work_id))
     child_count: dict[str, int] = {}
     for m in metas:
         p = m.get("parent", "")
@@ -1051,7 +1065,7 @@ async def list_card_messages_unread(work_id: str):
     """
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
-    cards = card_store.iter_card_metas(work_id)
+    cards = await asyncio.to_thread(card_store.iter_card_metas, work_id)
     return {"unread_by_card": await _unread_by_card(work_id, cards)}
 
 
@@ -1196,7 +1210,7 @@ async def list_card_messages(work_id: str, limit: int = 200, scope: str = "all")
     """
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
-    cards = card_store.iter_card_metas(work_id)
+    cards = await asyncio.to_thread(card_store.iter_card_metas, work_id)
     items: list[dict[str, Any]] = []
     unread_by_card: dict[str, int] = {}
     seen: set[str] = set()
@@ -2179,6 +2193,25 @@ async def get_card_timeline(work_id: str, card_id: str, frm: int = Query(0, alia
     """
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
+    if card_id == _coord_store().PROJECT_AGENT_ID:
+        from . import coordination_runner, payload_cap
+
+        sid = _coord_store().PROJECT_CHAT_SESSION
+        if session not in ("", card_id, sid):
+            return _err(404, "统筹会话不存在")
+        items = [coordination_runner.project_chat_record(block)
+                 for block in await coordination_runner.read_user_chat(work_id, card_id, include_process=True)
+                 if block.get("seq") is not None]
+        items = [item for item in items if item["seq"] >= frm and (not before or item["seq"] < before)]
+        has_earlier = tail > 0 and len(items) > tail
+        if tail > 0:
+            items = items[-tail:]
+        if view == "brief":
+            payload_cap.brief_records(items)
+        payload_cap.cap_records(items)
+        return {"work_id": work_id, "card_id": card_id, "session": sid, "items": items,
+                "first_seq": items[0]["seq"] if items else 0,
+                "last_seq": items[-1]["seq"] if items else 0, "has_earlier": has_earlier}
     # [2026-11-19 性能批次二] 存在性检查＋附加会话校验走窄读（原 read_card
     # 全行捞正文大列——开卡每次轮询白付 IO）。指定附加会话时读权威会话登记
     # （cards.sessions 列），校验语义与 read_card 路径一致。
@@ -2292,16 +2325,20 @@ async def get_card_timeline_event(work_id: str, card_id: str,
     """
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
-    _light = await card_store.read_card_sessions_light(work_id, card_id)
-    if _light is None:
-        return _err(404, f"卡片不存在: {card_id}")
+    project_chat = card_id == _coord_store().PROJECT_AGENT_ID
     _tkey = card_id
-    if session:
-        try:
-            _tkey, _ = _resolve_session({"sessions": _light["sessions"]},
-                                        card_id, str(session))
-        except ValueError as exc:
-            return _err(404, str(exc))
+    if project_chat:
+        if session not in ("", card_id, _coord_store().PROJECT_CHAT_SESSION):
+            return _err(404, "统筹会话不存在")
+    else:
+        _light = await card_store.read_card_sessions_light(work_id, card_id)
+        if _light is None:
+            return _err(404, f"卡片不存在: {card_id}")
+        if session:
+            try:
+                _tkey, _ = _resolve_session({"sessions": _light["sessions"]}, card_id, str(session))
+            except ValueError as exc:
+                return _err(404, str(exc))
     want: list[int] = []
     for part in str(seqs or "").split(","):
         part = part.strip()
@@ -2313,8 +2350,16 @@ async def get_card_timeline_event(work_id: str, card_id: str,
             continue
     if not want:
         return _err(400, "seqs 必填（逗号分隔的 seq 列表）")
-    items, revoked = await asyncio.to_thread(
-        event_log.timeline_events, work_id, _tkey, want[:64])
+    if project_chat:
+        from . import coordination_runner
+
+        selected = set(want[:64])
+        blocks = await coordination_runner.read_user_chat(work_id, card_id, include_process=True)
+        items = [coordination_runner.project_chat_record(block) for block in blocks
+                 if block.get("seq") is not None and block["seq"] + 1 in selected]
+        revoked = []
+    else:
+        items, revoked = await asyncio.to_thread(event_log.timeline_events, work_id, _tkey, want[:64])
     # 单条详情仍过 payload_cap：历史巨块（31.8MB tool_result 实录）展开时
     # 不能又炸一次——与 timeline 同一道兜底裁剪（响应层，落盘不动）。
     from . import payload_cap
@@ -2435,7 +2480,11 @@ async def stream_card_events(work_id: str, card_id: str, frm: int = Query(0, ali
         return _err(404, f"剧本不存在: {work_id}")
     # [席位会话] 过程/逐字流都按会话键分账——seat 会话订自己的流。
     _skey = card_id
-    if session:
+    if card_id == _coord_store().PROJECT_AGENT_ID:
+        _skey = _coord_store().PROJECT_CHAT_SESSION
+        if session not in ("", card_id, _skey):
+            return _err(404, "统筹会话不存在")
+    elif session:
         try:
             _meta = (await card_store.read_card(work_id, card_id)).get("meta") or {}
             _skey, _ = _resolve_session(_meta, card_id, str(session))
@@ -2457,7 +2506,11 @@ async def stream_card_events(work_id: str, card_id: str, frm: int = Query(0, ali
                         nxt = asyncio.create_task(it.__anext__())
                     done, _pending = await asyncio.wait({nxt}, timeout=15.0)
                     if not done:
-                        yield ": ping\n\n"          # 空闲保活；不取消挂起的 anext
+                        # [半死流探测 2026-11-25] 注释帧改真实事件帧：注释帧前端
+                        # onmessage 收不到，runner 冻结期 TCP 不断但零帧 ⇒
+                        # 前端无法区分「安静」与「死」。真实 ping 事件帧让活性
+                        # 哨兵有据可判（消费端按 type 过滤，ping 自然略过）。
+                        yield f"data: {json.dumps({'type': 'ping', 'ts': time.time()})}\n\n"
                         continue
                     task, nxt = nxt, None
                     try:
@@ -2481,6 +2534,11 @@ async def stream_card_events(work_id: str, card_id: str, frm: int = Query(0, ali
 
     # ---- 合并模式：过程帧(e) + 逐字帧(t) 共用一条连接 ----
     start_e = frm if frm > 0 else event_stream.journal_last_seq(work_id, _skey) + 1
+    if replay and not frm and card_id == _coord_store().PROJECT_AGENT_ID:
+        for frame in reversed(event_stream.journal_of(work_id, _skey)):
+            if frame.get("type") == "run_start":
+                start_e = frame["seq"]
+                break
     # 逐字游标：fromT > 0 用它；否则退回 from（同一 seq 轴）；都没有 ⇒
     # replay=1 从本 run 首帧回放，否则落在末帧（不重放）——与原 /tokens 同口径。
     if from_t > 0:
@@ -2507,7 +2565,7 @@ async def stream_card_events(work_id: str, card_id: str, frm: int = Query(0, ali
         ]
         async for tag, frame in _merged_sse(sources, timeout=10.0):
             if tag == "__ping__":
-                yield ": ping\n\n"
+                yield f"data: {json.dumps({'type': 'ping', 'ch': 'e', 'ts': time.time()})}\n\n"
                 continue
             payload = dict(frame)
             payload["ch"] = tag
@@ -2560,7 +2618,9 @@ async def stream_work_events(work_id: str, cards: int = Query(0)):
             sources.append(("c", event_stream.subscribe_work_cards(work_id)))
         async for tag, frame in _merged_sse(sources, timeout=15.0):
             if tag == "__ping__":
-                yield ": ping\n\n"        # 空闲保活；**不取消挂起的 anext**
+                # [半死流探测 2026-11-25] 真实 ping 事件帧（同 /stream 口径），
+                # 穿透 web 扇入泵到浏览器 onmessage——前端活性哨兵的判据。
+                yield f"data: {json.dumps({'type': 'ping', 'ts': time.time()})}\n\n"
                 continue
             yield f"data: {json.dumps(frame, ensure_ascii=False)}\n\n"
 
@@ -2615,7 +2675,7 @@ async def stream_card_tokens(work_id: str, card_id: str, frm: int = Query(0, ali
                     nxt = asyncio.create_task(it.__anext__())
                 done, _pending = await asyncio.wait({nxt}, timeout=10.0)
                 if not done:
-                    yield ": ping\n\n"
+                    yield f"data: {json.dumps({'type': 'ping', 'ts': time.time()})}\n\n"
                     continue
                 task, nxt = nxt, None
                 try:
@@ -3501,21 +3561,8 @@ async def create_work_function(work_id: str, req: CreateFunctionRequest):
 # 判断归模型、调度归任务三；这里只有机械事实的用户控制面。
 # ============================================================
 
-class CoordinationAppointRequest(BaseModel):
-    function_id: str = ""
-    objective: str = ""
-    observe: Optional[dict] = None
-    instruct: Optional[dict] = None
-    models: Optional[dict] = None
-    mode: str = "observe"
-    next_review_at: str = ""
-
-
 class CoordinationOpRequest(BaseModel):
     op: str
-    function_id: str = ""
-    objective: str = ""
-    observe: Optional[dict] = None
     instruct: Optional[dict] = None
     models: Optional[dict] = None
     mode: str = ""
@@ -3549,7 +3596,8 @@ def _coord_err(exc: "object") -> JSONResponse:
     from ..storage import coordination_store as _cs
     assert isinstance(exc, _cs.CoordinationError)
     status = {"not_found": 404, "validation": 400,
-              "conflict": 409, "denied": 403, "model_unavailable": 502}.get(exc.code, 400)
+              "conflict": 409, "denied": 403, "model_unavailable": 502,
+              "coordination_execution_failed": 500}.get(exc.code, 400)
     body: dict[str, Any] = {"error": exc.message}
     body.update(exc.extra or {})
     return JSONResponse(status_code=status, content=body)
@@ -3567,6 +3615,28 @@ async def list_work_coordination(work_id: str):
         return _err(404, f"剧本不存在: {work_id}")
     _cs = _coord_store()
     return {"plans": _cs.list_plans(work_id)}
+
+
+@router.get("/works/{work_id}/coordination/agent")
+async def get_project_coordination(work_id: str, history: bool = False,
+                                   rev: Optional[int] = None, history_id: Optional[int] = None):
+    panel = await get_card_coordination(
+        work_id, _coord_store().PROJECT_AGENT_ID, history=history, rev=rev, history_id=history_id)
+    if isinstance(panel, dict) and panel.get("models"):
+        from . import coordination_runner, model_config
+        from ..infra import policy_runner
+        catalog = (model_config.load() or {}).get("models") or {}
+        panel["model_labels"] = {
+            role: str((catalog.get(route) or {}).get("model") or route)
+            for role, route in panel["models"].items()
+        }
+        panel["inspection_status"] = (
+            "paused" if panel.get("state") == "paused" else
+            "missing_models" if any(panel["models"].get(role) not in catalog for role in ("strong", "weak")) else
+            "harness_off" if policy_runner._off() else
+            "ready" if coordination_runner.project_inspection_rules(work_id, panel) else "waiting_policy"
+        )
+    return panel
 
 
 @router.get("/works/{work_id}/cards/{card_id}/coordination")
@@ -3605,23 +3675,22 @@ async def get_card_coordination(work_id: str, card_id: str,
 
 
 @router.post("/works/{work_id}/cards/{card_id}/coordination")
-async def post_card_coordination(work_id: str, card_id: str,
-                                 req: CoordinationOpRequest):
-    """任命与控制操作：appoint/pause/resume/revoke/finish/wake/set_mode/set_grant。"""
+async def post_card_coordination(work_id: str, card_id: str, req: CoordinationOpRequest):
+    return _err(403, "旧版统筹记录已归档。请打开项目统筹。")
+
+
+@router.post("/works/{work_id}/coordination/agent")
+async def post_project_coordination(work_id: str, req: CoordinationOpRequest):
+    """项目级统筹的模型、运行状态、发令范围与计划板控制面。"""
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
     _cs = _coord_store()
+    card_id = _cs.PROJECT_AGENT_ID
     try:
-        if req.op == "appoint":
-            out = await _cs.appoint(
-                work_id, card_id,
-                function_id=req.function_id,
-                objective=req.objective,
-                observe=req.observe, instruct=req.instruct,
-                models=req.models, mode=req.mode or "observe",
-                next_review_at=req.next_review_at, by="user", schedule_first=True)
-        elif req.op in ("pause", "resume", "revoke", "finish", "wake",
-                        "set_mode", "set_grant", "set_review_at", "set_models"):
+        if req.op == "configure":
+            out = await _cs.configure_project_agent(work_id, req.models)
+        elif req.op in ("pause", "resume", "wake",
+                        "set_grant", "set_models"):
             # [读入版本 2026-11-21 · 用户令] 变更类控制操作必带 expected_rev
             # 并在后端校验（不匹配 409 带最新版本）；wake 是入账，不带。
             if req.op != "wake" and req.expected_rev is None:
@@ -3630,8 +3699,8 @@ async def post_card_coordination(work_id: str, card_id: str,
                             "（面板当前显示的 rev）")
             out = await _cs.control_op(
                 work_id, card_id, assignment_id=req.assignment_id,
-                op=req.op, mode=req.mode, observe=req.observe,
-                instruct=req.instruct, next_review_at=req.next_review_at, models=req.models,
+                op=req.op, observe=None,
+                instruct=req.instruct, models=req.models,
                 note=req.note, expected_rev=req.expected_rev)
         elif req.op == "board_apply":
             # [2026-11-23 · 计划板] 用户面板条目编辑——与模型 coord_plan_board
@@ -3643,23 +3712,13 @@ async def post_card_coordination(work_id: str, card_id: str,
                 expected_rev=req.expected_rev, changes=req.changes,
                 reason=req.reason or "面板编辑", by="user")
         else:
-            return _err(400, f"未知 op: {req.op!r}（appoint/pause/resume/"
-                             "revoke/finish/wake/set_mode/set_grant/"
-                             "board_apply）")
+            return _err(400, f"项目统筹不支持操作 {req.op!r}")
     except Exception as exc:  # noqa: BLE001 统一转 HTTP
         if type(exc).__name__ == "CoordinationError":
             return _coord_err(exc)
         raise
     appt = (out or {}).get("appointment") or {}
-    # [任务二 2026-11-21] 强模型**首次起轮由任命触发**（任务书口径）：
-    # [2026-11-21 · 用户令] 后台回合绑定本次任命标识——起轮前校验仍在任
-    # 且活跃，暂停/撤回/换人后旧任务不启动不写入。起轮失败不影响任命本身。
-    if req.op == "appoint" and out.get("ok"):
-        from .message_runner import _spawn_tracked
-        _spawn_tracked(_coord_first_turn(work_id, card_id,
-                                         str(appt.get("assignment_id") or "")),
-                       work_id=work_id, card_id=card_id)
-    elif req.op == "wake" and out.get("ok"):
+    if req.op == "wake" and out.get("ok"):
         from ..infra import coordination_watcher
         wake = appt["pending"][-1]
         coordination_watcher._spawn_strong_turn(work_id, card_id, appt["assignment_id"],
@@ -3682,52 +3741,76 @@ async def get_coordination_chat(work_id: str, card_id: str):
     from . import coordination_runner
     blocks = await coordination_runner.read_user_chat(work_id, card_id)
     return {"messages": [
-        {key: b[key] for key in ("actor", "content", "ts", "model") if key in b}
+        {key: b[key] for key in ("seq", "actor", "content", "ts", "timestamp", "model", "run_id") if key in b}
+        for b in blocks
+    ]}
+
+
+@router.get("/works/{work_id}/coordination/agent/chat")
+async def get_project_coordination_chat(work_id: str):
+    return await get_coordination_chat(work_id, _coord_store().PROJECT_AGENT_ID)
+
+
+@router.get("/works/{work_id}/coordination/agent/runs")
+async def get_coordination_runs(work_id: str, active: bool = False):
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    # [事件循环冻结 2026-11-25] list_runs 内走 card_db.read_sync（同步 SQLite），
+    # 本端点被聊天页 5s 轮询 ⇒ 进线程，不占循环。
+    return {"runs": await asyncio.to_thread(
+        _coord_store().list_runs, work_id, active_only=active)}
+
+
+@router.get("/works/{work_id}/coordination/agent/runs/{run_id}")
+async def get_coordination_run(work_id: str, run_id: str):
+    if work_store.read_work(work_id) is None:
+        return _err(404, f"剧本不存在: {work_id}")
+    run = _coord_store().get_run(work_id, run_id)
+    if not run:
+        return _err(404, "子会话不存在")
+    from . import coordination_runner
+    blocks = await coordination_runner.read_coordination_run(work_id, run_id)
+    return {**run, "messages": [
+        {**{key: b.get(key) for key in ("seq", "timestamp", "content", "model",
+                                       "tool_calls", "tool_call_id", "status")},
+         "actor": (b.get("coordination_scope") or {}).get("kind", "strong_step")}
         for b in blocks
     ]}
 
 
 @router.post("/works/{work_id}/cards/{card_id}/coordination/chat")
 async def post_coordination_chat(work_id: str, card_id: str, req: CoordinationChatRequest):
+    return _err(403, "旧版统筹会话已归档。请打开项目统筹。")
+
+
+@router.post("/works/{work_id}/coordination/agent/chat")
+async def post_project_coordination_chat(work_id: str, req: CoordinationChatRequest):
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
     from . import coordination_runner
     try:
-        await coordination_runner.run_user_chat(
-            work_id, card_id, assignment_id=req.assignment_id,
+        run_id = await coordination_runner.run_user_chat(
+            work_id, _coord_store().PROJECT_AGENT_ID, assignment_id=req.assignment_id,
             expected_rev=req.expected_rev, content=req.content)
     except _coord_store().CoordinationError as exc:
         return _coord_err(exc)
-    return {"ok": True}
-
-
-async def _coord_first_turn(work_id: str, card_id: str,
-                            assignment_id: str = "") -> dict[str, Any]:
-    """任命触发的统筹首轮（打桩点：测试 monkeypatch 本函数）。
-
-    ``assignment_id``＝触发它的那次任命——runner 调用前核对仍在任且活跃，
-    落账前再查；暂停/撤回/换人后旧任务不启动、不写入新任命。
-    """
-    from ..infra import coordination_watcher
-    try:
-        return await coordination_watcher.dispatch_turn(
-            work_id, card_id, assignment_id, "appoint", assignment_id)
-    except Exception as exc:  # noqa: BLE001 起轮失败不拖垮任命响应
-        logger.warning("[coordination] 首轮起轮失败 work=%s card=%s: %s",
-                       work_id, card_id, exc)
-        return {"status": "error", "detail": {"error": str(exc)}}
+    return {"ok": True, "run_id": run_id}
 
 
 @router.patch("/works/{work_id}/cards/{card_id}/coordination")
-async def patch_card_coordination(work_id: str, card_id: str,
-                                  req: CoordinationPlanPatch):
+async def patch_card_coordination(work_id: str, card_id: str, req: CoordinationPlanPatch):
+    return _err(403, "旧版统筹记录已归档。请打开项目统筹。")
+
+
+@router.patch("/works/{work_id}/coordination/agent")
+async def patch_project_coordination(work_id: str, req: CoordinationPlanPatch):
     """保存完整新计划（乐观并发）：expected_rev 过期返回 409＋最新版本。"""
     if work_store.read_work(work_id) is None:
         return _err(404, f"剧本不存在: {work_id}")
     _cs = _coord_store()
     try:
         out = await _cs.save_plan(
-            work_id, card_id, assignment_id=req.assignment_id,
+            work_id, _cs.PROJECT_AGENT_ID, assignment_id=req.assignment_id,
             expected_rev=req.expected_rev,
             plan={key: value for key, value in req.plan.items() if key != "items"}, by="user")
     except Exception as exc:  # noqa: BLE001 统一转 HTTP
@@ -4549,7 +4632,12 @@ async def _run_message_inner(work_id: str, card_id: str, content: str,
                        "source": dict(source or {})})
 
     # 段②③前半：上下文组装＋工具列＋轮槽
-    message_runner.build_context(state)
+    # [事件循环冻结 2026-11-25] build_context 是同步函数（内部 build_context_bundle
+    # 走 read_sync/write_sync 直跑 SQLite）——原来就在本协程里跑，一次装配
+    # 实测 memory_load 9.8s + build_ctx_render 8.2s（observe 打点），期间整个
+    # runner 进程对所有请求失声 ⇒ web 扇入 30s 超时 ⇒ 页面断联。
+    # 移入线程：context_assembler 零 asyncio；emit 已用 call_soon_threadsafe 跨 loop。
+    await asyncio.to_thread(message_runner.build_context, state)
 
     # [思维链真实落地 2026-10-11] 判断归模型（C1）：判断协议随 BASE_PROMPT
     # 进 system 区（prompts.py），模型首轮带全量工具自主判断——直答（空手

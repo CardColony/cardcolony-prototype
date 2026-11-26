@@ -153,6 +153,17 @@ providers:
       30d 自动续。实测硬约束：只支持 GPT-6 系（gpt-6.2-sol / gpt-6.1-terra / gpt-6.2-astra）；input 必须数组、store
       必须 false、stream 必须 true；出站必须走本机代理 127.0.0.1:7890（api.openai.com 直连不通）。账号 ＝ Plus（$20/月），有
       5 小时共享限额，不并发跑。
+  opencode4:
+    protocol: openai
+    base_url: https://opencode.ai/zen/go/v1
+    api_key_env: OPENCODE4_API_KEY
+    extra_headers:
+      x-opencode-session: zhuge-3080-d
+      User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+        like Gecko) Chrome/131.0.0.0 Safari/537.36
+    note: 第四份 opencode **Go 订阅**（2026-11-24 用户令）· key 独立、端点与纪律同前三份：x-opencode-session
+      必带、必须浏览器 UA。⚠ 本份组织**未开 Global**：deepseek-v4.1-flash 报 unsupported_country（需在 opencode
+      console 的 privacy#regions 选 Global）；glm-5.3-flash 正常。
   opencode3:
     protocol: openai
     base_url: https://opencode.ai/zen/go/v1
@@ -175,6 +186,12 @@ providers:
     note: >-
       第二份 opencode **Go 订阅**（2026-11-03 用户令增加；key 与第一份独立）。
       同端点同纪律：x-opencode-session 必带（MissingSessionID 拒单）、必须浏览器 UA。
+  commandcode4:
+    protocol: openai
+    base_url: https://api.commandcode.ai/provider/v1
+    api_key_env: COMMAND_CODE4_API_KEY
+    note: 第四份 Command Code 套餐（2026-11-26 用户令）· key 独立、端点同前三份。只挂 glm-5.3-flash 一把。必须走代理
+      127.0.0.1:7890（直连不通）。
   commandcode3:
     protocol: openai
     base_url: https://api.commandcode.ai/provider/v1
@@ -264,7 +281,13 @@ models:
     reasoning_echo_fill: ''
     temperature: 1
     note: 火山方舟 coding · deepseek v4.1 flash economy（eco 版，2026-10-25 用户令增加）
-    text_protocols: [dsml, call, invoke, cjk_call, function_calls, quoted_tool_tag]  # 正文兼容只读
+    text_protocols:
+    - dsml
+    - call
+    - invoke
+    - cjk_call
+    - function_calls
+    - quoted_tool_tag
   kimi-k31-pro-volc:
     provider: volcengine-coding
     model: kimi-k3-1-pro-261024
@@ -353,10 +376,11 @@ models:
     reasoning_mandatory: false
   glm-53:
     provider: zhipu
-    model: glm-5.3
+    model: glm-5.4
     temperature: 0.7
     thinking: 'on'
-    note: ''
+    note: 智谱 coding plan · 2026-11-23 用户令由 glm-5.3 换 glm-5.4（实调 200，正文正常；计划里暂无 5.4-flash/flashx，故另两把保持
+      5.3）
   glm-53-flash:
     provider: zhipu
     model: glm-5.3-flash
@@ -534,7 +558,13 @@ models:
     reasoning_echo_fill: ''
     temperature: 1
     note: '[第二组] 火山方舟 coding · deepseek v4.1 flash economy（eco 版，2026-10-25 用户令增加）'
-    text_protocols: [dsml, call, invoke, cjk_call, function_calls, quoted_tool_tag]  # 正文兼容只读
+    text_protocols:
+    - dsml
+    - call
+    - invoke
+    - cjk_call
+    - function_calls
+    - quoted_tool_tag
   kimi-k31-pro-volc2:
     provider: volcengine-coding2
     model: kimi-k3-1-pro-261024
@@ -551,11 +581,23 @@ models:
   ds-v41-flash-eco-amr:
     provider: opendesign
     model: deepseek-v4.1-flash-eco
-    text_protocols: [dsml, call, invoke, cjk_call, function_calls, quoted_tool_tag]  # card_049 实录
+    text_protocols:
+    - dsml
+    - call
+    - invoke
+    - cjk_call
+    - function_calls
+    - quoted_tool_tag
   ds-v41-flash-eco-amr2:
     provider: opendesign2
     model: deepseek-v4.1-flash-eco
-    text_protocols: [dsml, call, invoke, cjk_call, function_calls, quoted_tool_tag]  # 正文兼容只读
+    text_protocols:
+    - dsml
+    - call
+    - invoke
+    - cjk_call
+    - function_calls
+    - quoted_tool_tag
   wb-hy4free-cn:
     provider: workbuddy-cn
     model: hy4free
@@ -593,7 +635,13 @@ models:
   ds-v41-flash-eco-amr3:
     provider: opendesign3
     model: deepseek-v4.1-flash-eco
-    text_protocols: [dsml, call, invoke, cjk_call, function_calls, quoted_tool_tag]  # 正文兼容只读
+    text_protocols:
+    - dsml
+    - call
+    - invoke
+    - cjk_call
+    - function_calls
+    - quoted_tool_tag
   glm-53-oc1:
     provider: opencode
     model: glm-5.3
@@ -662,7 +710,11 @@ models:
     reasoning_echo_fill: ''
     temperature: 1
     note: '[第三份套餐] Command Code · DeepSeek V4.1 Flash（2026-11-19 实调 200，走 7890 代理）'
-    text_protocols: [invoke, cjk_call, function_calls, quoted_tool_tag]  # card_049 实录
+    text_protocols:
+    - invoke
+    - cjk_call
+    - function_calls
+    - quoted_tool_tag
   cmd3-glm-53-flash:
     provider: commandcode3
     echo_reasoning: true
@@ -681,6 +733,22 @@ models:
     model: glm-5-3
     note: 第二份火山 coding plan · GLM 5.3 正式版（2026-11-21 实测 200，返回 model=glm-5.3）。⚠ 思考型：reasoning_content
       占输出 token，max_tokens 太小会正文为空。
+  glm-53-flash-oc4:
+    provider: opencode4
+    model: glm-5.3-flash
+    note: 第四份 opencode Go · glm-5.3-flash（2026-11-24 实调 200）
+  ds-v41-flash-oc4:
+    provider: opencode4
+    model: deepseek-v4.1-flash
+    note: 第四份 opencode Go · deepseek-v4.1-flash（2026-11-24 待开 Global：当前 400 unsupported_country）
+  cmd4-glm-53-flash:
+    provider: commandcode4
+    echo_reasoning: true
+    model: z-ai/glm-5.3-flash
+    reasoning_echo_fill: ''
+    temperature: 1
+    note: '[第四份套餐] Command Code · GLM 5.3 Flash（2026-11-26 实调 200，走 7890 代理）。⚠ 推理型：小
+      token 上限正文可能为空。'
 bindings:
   execute: glm-53-flash
   think: glm-53-flash
@@ -709,6 +777,18 @@ concurrency:
     glm-53-flashx: 5
     deepseek-v41-flash: 8
     deepseek-pro: 4
+    # [热座位 2026-11-25] observe 实测调用量前列的云端座位——default:3
+    # 对它们偏紧（多卡同座会排队）。按同类已有档位拨：
+    #   deepseek 官方＝deepseek-v41-flash 同档 8；eco/coding 计划类 6；
+    #   Go 订阅/commandcode 类保守 4-5。供应商开始 429 就回调。
+    ds-flash-official: 8
+    ds-v41-flash-eco-volc: 6
+    ds-v41-flash-eco-volc2: 6
+    ds-v41-flash-eco-amr: 6
+    ds-v41-flash-eco-amr2: 6
+    ds-v41-flash-eco-amr3: 6
+    ds-v41-flash-oc3: 4
+    cmd-glm-53-flash: 5
 tiers:
   depth_0:
   - kimi-k3

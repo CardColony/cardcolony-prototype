@@ -45,9 +45,9 @@ ALL_STATES = ("active", "paused", "revoked", "finished")
 MODES = ("observe", "live")
 
 #: 观察范围口径：整个 work（含后来加入的卡）或显式卡集合
-OBSERVE_SCOPES = ("work", "cards")
+OBSERVE_SCOPES = ("work", "cards", "project")
 #: 发令范围口径：显式目标集合或用户明确授予的本 work 全部开发卡
-INSTRUCT_SCOPES = ("cards", "work_development_cards")
+INSTRUCT_SCOPES = ("cards", "work_development_cards", "project_cards")
 
 
 class CoordinationError(Exception):
@@ -116,16 +116,28 @@ _APPOINTMENTS_DDL = (
     " models TEXT NOT NULL DEFAULT '',"
     " next_review_at TEXT NOT NULL DEFAULT '',"
     " op_seq INTEGER NOT NULL DEFAULT 0,"
+    " control_seq INTEGER NOT NULL DEFAULT 0,"
     " pending TEXT NOT NULL DEFAULT '[]',"
     " actions TEXT NOT NULL DEFAULT '[]',"
     " last_review TEXT NOT NULL DEFAULT '',"
     " created_at TEXT, updated_at TEXT)"
 )
+PROJECT_AGENT_ID = "coordination"
+PROJECT_CHAT_SESSION = f"{PROJECT_AGENT_ID}@coordination"
+_RETIRED_PROJECT_TRIGGERS = ("review_due", "appoint", "direct_node")
+
+
+def project_observes_all(appt: dict[str, Any]) -> bool:
+    observe = appt.get("observe_scope") or (appt.get("grants") or {}).get("observe") or {}
+    return appt.get("plan_card_id") == PROJECT_AGENT_ID and observe.get("scope") == "project"
+
 _APPOINTMENTS_IDX = (
     "CREATE INDEX IF NOT EXISTS idx_coord_appt_card"
     " ON coordination_appointments(work_id, plan_card_id, state)",
     "CREATE INDEX IF NOT EXISTS idx_coord_appt_state"
     " ON coordination_appointments(work_id, state)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_coord_project_agent"
+    " ON coordination_appointments(work_id) WHERE plan_card_id='coordination'",
 )
 _REVISIONS_DDL = (
     "CREATE TABLE IF NOT EXISTS coordination_plan_revisions ("
@@ -170,11 +182,24 @@ _OBSERVATIONS_IDX = (
     "CREATE INDEX IF NOT EXISTS idx_coord_obs_card"
     " ON coordination_observations(work_id, plan_card_id, created_at)",
 )
+_RUNS_DDL = (
+    "CREATE TABLE IF NOT EXISTS coordination_runs (run_id TEXT PRIMARY KEY,"
+    " assignment_id TEXT NOT NULL, phase TEXT NOT NULL, trigger TEXT NOT NULL,"
+    " created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+)
+_SEEN_DDL = (
+    "CREATE TABLE IF NOT EXISTS coordination_seen ("
+    " work_id TEXT NOT NULL, plan_card_id TEXT NOT NULL, assignment_id TEXT NOT NULL,"
+    " card_id TEXT NOT NULL, seq INTEGER NOT NULL, seen_at TEXT,"
+    " PRIMARY KEY (work_id, plan_card_id, assignment_id, card_id, seq))"
+)
 
 
 def _ensure(conn: sqlite3.Connection) -> None:
     """事务内幂等补建（不能用 executescript——它隐式提交事务）。"""
     conn.execute(_APPOINTMENTS_DDL)
+    if not any(col[1] == "control_seq" for col in conn.execute("PRAGMA table_info(coordination_appointments)")):
+        conn.execute("ALTER TABLE coordination_appointments ADD COLUMN control_seq INTEGER NOT NULL DEFAULT 0")
     for idx in _APPOINTMENTS_IDX:
         conn.execute(idx)
     conn.execute(_REVISIONS_DDL)
@@ -190,6 +215,56 @@ def _ensure(conn: sqlite3.Connection) -> None:
     conn.execute(_OBSERVATIONS_DDL)
     for idx in _OBSERVATIONS_IDX:
         conn.execute(idx)
+    conn.execute(_RUNS_DDL)
+    conn.execute(_SEEN_DDL)
+
+
+async def set_run_phase(work_id: str, assignment_id: str, run_id: str, *,
+                        phase: str, trigger: str, previous: str = "") -> None:
+    stamp = _now()
+
+    def write(conn):
+        _ensure(conn)
+        if previous:
+            conn.execute("UPDATE coordination_runs SET phase=?,updated_at=?"
+                         " WHERE run_id=? AND assignment_id=? AND phase=?",
+                         (phase, stamp, run_id, assignment_id, previous))
+        else:
+            conn.execute("INSERT INTO coordination_runs VALUES (?,?,?,?,?,?)"
+                         " ON CONFLICT(run_id) DO UPDATE SET phase=excluded.phase,"
+                         " updated_at=excluded.updated_at WHERE assignment_id=excluded.assignment_id",
+                         (run_id, assignment_id, phase, trigger, stamp, stamp))
+
+    await card_db.run_write(work_id, write)
+
+
+def list_runs(work_id: str, *, active_only: bool = False, run_id: str = "") -> list[dict]:
+    def read(conn):
+        try:
+            where = "WHERE a.work_id=? AND a.plan_card_id=?"
+            params = [work_id, PROJECT_AGENT_ID]
+            if run_id:
+                where += " AND r.run_id=?"
+                params.append(run_id)
+            if active_only:
+                where += " AND r.phase!='archived' AND a.state='active' AND r.trigger NOT IN (?,?,?)"
+                params.extend(_RETIRED_PROJECT_TRIGGERS)
+            runs = [dict(row) for row in conn.execute(
+                "SELECT r.* FROM coordination_runs r JOIN coordination_appointments a"
+                f" ON r.assignment_id=a.assignment_id {where}"
+                " ORDER BY r.created_at DESC LIMIT 100", params)]
+            for run in runs:
+                if run["trigger"] in _RETIRED_PROJECT_TRIGGERS:
+                    run["phase"] = "archived"
+            return runs
+        except sqlite3.OperationalError:
+            return []
+    return card_db.read_sync(work_id, read, [])
+
+
+def get_run(work_id: str, run_id: str) -> dict:
+    rows = list_runs(work_id, run_id=run_id)
+    return rows[0] if rows else {}
 
 
 def _row_to_appt(row: sqlite3.Row) -> dict[str, Any]:
@@ -200,15 +275,18 @@ def _row_to_appt(row: sqlite3.Row) -> dict[str, Any]:
         "assignment_id": row["assignment_id"],
         "function_id": row["function_id"],
         "state": row["state"],
-        "mode": row["mode"],
+        "mode": "live" if row["plan_card_id"] == PROJECT_AGENT_ID else row["mode"],
         "rev": int(row["rev"]),
         "plan": _loads(row["plan"], {}),
         "observe_scope": _loads(row["observe_scope"], {}),
         "instruct_scope": _loads(row["instruct_scope"], {}),
         "models": _loads(row["models"], {}),
-        "next_review_at": row["next_review_at"],
+        "next_review_at": "" if row["plan_card_id"] == PROJECT_AGENT_ID else row["next_review_at"],
         "op_seq": int(row["op_seq"]),
-        "pending": _loads(row["pending"], []),
+        "control_seq": int(row["control_seq"]) if "control_seq" in row.keys() else 0,
+        "pending": [entry for entry in _loads(row["pending"], [])
+                    if row["plan_card_id"] != PROJECT_AGENT_ID
+                    or entry.get("kind") not in _RETIRED_PROJECT_TRIGGERS],
         "actions": _loads(row["actions"], []),
         "last_review": _loads(row["last_review"], {}),
         "created_at": row["created_at"],
@@ -306,11 +384,13 @@ async def appoint(work_id: str, plan_card_id: str, *, function_id: str,
                   models: Any, next_review_at: str,
                   observe: Any = None, instruct: Any = None,
                   mode: str = "observe", objective: str = "",
-                  by: str = "user", schedule_first: bool = False) -> dict[str, Any]:
+                  by: str = "user") -> dict[str, Any]:
     """任命统筹。写事务内保证计划卡级 active/paused 唯一——并发第二个任命
     拿到 conflict 而不是第二个在任负责人。"""
-    _validate_plan_card(work_id, plan_card_id)
-    _validate_function(work_id, function_id)
+    project_agent = plan_card_id == PROJECT_AGENT_ID and function_id == PROJECT_AGENT_ID
+    if not project_agent:
+        _validate_plan_card(work_id, plan_card_id)
+        _validate_function(work_id, function_id)
     mdls = _validate_models(models)
     validate_model_routes(mdls)
     obs = _validate_scope(observe, OBSERVE_SCOPES, "observe")
@@ -318,7 +398,8 @@ async def appoint(work_id: str, plan_card_id: str, *, function_id: str,
     if str(mode or "") not in MODES:
         raise CoordinationError("validation",
                                 f"mode 非法: {mode!r}（允许 {'/'.join(MODES)}）")
-    review_dt = _parse_future_time(next_review_at)
+    review_at = (_parse_future_time(next_review_at).isoformat()
+                 if next_review_at or not project_agent else "")
     now = _now()
     plan: dict[str, Any] = {"objective": str(objective or "").strip()}
     if not plan["objective"]:
@@ -329,10 +410,10 @@ async def appoint(work_id: str, plan_card_id: str, *, function_id: str,
         # [唯一性＝计划卡级 2026-11-21 · 用户令] 同一份计划（一张计划卡）
         # 只能有一位在任统筹；同一 work 可以有多份计划、各计划各管各的。
         # BEGIN IMMEDIATE 串行化写 ⇒ 同卡并发任命只有一个成功，另一个拿 conflict。
+        state_filter = "" if project_agent else " AND state IN ('active','paused')"
         row = conn.execute(
             "SELECT * FROM coordination_appointments"
-            " WHERE work_id=? AND plan_card_id=?"
-            " AND state IN ('active','paused') LIMIT 1",
+            " WHERE work_id=? AND plan_card_id=?" + state_filter + " LIMIT 1",
             (work_id, plan_card_id)).fetchone()
         if row is not None:
             cur = _row_to_appt(row)
@@ -351,9 +432,7 @@ async def appoint(work_id: str, plan_card_id: str, *, function_id: str,
             " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (work_id, plan_card_id, aid, str(function_id), "active",
              str(mode), 0, _dumps(plan), _dumps(obs), _dumps(ins),
-             _dumps(mdls), review_dt.isoformat(), 0,
-             _dumps([{"kind": "appoint", "at": now, "request_id": aid}])
-             if schedule_first else "[]", "[]", "",
+              _dumps(mdls), review_at, 0, "[]", "[]", "",
              now, now))
         conn.execute(
             "INSERT INTO coordination_plan_revisions"
@@ -366,6 +445,16 @@ async def appoint(work_id: str, plan_card_id: str, *, function_id: str,
         return {"ok": True, "appointment": _row_to_appt(row2)}
 
     return await card_db.run_write(work_id, _fn)
+
+
+async def configure_project_agent(work_id: str, models: Any) -> dict[str, Any]:
+    """首次配置项目独有的统筹，执行身份及计划归属均以项目为锚。"""
+    return await appoint(
+        work_id, PROJECT_AGENT_ID, function_id=PROJECT_AGENT_ID, models=models,
+        mode="live",
+        objective="根据项目需求和各域进度维护项目计划，发现阻塞或偏离时协调域责任卡。",
+        observe={"scope": "project"}, instruct={"scope": "project_cards"},
+        next_review_at="")
 
 
 def _require_appt(conn: sqlite3.Connection, work_id: str, plan_card_id: str,
@@ -424,6 +513,8 @@ async def control_op(work_id: str, plan_card_id: str, *, assignment_id: str,
                 "——请刷新面板后按最新版本重试",
                 current_rev=int(row["rev"]), state=row["state"])
         sets: list[str] = ["updated_at=?", "op_seq=op_seq+1"]
+        if op in _REV_CHECK_OPS:
+            sets.append("control_seq=rev+1")
         args: list[Any] = [now]
         nonlocal_x: dict[str, Any] = {}
         # [状态变更推进 rev 2026-11-21 · 用户令] pause/resume/revoke/finish
@@ -476,9 +567,11 @@ async def control_op(work_id: str, plan_card_id: str, *, assignment_id: str,
             sets.extend(("models=?", "rev=rev+1"))
             args.append(_dumps(configured))
         elif op == "set_review_at":
+            if plan_card_id == PROJECT_AGENT_ID:
+                raise CoordinationError("validation", "项目统筹通过 Harness 策略发起巡检。")
             date = _parse_future_time(next_review_at)
-            current = datetime.fromisoformat(row["next_review_at"])
-            if date > current:
+            current = row["next_review_at"]
+            if current and date > datetime.fromisoformat(current):
                 raise CoordinationError("validation", "可在此提前回看，延期须完成独立回看")
             pending = [p for p in _loads(row["pending"], []) if p.get("kind") != "review_due"]
             sets.extend(("next_review_at=?", "pending=?", "rev=rev+1"))
@@ -538,8 +631,10 @@ async def save_plan(work_id: str, plan_card_id: str, *, assignment_id: str,
     """保存完整新计划（乐观并发）：expected_rev 不匹配 ⇒ CONFLICT+最新版本。"""
     if not isinstance(plan, dict):
         raise CoordinationError("validation", "plan 必须是对象（完整的新计划）")
+    if plan_card_id == PROJECT_AGENT_ID and "next_review_at" in plan:
+        plan = {key: value for key, value in plan.items() if key != "next_review_at"}
     plan = {key: value for key, value in plan.items()
-            if key not in ("_coord_sources", "_board_requirement_sources")}
+            if key not in ("_coord_sources", "_board_requirement_sources", "_inspection_since")}
     now = _now()
 
     def _fn(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -566,6 +661,15 @@ async def save_plan(work_id: str, plan_card_id: str, *, assignment_id: str,
                 if source_cards is not None:
                     item["source_cards"] = sorted(source_cards)
         updated = {**plan, "items": old_items}
+        if plan_card_id == PROJECT_AGENT_ID:
+            policy_keys = ("inspection_plan", "wake_standards")
+            for key in policy_keys:
+                if key in previous and key not in updated:
+                    updated[key] = previous[key]
+            if any(updated.get(key) != previous.get(key) for key in policy_keys):
+                updated["_inspection_since"] = _now()
+            elif "_inspection_since" in previous:
+                updated["_inspection_since"] = previous["_inspection_since"]
         if source_cards is not None:
             updated["_coord_sources"] = sorted(source_cards)
         elif "_coord_sources" in previous:
@@ -593,7 +697,8 @@ async def save_plan(work_id: str, plan_card_id: str, *, assignment_id: str,
 
 def _verify_board_item(conn, work_id: str, plan_card_id: str, assignment_id: str,
                        item: dict, old: dict, requirements: dict,
-                       allowed: Optional[set[str]], reads: dict[str, dict]) -> None:
+                       allowed: Optional[set[str]], reads: dict[str, dict], *,
+                       project_observation: bool = False) -> None:
     import hashlib
     import re
     from . import event_log
@@ -625,9 +730,11 @@ def _verify_board_item(conn, work_id: str, plan_card_id: str, assignment_id: str
                 version = read.get("version") or {}
                 body = read.get("requirements") or ""
                 fingerprint = hashlib.sha256(body.encode("utf-8")).hexdigest()[:12]
-                if body.strip() and fingerprint == version.get("sha256"):
-                    ref = f"req:{work_id}:{cid}:{fingerprint}"
-                    requirements[ref] = {"card_id": cid, "version": version, "text": body}
+                read_fingerprint = version.get("sha256")
+                if read_fingerprint:
+                    ref = f"req:{work_id}:{cid}:{read_fingerprint}"
+                    if body.strip() and fingerprint == read_fingerprint:
+                        requirements[ref] = {"card_id": cid, "version": version, "text": body}
             record = requirements.get(ref)
             if not record:
                 # 用户可引用当前正稿的卡号；存档统一转换为带版本的坐标。
@@ -669,11 +776,10 @@ def _verify_board_item(conn, work_id: str, plan_card_id: str, assignment_id: str
                     and parts[3].isascii() and parts[3].isdigit() and len(parts[3]) <= 18):
                 cid, seq = parts[2], int(parts[3])
                 accept_source(cid)
-                event = next((ev for ev in event_log.timeline(
-                    work_id, cid, from_seq=seq, before=seq + 1)
-                    if ev.get("seq") == seq), None)
+                events, _ = event_log.timeline_events(work_id, cid, [seq])
+                event = next(iter(events), None)
                 if event and ((event.get("data") or {}).get("item_id") == iid
-                              or (cid == owner and not completing)):
+                              or (item["status"] != "done" and (project_observation or cid == owner))):
                     continue
             raise CoordinationError("validation", f"事项 {iid} 的证据引用不可核验: {ref}")
 
@@ -692,8 +798,9 @@ def _verify_board_item(conn, work_id: str, plan_card_id: str, assignment_id: str
 async def board_apply(work_id: str, plan_card_id: str, *, assignment_id: str,
                       expected_rev: int, changes: Any, reason: str = "",
                       by: str = "user", source_cards: Optional[set[str]] = None,
-                      requirement_reads: Optional[dict[str, dict]] = None) -> dict[str, Any]:
-    """计划板批量变更（与 save_plan 同一版本保存入口）：单事务
+                      requirement_reads: Optional[dict[str, dict]] = None,
+                      objective: Optional[str] = None) -> dict[str, Any]:
+    """更新总目标或计划板事项（与 save_plan 共用版本历史）：单事务
     校验整批 → 落库 → 版本推进。任一条不合法 ⇒ 整批零写入。
 
     [2026-11-23 · 统筹计划板任务书]
@@ -705,6 +812,10 @@ async def board_apply(work_id: str, plan_card_id: str, *, assignment_id: str,
       detail 记 kind/reason/changed/allocated——可回读操作者、时间、理由。
     """
     from . import coordination_board as _board
+    if objective is not None:
+        if not isinstance(objective, str) or not objective.strip():
+            raise CoordinationError("validation", "总目标 objective 须为非空文字。")
+        objective = objective.strip()
     now = _now()
 
     def _fn(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -718,34 +829,46 @@ async def board_apply(work_id: str, plan_card_id: str, *, assignment_id: str,
         items_now = _board_items_for(conn, assignment_id, plan)
         for item in items_now:
             item.setdefault("source_cards", plan.get("_coord_sources", []))
-        visible = _board.visible_items({"plan": {"items": items_now}}, source_cards)
+        board_context = {"plan_card_id": plan_card_id,
+                         "observe_scope": _loads(row["observe_scope"], {}),
+                         "plan": {"items": items_now}}
+        visible = _board.visible_items(board_context, source_cards)
         if int(expected_rev) != cur_rev:
             raise CoordinationError(
                 "conflict",
                 f"计划版本已过期（你读入的是 {expected_rev}，当前 {cur_rev}）"
                 "——请重读当前板后再改",
                 current_rev=cur_rev, items=visible)
-        merged, changed, allocated, errors = _board.apply_changes(
-            items_now, changes)
-        if errors:
-            raise CoordinationError(
-                "validation", "；".join(errors),
-                errors=errors, current_rev=cur_rev)
-        old = {item["item_id"]: item for item in items_now}
-        visible_ids = {item["item_id"] for item in visible}
-        requirements = dict(plan.get("_board_requirement_sources") or {})
-        for it in merged:
-            iid = it["item_id"]
-            if iid not in changed:
-                continue
-            if iid in old and iid not in visible_ids:
-                raise CoordinationError("denied", "事项不可编辑")
-            _verify_board_item(conn, work_id, plan_card_id, assignment_id, it,
-                               old.get(iid, {}), requirements, source_cards,
-                               requirement_reads or {})
-        plan["items"] = merged
-        if requirements:
-            plan["_board_requirement_sources"] = requirements
+        changed, allocated = [], {}
+        objective_only = objective is not None and (changes is None or changes == [])
+        if objective_only and objective == plan.get("objective"):
+            return {"ok": True, "rev": cur_rev, "changed": changed,
+                    "allocated": allocated, "objective": objective}
+        if not objective_only:
+            merged, changed, allocated, errors = _board.apply_changes(items_now, changes)
+            if errors:
+                raise CoordinationError(
+                    "validation", "；".join(errors),
+                    errors=errors, current_rev=cur_rev)
+            old = {item["item_id"]: item for item in items_now}
+            visible_ids = {item["item_id"] for item in visible}
+            requirements = dict(plan.get("_board_requirement_sources") or {})
+            for it in merged:
+                iid = it["item_id"]
+                if iid not in changed:
+                    continue
+                if iid in old and iid not in visible_ids:
+                    raise CoordinationError("denied", f"事项 {iid} 不在当前观察范围内。")
+                _verify_board_item(conn, work_id, plan_card_id, assignment_id, it,
+                                   old.get(iid, {}), requirements, source_cards,
+                                   requirement_reads or {}, project_observation=project_observes_all(board_context))
+            plan["items"] = merged
+            if requirements:
+                plan["_board_requirement_sources"] = requirements
+        objective_result = {}
+        if objective is not None:
+            plan["objective"] = objective
+            objective_result = {"objective": objective}
         new_rev = cur_rev + 1
         conn.execute(
             "UPDATE coordination_appointments"
@@ -758,9 +881,9 @@ async def board_apply(work_id: str, plan_card_id: str, *, assignment_id: str,
             (work_id, plan_card_id, assignment_id, new_rev, _dumps(plan),
              now, str(by),
              _dumps({"kind": "board_apply", "reason": str(reason or ""),
-                     "changed": changed, "allocated": allocated})))
+                     "changed": changed, "allocated": allocated, **objective_result})))
         return {"ok": True, "rev": new_rev, "changed": changed,
-                "allocated": allocated}
+                "allocated": allocated, **objective_result}
 
     return await card_db.run_write(work_id, _fn)
 
@@ -1047,10 +1170,11 @@ def panel(work_id: str, plan_card_id: str, *,
             "assignment_id": (appt or {}).get("assignment_id", ""),
             "function_id": (appt or {}).get("function_id", ""),
             "rev": (appt or {}).get("rev", 0),
+            "control_seq": (appt or {}).get("control_seq", 0),
             "state": (appt or {}).get("state", "none"),
             "mode": (appt or {}).get("mode", ""),
             "plan": {k: v for k, v in (appt or {}).get("plan", {}).items()
-                     if k not in ("_coord_sources", "_board_requirement_sources")},
+                     if k not in ("_coord_sources", "_board_requirement_sources", "_inspection_since")},
             "grants": {
                 "observe": (appt or {}).get("observe_scope", {}),
                 "instruct": (appt or {}).get("instruct_scope", {}),
@@ -1081,6 +1205,20 @@ def panel(work_id: str, plan_card_id: str, *,
             "done": [it for it in _items if it["status"] == "done"],
         }
         if appt is not None:
+            if plan_card_id == PROJECT_AGENT_ID and appt["plan"].get("inspection_plan"):
+                out["inspection_since"] = appt["plan"].get("_inspection_since") or ""
+                if not out["inspection_since"]:
+                    # 存量规则沿用版本史中这份策略最早连续保存的时间。
+                    for revision in conn.execute(
+                        "SELECT saved_at, json_extract(plan, '$.inspection_plan') AS rules,"
+                        " json_extract(plan, '$.wake_standards') AS standards"
+                        " FROM coordination_plan_revisions WHERE assignment_id=? ORDER BY rev DESC",
+                        (appt["assignment_id"],),
+                    ):
+                        if (_loads(revision["rules"], None) != appt["plan"].get("inspection_plan")
+                                or _loads(revision["standards"], None) != appt["plan"].get("wake_standards")):
+                            break
+                        out["inspection_since"] = revision["saved_at"]
             last_turn = conn.execute("SELECT status,detail,created_at FROM coordination_observations"
                                      " WHERE assignment_id=? AND kind='strong_turn'"
                                      " ORDER BY id DESC LIMIT 1", (appt["assignment_id"],)).fetchone()
@@ -1109,22 +1247,24 @@ def panel(work_id: str, plan_card_id: str, *,
     })
 
 
-def list_plans(work_id: str) -> list[dict[str, Any]]:
+def list_plans(work_id: str, *, project_only: bool = False) -> list[dict[str, Any]]:
     """work 级计划列表（导航用，只读）。只列有过任命的计划卡，带卡标题。"""
     titles: dict[str, str] = {}
-    try:
-        from . import card_store
-        titles = {cid: str((m or {}).get("title") or "")
-                  for cid, m in card_store.iter_card_metas(work_id).items()}
-    except Exception:  # noqa: BLE001 标题取不到不拦列表
-        titles = {}
+    if not project_only:
+        try:
+            from . import card_store
+            titles = {cid: str((m or {}).get("title") or "")
+                      for cid, m in card_store.iter_card_metas(work_id).items()}
+        except Exception:  # noqa: BLE001 标题取不到不拦列表
+            titles = {}
 
     def _fn(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         try:
+            condition = " AND plan_card_id=?" if project_only else ""
+            args = (work_id, PROJECT_AGENT_ID) if project_only else (work_id,)
             rows = conn.execute(
                 "SELECT * FROM coordination_appointments"
-                " WHERE work_id=? ORDER BY id DESC",
-                (work_id,)).fetchall()
+                " WHERE work_id=?" + condition + " ORDER BY id DESC", args).fetchall()
         except sqlite3.OperationalError:
             return []
         seen: set[str] = set()

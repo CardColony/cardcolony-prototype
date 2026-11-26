@@ -184,13 +184,16 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
   }
 
   /** 目标挂载区间：视口覆盖行 ±OVERSCAN；无布局环境全挂。 */
-  function desiredRange() {
+  function desiredRange(visible = null) {
     const len = order.length;
     if (!len || !BOUNDED) return [0, len];
     const ch = scroll.clientHeight;
     if (!ch || !scroll.scrollHeight) return [0, len];
     ensureCum();
-    const vTop = scroll.scrollTop, vBot = vTop + ch;
+    // 部分行仍用估算高度，前缀和与浏览器的实际位置可能差出好几屏。
+    // 有可见行时，从它的真实视口偏移换算，避免换窗时把正在阅读的行卸掉。
+    const vTop = visible ? Math.max(0, cum[visible.index] - visible.off) : scroll.scrollTop;
+    const vBot = vTop + ch;
     const visLo = _bisect(vTop);
     let visHi = visLo;
     while (visHi < len && cum[visHi] < vBot) visHi++;
@@ -216,16 +219,27 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     spacerB.style.height = Math.max(0, cum[order.length] - cum[mntHi]) + "px";
   }
 
-  /** 视口顶相交的已挂行 → {key, off}（换挡/展开校正的阅读锚点）。 */
+  /** 第一个与视口相交的已挂行，提供阅读位置和对应的高度模型坐标。 */
   function anchorRow() {
     const vTop = scroll.getBoundingClientRect().top;
+    const vBottom = vTop + scroll.clientHeight;
     for (let i = mntLo; i < mntHi && i < order.length; i++) {
       const row = rowOf(order[i]);
       if (!row) continue;
       const r = row.getBoundingClientRect();
-      if (r.bottom > vTop) return { key: order[i], off: r.top - vTop };
+      if (r.bottom > vTop && r.top < vBottom) return { key: order[i], index: i, off: r.top - vTop };
     }
     return null;
+  }
+
+  function keepVisible(visible) {
+    const row = rowOf(visible.key);
+    if (!row) return;
+    const delta = flowTop(row) - visible.off;
+    if (Math.abs(delta) <= 0.5) return;
+    _cancelPin();
+    scroll.scrollTop += delta;
+    observedTop = scroll.scrollTop;
   }
 
   /** 卸载一行：移出 DOM、断行级 RO、放掉座位与宿主侧缓存。 */
@@ -358,20 +372,11 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     if (!order.length || !scroll.isConnected) return;
     const ch = scroll.clientHeight;
     if (!ch || !scroll.scrollHeight) return;      // 无布局环境不动窗
-    const [nLo, nHi] = desiredRange();
-    if (nLo === mntLo && nHi === mntHi) return;
     const a = anchorRow();                        // 先记「同一行同一偏移」
+    const [nLo, nHi] = desiredRange(a);
+    if (nLo === mntLo && nHi === mntHi) return;
     _applyRange(nLo, nHi, _revOf);
-    if (a) {
-      const row = rowOf(a.key);
-      if (row) {
-        _cancelPin();
-        const vTop = scroll.getBoundingClientRect().top;
-        const off = row.getBoundingClientRect().top - vTop;
-        scroll.scrollTop += off - a.off;
-        observedTop = scroll.scrollTop;
-      }
-    }
+    if (a) keepVisible(a);
   }
   let _revOf = null;   // 最近一次 render 的 revOf（rewindow 换行要用）
 
@@ -677,7 +682,13 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
     const _t0 = performance.now();
     _SEG.renders = (_SEG.renders || 0) + 1;
     try {
+    // 新消息也会触发换窗。阅读历史时沿用视口里的行，分页则沿用自己的锚点。
+    let visible = opened && !atBottom && anchor === null ? anchorRow() : null;
     order = keys.slice();
+    if (visible) {
+      visible.index = order.indexOf(visible.key);
+      if (visible.index < 0) visible = null;
+    }
     _revOf = revOf;
     cumDirty = true;
     const want = new Set(order);
@@ -695,7 +706,7 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
       nLo = 0;
       nHi = order.length;
     } else {
-      [nLo, nHi] = desiredRange();
+      [nLo, nHi] = desiredRange(visible);
       if (anchor !== null) {
         const rk = _resolveAnchorKey(anchor);   // 合并/撤销 ⇒ 邻近有效行接续
         if (rk) anchor.key = rk;   // desiredRange 已把锚行扩进窗口
@@ -712,6 +723,7 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
       if (_r) anchorPreOff = flowTop(_r);
     }
     _applyRange(nLo, nHi, revOf);
+    if (visible) keepVisible(visible);
     paintEmpty();
 
     const newFirst = order[0] ?? null;
@@ -812,16 +824,22 @@ export function createChatView({ mount, renderRow, onLoadOlder, runningStart, is
 
   // ---- 列高变化：跟随（ResizeObserver；原文 :331-341）----
   if (typeof ResizeObserver !== "undefined") {
-    const ro = new ResizeObserver(() => {
+    /* [抖动收口] 列观察与视口观察拆开：
+       · 列/运行条变高 ⇒ 只在贴底时钉底（原语义），**不再换挡**——spacer 写入
+         本身就改列高，列变→rewindow→paintSpacers 再写→列再变，曾形成自喂
+         振荡环（逐帧 spacer 改写＋scrollTop 校正＝页面莫名抖动）；视口几何
+         没变时 desiredRange 不变，换挡纯属自激。
+       · 滚动容器（视口）尺寸变化 ⇒ 才重算挂载区间（视口变大补挂、变小卸载）。 */
+    const roCol = new ResizeObserver(() => {
       if (atBottom) {
         _SEG.roScrolls = (_SEG.roScrolls || 0) + 1;
         _pinBottom();   // 测量合并：同帧多次列高变化只读一次 scrollHeight
       }
-      rewindow();       // 列/视口尺寸变化 ⇒ 挂载区间换挡（内部自带不变早退）
     });
-    ro.observe(column);
-    ro.observe(statusEl);
-    ro.observe(scroll);
+    roCol.observe(column);
+    roCol.observe(statusEl);
+    const roView = new ResizeObserver(() => rewindow());
+    roView.observe(scroll);
   }
 
   return {

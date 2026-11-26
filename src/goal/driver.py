@@ -501,7 +501,9 @@ async def rearm_active_goals() -> int:
     svc = get_service()
     for wid in works:
         try:
-            metas = card_store.iter_card_metas(wid) or {}
+            # [事件循环冻结 2026-11-25] 全表读移出循环线程
+            metas = await asyncio.to_thread(
+                card_store.iter_card_metas, wid) or {}
         except Exception:  # noqa: BLE001 某个 work 坏了不拖垮其余
             continue
         for cid, m in metas.items():

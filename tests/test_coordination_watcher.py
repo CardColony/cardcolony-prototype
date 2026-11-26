@@ -71,12 +71,6 @@ def _future_ts(hours: float = 1.0) -> str:
 
 async def _appointed(monkeypatch, wid: str, fids: dict, plan_card: str,
                      **over) -> str:
-    called = []
-
-    async def _fake_first(work_id, card_id, assignment_id=""):
-        called.append((work_id, card_id, assignment_id))
-        return {"status": "parsed", "rev": 1}
-    monkeypatch.setattr(routes, "_coord_first_turn", _fake_first)
     out = await coordination_store.appoint(
         wid, plan_card, function_id=fids["pm"], **{
             "models": {"strong": "strong-test-route",
@@ -320,13 +314,21 @@ async def test_review_due_marking(sandbox, monkeypatch):
 # ---------------------------------------------------------------- T7 同步丢批修复
 
 async def test_sync_path_no_batch_lost(sandbox, monkeypatch):
-    """[2026-11-21 · 用户令] 同步入口落事件 ⇒ 窗口到 ⇒ 无事件循环 ⇒
-    批次保留 open，
-    tick 补派时弱模型真正起 1 轮。"""
-    wid, cards, fids = await _seeded_work(monkeypatch)
-    plan_card = await _mk_card(wid, "同步丢批计划")
+    """A native Harness action recorded without an event loop survives recovery."""
+    from src.infra import coordination_policy, intervention_runner, intervention_store, policy_set
+
+    monkeypatch.setenv("ECO_POLICIES_PATH", str(sandbox.tmp / "harness_policies.json"))
+    monkeypatch.setattr(policy_set, "_SET", None)
+    monkeypatch.setattr(policy_set, "_CONFIG_STAMP", ())
+    wid, _, _ = await _seeded_work(monkeypatch)
+    plan_card = coordination_store.PROJECT_AGENT_ID
     src_card = await _mk_card(wid, "来源卡")
-    await _appointed(monkeypatch, wid, fids, plan_card)
+    configured = await coordination_store.configure_project_agent(
+        wid, {"strong": "strong-test-route", "weak": "weak-test-route"})
+    aid = configured["appointment"]["assignment_id"]
+    await coordination_store.consume_wake(wid, aid, "appoint", aid)
+    coordination_policy.handle(wid, aid, {"op": "save", "id": "edits", "trigger": "card_block_edited",
+        "card_ids": [src_card], "check": "核对卡面变化", "wake_when": "发现偏离时"}, {src_card})
 
     captured = []
 
@@ -335,33 +337,27 @@ async def test_sync_path_no_batch_lost(sandbox, monkeypatch):
                          "batch": batch})
         return {"status": "passed", "batch_id": batch.get("batch_id")}
     monkeypatch.setattr(coordination_runner, "run_weak_observation", _fake_weak)
-    monkeypatch.setattr(coordination_watcher, "merge_window_sec",
-                        lambda w, p: 0)
-
-    # 无事件循环的正式同步入口将批次留给主调度。
     from src.storage import event_log
     event = await asyncio.to_thread(event_log.append_sync, wid, src_card,
                                     {"type": "card_block_edited", "data": {"proof": "test"}})
     assert event["type"] == "card_block_edited"
-    aid = _appointed_ids(wid, plan_card)
+    pending, = intervention_store.store().pending_actions(wid)
+    assert pending["mode"] == "inspect" and captured == []
+
+    await intervention_runner.resume(wid)
 
     def _status(conn):
-        coordination_watcher._ensure(conn)
         row = conn.execute(
             "SELECT status FROM coordination_batches"
             " WHERE work_id=? AND plan_card_id=? AND assignment_id=?",
             (wid, plan_card, aid)).fetchone()
         return row["status"] if row else ""
     from src.storage import card_db
-    assert card_db.read_sync(wid, _status, "") == "open"   # **没有丢批**
-
-    # tick 补派（有事件循环）⇒ 弱模型真正起 1 轮，批次标 sent
-    out = coordination_watcher.tick(wid)
     await _until(lambda: card_db.read_sync(wid, _status, "") == "sent")
     assert len(captured) == 1                              # 起了 1 轮（不是 0）
     assert captured[0]["batch"]["changes"][0]["card_id"] == src_card
     assert card_db.read_sync(wid, _status, "") == "sent"
-    # 再 tick 不重复派发
+    await intervention_runner.resume(wid)
     coordination_watcher.tick(wid)
     await asyncio.sleep(0.05)
     assert len(captured) == 1

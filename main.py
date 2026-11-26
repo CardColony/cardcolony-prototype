@@ -544,6 +544,13 @@ async def work_card_page(work_id: str, card_id: str) -> HTMLResponse:
     return HTMLResponse(content=_render_card(work_id, card_id))
 
 
+@app.get("/work/{work_id}/coordination", response_class=HTMLResponse)
+async def project_coordination_page(work_id: str) -> HTMLResponse:
+    from src.storage.coordination_store import PROJECT_AGENT_ID
+
+    return HTMLResponse(content=_render_card(work_id, PROJECT_AGENT_ID))
+
+
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page() -> HTMLResponse:
     """[模型设置第二步 2026-10-12] 模型设置页：供应商/模型/角色绑定，保存即热生效。"""

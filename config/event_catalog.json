@@ -365,7 +365,8 @@
           "card_type"
         ],
         "optional": [
-          "card_state"
+          "card_state",
+          "silent_since"
         ],
         "payload": []
       }

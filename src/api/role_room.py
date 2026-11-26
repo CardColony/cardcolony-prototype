@@ -373,7 +373,7 @@ async def set_duty(work_id: str, role_id: str, state: str,
 
 async def watched_cards(work_id: str, role_id: str) -> list[dict[str, Any]]:
     prof = await ensure_profile(work_id, role_id)
-    metas = card_store.iter_card_metas(work_id)
+    metas = await asyncio.to_thread(card_store.iter_card_metas, work_id)
     ids: list[str] = []
     if prof is not None:
         ids = [str(c) for c in ((prof.get("watch") or {}).get("cards") or [])]
@@ -1207,7 +1207,7 @@ async def role_summary(work_id: str, role_id: str) -> dict[str, Any]:
     pending = pending_batch(work_id, role_id)
     watch = prof.get("watch") or {}
     watched = []
-    metas = card_store.iter_card_metas(work_id)
+    metas = await asyncio.to_thread(card_store.iter_card_metas, work_id)
     for cid in (watch.get("cards") or []):
         m = metas.get(str(cid))
         if m:

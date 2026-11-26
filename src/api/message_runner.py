@@ -1135,6 +1135,11 @@ async def _call_model_resumable(state: "RunState | None" = None, **kwargs: Any):
             session_ops.ops_log("task_basis_assembled", _wid, _cid,
                                 {"task_id": current["task_id"], "req_fp": current["req_fp"],
                                  "pair_id": state.pair_id})
+    # [闭包晚绑定 2026-11-25] 原始 before_send 只在循环外取一次——
+    # 若在循环内包层，attempt N+1 会把 _prior_guard 单元重绑成
+    # attempt N 的 _material_guard，旧层再查该单元解析到自身
+    # ⇒ 无限递归（503 重试即炸回合，实测复现）。
+    _orig_before_send = kwargs.get("before_send")
     for attempt in range(1, _RESUME_MAX_ATTEMPTS + 1):
         try:
             if state is not None:
@@ -1158,11 +1163,9 @@ async def _call_model_resumable(state: "RunState | None" = None, **kwargs: Any):
             # 真实出站前复核——材料在网关重试边界过期 ⇒ MaterialStale
             # 在 try 之外传播，不吞进重试、不当作模型错误，由席位回合
             # 按控制回执收口。
-            _prior_guard = kwargs.get("before_send")
-
-            async def _material_guard() -> None:
-                if _prior_guard is not None:
-                    await _prior_guard()
+            async def _material_guard(_prior=_orig_before_send) -> None:
+                if _prior is not None:
+                    await _prior()
                 if state is None:
                     return
                 _gwhy = await card_tools.turn_material_stale_reason(
@@ -1235,6 +1238,20 @@ def _norm_tool_calls(raw: Any) -> list[dict[str, Any]]:
         if _src:
             out[-1]["_src_origin"] = _src
     return out
+
+
+def assistant_tool_message(content: str, calls: list[dict[str, Any]], *,
+                           run_tag: str, round_no: int) -> dict[str, Any]:
+    """构造正式工具轮的 assistant 消息，供上下文与回执共享同一调用标识。"""
+    return {
+        "role": "assistant", "content": content,
+        "tool_calls": [
+            {"id": f"call_{run_tag}_{round_no}_{index}", "type": "function",
+             "function": {"name": call["name"],
+                          "arguments": json.dumps(call["arguments"], ensure_ascii=False)}}
+            for index, call in enumerate(calls)
+        ],
+    }
 
 
 def _seat_voted_this_turn(state: RunState) -> bool:
@@ -1401,7 +1418,11 @@ async def step(state: RunState) -> StepOutcome:
         # 看到当前版本，不能停在回合开始那一份快照。system 通道不动（稳定前缀）。
         if state.context_ctx is not None:
             try:
-                context_assembler.refresh_tail_facts(
+                # [事件循环冻结 2026-11-25] refresh_tail_facts 每跳同步跑
+                # SQLite（清单+子卡现状+对象卡正文）——直跑会堵 runner
+                # 事件循环 ⇒ 进线程（内部零 asyncio、ctx 单写者）。
+                await asyncio.to_thread(
+                    context_assembler.refresh_tail_facts,
                     state.context_ctx, state.work_id, state.card_id)
             except Exception:  # noqa: BLE001 刷新失败＝沿用旧版本，不阻断回合
                 pass
@@ -2017,19 +2038,8 @@ async def step(state: RunState) -> StepOutcome:
     # 把 assistant 消息（含 tool_calls）+ tool 结果追加进 prior
     # [T11-T6] assistant 经 begin_round 入槽（成轮，可折单元）；
     # 消息构造与既有逐字一致（折叠关时槽即本列表，零变化）
-    _asst_msg: dict[str, Any] = {
-        "role": "assistant",
-        "content": assistant_context,
-        "tool_calls": [
-            {
-                "id": f"call_{_run_tag}_{state.rounds}_{i}",
-                "type": "function",
-                "function": {"name": tc["name"],
-                             "arguments": json.dumps(tc["arguments"], ensure_ascii=False)},
-            }
-            for i, tc in enumerate(tool_calls)
-        ],
-    }
+    _asst_msg = assistant_tool_message(
+        assistant_context, tool_calls, run_tag=_run_tag, round_no=state.rounds)
     # [多轮思考回传 2026-10-23] 有的端点强制要求：assistant 消息带 tool_calls 时，
     # 必须同时带回它上一轮给出的 reasoning_content，否则 400
     # "Missing required parameter: 'messages[N].reasoning_content'"。
@@ -2948,13 +2958,29 @@ def handle_error(state: RunState, exc: Exception) -> None:
     """
     state.error = str(exc)
     progress.set_stage(state.work_id, _sid(state), "error", str(exc))
-    logger.error("模型调用/工具循环失败 card=%s: %s", state.card_id, exc)
+    # [2026-11-23 · RecursionError 定位盲区] 非预期异常（非 ModelError）
+    # 只记消息永远查不到栈——card_057/981 连发 60+ 次裸 RecursionError 无堆栈
+    # 可追。栈帧落 error 事件（截断），不另开文件。
+    _trace = ""
+    from ..infra.errors import ModelError as _ModelError
+    if not isinstance(exc, (_ModelError, asyncio.CancelledError)):
+        try:
+            _trace = "".join(
+                __import__("traceback").format_exception(
+                    type(exc), exc, exc.__traceback__))[-6000:]
+        except Exception:  # noqa: BLE001 取证失败不阻断收口
+            _trace = ""
+        logger.error("模型调用/工具循环失败 card=%s: %s\n%s",
+                     state.card_id, exc, _trace)
+    else:
+        logger.error("模型调用/工具循环失败 card=%s: %s", state.card_id, exc)
     event_stream.emit(state.work_id, _sid(state), "error",
                       # [harness 第 1 步 2026-10-28] 补 error_type：异常类名是
                       # "能当判断依据"的零件（区分断连/超限/权限），整段 error 文本
                       # 只是载荷。改前两者混在一个字段里，条件面只能做子串匹配。
                       {"error": state.error,
                        "error_type": type(exc).__name__,
+                       "traceback": _trace,
                        "rounds": state.rounds})
 
 # ============================================================

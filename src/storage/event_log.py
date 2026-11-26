@@ -249,9 +249,6 @@ def _notify_harness(work_id: str, card_id: str, rec: dict[str, Any]) -> None:
     [2026-10-31 · 两代并轨] 第一代「规则表 + ``harness.fire``」退役，
     ``ECO_HARNESS_LEGACY`` 回退开关一并拆除——条件集是**唯一**接线。
 
-    [任务三 2026-11-21] 同一接线点加**统筹链**：``coordination_watcher.feed``
-    ——类型过滤/授权过滤/坐标去重/合批，窗口到派弱模型观察。零阻断同款。
-
     零阻断：接线失败绝不影响事件本身。
     """
     try:
@@ -259,11 +256,6 @@ def _notify_harness(work_id: str, card_id: str, rec: dict[str, Any]) -> None:
         policy_runner.feed(work_id, rec)
     except Exception as exc:  # noqa: BLE001 接线失败不影响事件
         logger.warning("[event_log] 条件集接线失败（不阻断）: %s", exc)
-    try:
-        from ..infra import coordination_watcher
-        coordination_watcher.feed(work_id, card_id, rec)
-    except Exception as exc:  # noqa: BLE001 接线失败不影响事件
-        logger.warning("[event_log] 统筹链接线失败（不阻断）: %s", exc)
 
 
 # ---------------------------------------------------------------- 写

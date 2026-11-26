@@ -42,8 +42,8 @@ import { API } from "./esm/api.js?v=57";
 import { escapeHtml as esc } from "./esm/util.js?v=30";
 /* [边出边渲染 2026-10-14 · 用户令 ⑧] 流式期间也要渲染 md */
 import { renderMarkdown } from "./esm/md.js?v=31";
-import { createAssembler } from "./esm/assembler.js?v=42";
-import { createChatView } from "./esm/flow/chat-view.js?v=8";
+import { createAssembler } from "./esm/assembler.js?v=43";
+import { createChatView } from "./esm/flow/chat-view.js?v=9";
 import { createMessageItem } from "./esm/flow/message-item.js?v=1";
 // [5715 · 性能] 思考块的增量渲染（直播路径 O(N²) → O(N)）
 import { createThinkRenderer, createTextUpdater, rebuildReasoningText } from "./esm/flow/think-stream.js?v=1";
@@ -444,6 +444,7 @@ const BOARD_CFG = Object.assign(
       case "triage_verdict":
         return makeRow(t, "旧判断事件（已退役）" + fld("verdict", d.verdict), "不会出现", fmtData(d), "void");
       case "done":
+        if (d.stopped) return makeRow(t, "已停止", null, null, "");
         return makeRow(t, "完成" + fld("rounds", d.rounds) + fld("model_calls", d.model_calls),
           esc(d.rounds || 0) + " 轮 · " + esc(d.model_calls || 0) + " 调用", null, "ok");
       case "error":
@@ -1849,6 +1850,21 @@ const BOARD_CFG = Object.assign(
     }
   }
 
+  /** 已落盘会话的增量投影。数据源可直接提供标准事件，仍走同一装配与视图。 */
+  function applyStoredTimeline(wid, cid, records) {
+    const st = ensureRun(wid, cid);
+    let updated = false;
+    for (const record of records) {
+      if (record.seq <= (st.storedSeq ?? -1)) continue;
+      st.asm.applyRecord(record);
+      st.storedSeq = record.seq;
+      updated = true;
+    }
+    if (updated || !st.loadedOnce) renderSnapshot(st, st.asm.snapshot());
+    st.loadedOnce = true;
+    viewOf(st).markLoaded();
+  }
+
   /** 结算后回流：与刷新同一条路（唯一数据源仍是 timeline）。
       POST 返回＝本轮事件已全部落盘，此刻拉 timeline 必然含 assistant_text。
       返回 {ok, done}：done＝最后一轮已出现 assistant 节点或 done/error 收口
@@ -1865,7 +1881,7 @@ const BOARD_CFG = Object.assign(
       而绝大多数情况下 SSE 已经把 done/error 帧送全了（liveComplete）⇒ **根本不需要拉**。
       ⇒ 现在：liveComplete ⇒ **零请求**；否则拉**尾部窗口**（与打开卡同一条路、同口径），
         **不用全量**（全量是「刷新整页」的活）。 */
-  async function resync(wid, cid) {
+  async function resync(wid, cid, opts = {}) {
     const st = ensureRun(wid, cid);
     // [5702 · 2026-10-20] 实时表**已完整**（SSE 活着且已收到 done/error）⇒ 不重建。
     //   重建会把运行中按轮分开的 assistant 节点抹成落盘的一条（后端每 run 只落一条
@@ -1873,18 +1889,25 @@ const BOARD_CFG = Object.assign(
     const liveSnap = st.asm.snapshot();
     const liveComplete = !st.esDead && liveSnap.order.some((k) => {
       const n = liveSnap.nodes.get(k);
-      return n && n.ns === "live" && (n.type === "done" || n.type === "error");
+      return n && n.ns === "live" && (!opts.runId || n.run_id === opts.runId)
+        && (n.type === "done" || n.type === "error");
     });
     let items = null;
     let snap = liveSnap;
     if (!liveComplete) {
       // 实时没送全 ⇒ 去落盘取**尾部窗口**（与打开卡同款），不拉全量。
       items = await fetchTimeline(st, wid, cid, undefined, { tail: BOARD_CFG.initialEvents });
-      st.asmEpoch = (st.asmEpoch || 0) + 1;
-      snap = st.asm.rebuild(items || []);
-      if (items && items.length) _snapSave(st, wid, cid, items);
+      if (items !== null) {
+        st.loadedItems = items;
+        st.asmEpoch = (st.asmEpoch || 0) + 1;
+        snap = st.asm.rebuild(items);
+        _snapSave(st, wid, cid, items);
+      } else {
+        // 请求期间实时流仍可能上屏，读取失败要保留当前画板。
+        snap = st.asm.snapshot();
+      }
     }
-    st.settled = true;           // 收口：此后到达的实时帧不再入装配（见 applyLiveFrame 注）
+    st.settled = !opts.follow;   // 常驻订阅继续接收独立会话的后续事件。
     renderSnapshot(st, snap);
     if (st.view && typeof st.view.markLoaded === "function") st.view.markLoaded();
     setRunning(wid, cid, false); // 结算＝本轮结束（运行条收、主键回发送态）
@@ -1916,9 +1939,10 @@ const BOARD_CFG = Object.assign(
       const o = Object.assign({}, opts || {}, { session: cid, view: "brief" });
       delete o._epoch;
       const resp = await API.getTimeline(wid, real, from, o);
+      if (!Array.isArray(resp?.items)) return null;
       const epochOk = epoch === undefined
         || (st && (st.asmEpoch || 0) === epoch);
-      const items = (resp && resp.items) || [];
+      const items = resp.items;
       if (st && items.length && epochOk) {
         /* [2026-11-07 · 写乱序] items 现按 (ts,seq) 时间序排——末条是「最新」
            但未必是最大 seq（晚写的事件拿大号）。游标语义＝「已见最大落盘号」，
@@ -2225,7 +2249,7 @@ const BOARD_CFG = Object.assign(
   }
 
 export const EventFlow = {
-  start, stop, replayTrace, resync, pullUserBubble, setMessageRenderers,
+  start, stop, replayTrace, resync, pullUserBubble, setMessageRenderers, applyStoredTimeline,
   optimisticUser, dropOptimisticUser, streamDead, sessionRunning,
   // [切卡零重建] 画板已在内存 ⇒ 切回时免重拉
   isLoaded,

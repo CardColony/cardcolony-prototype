@@ -33,6 +33,7 @@ export function createRowModel(card, store, ctx = {}) {
     key() {
       if (this.kind === "project") return "p:" + this.card.work_id;
       if (this.kind === "coordination") return "coordination:" + this.wid;
+      if (this.kind === "coordination-run") return "coordination:" + this.wid + ":" + this.card.run_id;
       // [职能入口 2026-10-22] 职能不是卡（不进 cards 表），键用 function_id。
       if (this.kind === "function") return "f:" + this.wid + ":" + this.card.function_id;
       // [评审入口 2026-10-29] 评审卡也不进 cards 表（离树），键用 review_card_id。

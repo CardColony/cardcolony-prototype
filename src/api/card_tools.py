@@ -1311,7 +1311,8 @@ async def _h_read_memory(work_id: str, current_id: str,
 
 async def _h_memory_expand(work_id: str, current_id: str,
                            arguments: dict[str, Any],
-                           cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
+                           cards: dict[str, dict[str, Any]], *,
+                           revive: bool = True) -> dict[str, Any]:
     # [F19 · 2026-10-31] memory_expand（dsh applyMemoryExpandTool 的移植注册）：
     # 沿锚点展开整组——结论 → 细节层 → 逐字原文；sunk 命中复活（revive_update）。
     # 权限同 read_memory（父子线才给，关系线不给——记忆是过程记录）。
@@ -1351,7 +1352,7 @@ async def _h_memory_expand(work_id: str, current_id: str,
     result = _mx.expand(work_id, target_id, int(seq), page=int(page),
                         section=section,
                         revision=str(revision) if revision else None,
-                        missing_page=int(missing_page))
+                        missing_page=int(missing_page), revive=revive)
     # [记忆找回 2026-11-20 · 方案 §二] 回执字段：逐字分页＋溯源片段＋覆盖
     # 报告；text 只放本页逐字内容，所带为历史引文。
     data = {"card_id": target_id, "seq": int(seq),
@@ -8193,6 +8194,45 @@ async def _h_scene_sync(work_id: str, current_id: str,
     return out
 
 
+def direct_authority(work_id: str, current_id: str, target: str,
+                     cards: dict[str, dict[str, Any]], *,
+                     authorized_target: str = "") -> tuple[str, str]:
+    """正式指令的目标权限。显式授面的目标由宿主核验和传入。"""
+    if not card_store.card_exists(work_id, target):
+        return "not_found", f"卡片不存在: {target}"
+    if current_id and authorized_target == target:
+        return "", ""
+    target_meta = card_store._meta_of(work_id, target) or {}
+    if str(target_meta.get("card_type") or "") == "function":
+        return ("role_denied", f"越权:{target} 是职能卡，不收指令——职能只经差事"
+                "（评审/派驻）被叫到，不私下问答")
+    try:
+        if not policy.can(current_id, target, policy.SWITCH_READ, cards):
+            return "role_denied", f"越权:{target} 不在你的作用域内"
+    except Exception as exc:
+        return "role_denied", f"作用域判定失败,已拒绝: {exc}"
+    try:
+        policy.check_linked(current_id, target, cards)
+    except PermissionError:
+        return "no_link", f"越权：{target} 与你之间没有通信线——先 link_cards 建一条再下指令"
+    return "", ""
+
+
+async def wake_directive(work_id: str, current_id: str, target: str, body: str, *,
+                         source: dict[str, Any], admission=None, action_key: str = "") -> bool:
+    """已落信的指令沿正式接收回合入口唤醒。"""
+    from . import message_runner
+
+    options = {"admission": admission, "action_key": action_key} if admission else {}
+    return await message_runner.deliver_now(
+        work_id, target,
+        text=(f"你收到一条来自 {current_id} 的指令，正文已在上文（卡间指令）。"
+              + ("请按本轮任务依据执行并提交核证。" if source.get("basis_task")
+                 else "请按其执行，完成后用 report_up 汇报。")),
+        steer_text=f"卡 {current_id} 给你发来一条指令：\n{body}\n请按其执行，完成后用 report_up 汇报。",
+        source_kind="directive", source=source, **options)
+
+
 async def _h_scene_direct(work_id: str, current_id: str,
                           arguments: dict[str, Any],
                           cards: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -8202,9 +8242,6 @@ async def _h_scene_direct(work_id: str, current_id: str,
     没有判据，收令方做完也无法自判「做完了没有」，发令方也无法验收。
     验收不另设工具——通过就不说话，不通过再发一条 direct 要求改。
     """
-    import uuid as _uuid
-    from ..storage import card_db as _cdb
-    from . import message_runner as _mr
     target = str(arguments.get("card_id") or "").strip()
     instruction = str(arguments.get("instruction") or "").strip()
     acceptance = str(arguments.get("acceptance") or "").strip()
@@ -8216,43 +8253,9 @@ async def _h_scene_direct(work_id: str, current_id: str,
         return err("validation",
                    "acceptance 不能为空——没有验收判据，收令方做完也无法自判"
                    "「做完了没有」。写清：做到哪些事算完成。")
-    if not card_store.card_exists(work_id, target):
-        return err("not_found", f"卡片不存在: {target}")
-    # [两源模型 2026-11-01 · 用户令「不需要 direct 到职能，会诊删了」]
-    # 职能不是干活的卡：它不驻场、不接指令、不私答——它的判断依据只有
-    # 场卡需求文档＋rules.md 准则，私问只会产「没人裁过的主张」。
-    # 会诊差事（consult venue）与之一并退役。
-    _tmeta0 = card_store._meta_of(work_id, target) or {}
-    if str(_tmeta0.get("card_type") or "") == "function":
-        return err("denied",
-                   f"越权:{target} 是职能卡，不收指令——职能只经差事"
-                   "（评审/派驻）被叫到，不私下问答")
-    root_id = ""
-    try:
-        root_id = work_store.work_card_id_of(work_id) or ""
-    except Exception:  # noqa: BLE001
-        root_id = ""
-    # [通信收拢 2026-10-28] 作用域判定统一走 `policy.can()`（权限唯一规则表）：
-    #   · 树内卡 → ⑥ 目标须在自己子树内（与改前逐字等价）
-    #   · 根卡   → ④ 本项目任何卡通过
-    #   · 离树卡（职能/角色）→ ⑤ 读全树/通信通过，只有 edit 与「往根卡下建卡」受限
-    # 改前这里硬写 `_is_in_subtree`，离树卡没有子树 ⇒ 职能永远下不了指令
-    # （所以才有 issue_directive 那条旁路）。issue_directive 退役后，direct 必须
-    # 认离树卡，否则职能变哑巴。
-    try:
-        if not policy.can(current_id, target, policy.SWITCH_READ, cards):
-            return err("denied", f"越权:{target} 不在你的作用域内")
-    except Exception as exc:  # noqa: BLE001
-        return err("denied", f"作用域判定失败,已拒绝: {exc}")
-    # [2026-10-27 · 用户裁定「统一用通信线」] 权限（子树）之外还要有通信线：
-    # 子树决定「你能不能命令它」，通信线决定「你这条命令能不能送过去」。
-    # 父子之间有默认通信线，所以正常纵向派活不受影响。
-    try:
-        policy.check_linked(current_id, target, cards)
-    except PermissionError:
-        return err("denied",
-                   f"越权：{target} 与你之间没有通信线——"
-                   f"先 link_cards 建一条再下指令")
+    code, why = direct_authority(work_id, current_id, target, cards)
+    if code:
+        return err("not_found" if code == "not_found" else "denied", why)
     task_spec = None
     if "task_basis" in arguments:
         from . import task_basis
@@ -8313,17 +8316,7 @@ async def _h_scene_direct(work_id: str, current_id: str,
     # delivered=False＋保留 msg_id，绝不让「落信成功、唤醒失败」被上游
     # 记成没派发（否则回执核对判欠派发 ⇒ 定向补救重发 ⇒ 对方收两条）。
     try:
-        _ok = await _mr.deliver_now(
-            work_id, target,
-            text=(f"你收到一条来自 {current_id} 的指令，正文已在上文（卡间指令）。"
-                  + ("请按本轮任务依据执行并提交核证。" if task_spec is not None
-                     else "请按其执行，完成后用 report_up 汇报。")),
-            steer_text=f"卡 {current_id} 给你发来一条指令：\n{_body}\n请按其执行，完成后用 report_up 汇报。",
-            source_kind="directive",
-            # [2026-11-20 二次返修] 显式携带汇报义务与核对目标：direct 指令的
-            # 机制级收口=「完成后用 report_up 汇报」（唤醒文原文）——收令回合的
-            # 汇报义务核对只认这个显式标志，普通/其他来源的 directive 不默认绑定。
-            source=source)
+        _ok = await wake_directive(work_id, current_id, target, _body, source=source)
     except Exception as exc:  # noqa: BLE001 唤醒失败≠落信失败
         logger.warning("[direct] 落信成功但唤醒异常 target=%s: %s",
                        target, exc)

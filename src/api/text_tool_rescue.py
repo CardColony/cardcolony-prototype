@@ -201,6 +201,29 @@ def _d_params(body: str) -> dict:
     return args
 
 
+def _d_params_with_inline(body: str, original: str) -> dict | None:
+    """行内代码只在完整参数值中恢复，标签和参数边界仍按遮蔽文本解析。"""
+    args = {}
+    cursor = 0
+    while cursor < len(body):
+        start = _XML_SPACE.match(body, cursor).end()
+        if start == len(body):
+            break
+        param = _C_PARAM_NAMED.match(body, start) or _C_PARAM_BARE.match(body, start)
+        if not param or "<" in param["val"]:
+            return None
+        key = param["key"].strip()
+        if not key or key in args or _MASKED_INLINE_CHAR in key:
+            return None
+        value = original[param.start("val"):param.end("val")].strip()
+        try:
+            args[key] = json.loads(value)
+        except (ValueError, RecursionError):
+            args[key] = value
+        cursor = param.end()
+    return args
+
+
 # ---------------------------------------------------------------------------
 # 疑似标记探测（反馈兜底用）：正文里出现了泄漏标记的痕迹但没能解析出
 # 完整调用 → 调用方应把「未识别、未执行」这个事实回注模型
@@ -382,7 +405,10 @@ _XML_EDGES = {
 _Q_SYS_LINE = re.compile(r"^[ \t]*〔\s*(?:系统|工具)[^〕\r\n]*〕", re.MULTILINE)
 _JSON_START = re.compile(r"\s*(?=[{\[])")
 _JSON_DECODER = json.JSONDecoder()
+_XML_SPACE = re.compile(r"\s*")
 _MASKED_CHAR = "\x00"
+_MASKED_INLINE_CHAR = "\x01"
+_MASKED_REGION = re.compile(f"[{_MASKED_CHAR}{_MASKED_INLINE_CHAR}]")
 
 
 def _xml_call_region(content: str, start: int, edges: re.Pattern) -> tuple[int, str | None]:
@@ -593,7 +619,8 @@ def _scan_call_text(content: str) -> tuple[
     anomaly_spans = []
     cursor = 0
     for start, end, kind, payload in _context_regions(content):
-        pieces.extend((content[cursor:start], _MASKED_CHAR * (end - start)))
+        mask = _MASKED_INLINE_CHAR if kind == "inline" else _MASKED_CHAR
+        pieces.extend((content[cursor:start], mask * (end - start)))
         if kind in _COMPAT_ORIGINS:
             xml_calls.append((start, end, kind, payload))
         elif kind == "anomaly":
@@ -611,7 +638,8 @@ def anomaly_fragments(content: str) -> list[tuple[int, int]]:
 
 
 def _unmasked_matches(pattern: re.Pattern, scan: str):
-    return (match for match in pattern.finditer(scan) if _MASKED_CHAR not in match[0])
+    return (match for match in pattern.finditer(scan)
+            if not _MASKED_REGION.search(scan, *match.span()))
 
 
 def detect_protocol_hint(content: str) -> str:
@@ -883,7 +911,7 @@ def extract_text_tool_calls(
         open_m = _A_BLOCK_OPEN.search(scan)
         if open_m and a_spans:
             last_end = max(e for _, e in a_spans)
-            if _MASKED_CHAR not in scan[open_m.start():last_end]:
+            if not _MASKED_REGION.search(scan, open_m.start(), last_end):
                 spans.append((open_m.start(), last_end))
         # 外壳可能还带闭合尾标记
         for tail in re.finditer(
@@ -958,11 +986,16 @@ def extract_text_tool_calls(
     # ---- 形态D：根元素即工具名（<read_card><card_id>…</read_card>）----
     _d_call, _d_self, _d_sus = _d_patterns()
     if _d_call is not None:
-        for m in _unmasked_matches(_d_call, scan):
+        for m in _d_call.finditer(scan):
+            if _MASKED_CHAR in m[0] or _MASKED_REGION.search(scan, m.start(), m.start("body")):
+                continue  # 围栏、结果和引用中的标签仍不可形成调用
             if any(m.start() < e and m.end() > s for s, e in spans):
                 continue          # 与已收编的调用块重叠 ⇒ 不二次吞
             body = m.group("body") or ""
-            args = _d_params(body)
+            if _MASKED_INLINE_CHAR in body:
+                args = _d_params_with_inline(body, content[m.start("body"):m.end("body")])
+            else:
+                args = _d_params(body)
             # 空壳 ⇒ 零参数调用（全可选工具合法，缺参走标准链报 validation，
             # 也是闭环反馈）；夹叙述的 body 零参数对 ⇒ 当正文跳过、不剥。
             if body.strip() and not args:

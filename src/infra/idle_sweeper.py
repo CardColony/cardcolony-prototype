@@ -31,8 +31,7 @@ _EMIT_FLOOR = 11 * 3600.0
 #: 每卡重发间隔（秒）：过线卡一次静默期至多每小时一条。
 _EMIT_GAP = 3600.0
 
-#: (work, card) → 上次落 card_idle 的 epoch。内存账：重启清零只是
-#: 过线卡重报一次，不丢语义（事件里 silent_sec 照样是真的）。
+#: (work, card) → 上次落 card_idle 的 epoch。启动后从 Harness 事实补回。
 _last_emit: dict[tuple[str, str], float] = {}
 
 _TASK: "asyncio.Task | None" = None
@@ -89,7 +88,7 @@ def _silent_sec(work_id: str, card_id: str, meta: dict, now: float) -> float:
 
 async def _sweep_once() -> int:
     """扫一遍：本进程属主、活着、静默过线、距上次发射超 _EMIT_GAP ⇒ 落事实。"""
-    from . import procs
+    from . import fact_store, procs
     from ..api import event_stream
     from ..storage import card_store, work_store
 
@@ -106,7 +105,8 @@ async def _sweep_once() -> int:
         if not wid:
             continue
         try:
-            metas = card_store.iter_card_metas(wid) or {}
+            metas = await asyncio.to_thread(
+                card_store.iter_card_metas, wid) or {}
         except Exception as exc:  # noqa: BLE001 一个 work 读不动不拖全扫
             logger.warning("[idle_sweeper] 读卡表失败 %s: %s", wid, exc)
             continue
@@ -121,10 +121,17 @@ async def _sweep_once() -> int:
                     continue  # 不归本片 ⇒ 它的属主 runner 扫
             except Exception:  # noqa: BLE001 分片算不出按不归本片（宁可漏发）
                 continue
-            if now - _last_emit.get((wid, cid), 0.0) < _EMIT_GAP:
+            key = (wid, cid)
+            if now - _last_emit.get(key, 0.0) < _EMIT_GAP:
                 continue  # 本小时已报过
             try:
                 sec = _silent_sec(wid, cid, m, now)
+                if sec >= _EMIT_FLOOR and key not in _last_emit:
+                    recent = fact_store.store().query(
+                        wid, card=cid, types=("card_idle",), since=now - _EMIT_GAP, until=now, limit=1)
+                    if recent and now - recent[0]["_t"] < _EMIT_GAP:
+                        _last_emit[key] = recent[0]["_t"]
+                        continue
             except Exception as exc:  # noqa: BLE001 一张算不动不拖全扫
                 logger.debug("[idle_sweeper] 静默度算不出 %s/%s: %s",
                              wid, cid, exc)
@@ -134,6 +141,7 @@ async def _sweep_once() -> int:
             try:
                 event_stream.emit(wid, cid, "card_idle", {
                     "silent_sec": round(sec, 1),
+                    "silent_since": round(now - sec, 6),
                     "card_type": str((m or {}).get("card_type") or ""),
                     "card_state": state,
                 })
@@ -141,7 +149,7 @@ async def _sweep_once() -> int:
                 logger.warning("[idle_sweeper] emit 失败 %s/%s: %s",
                                wid, cid, exc)
                 continue
-            _last_emit[(wid, cid)] = now
+            _last_emit[key] = now
             n += 1
     return n
 

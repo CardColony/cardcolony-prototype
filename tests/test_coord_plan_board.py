@@ -74,9 +74,6 @@ def _appoint_kwargs(**over):
 
 async def _appointed(monkeypatch, wid: str, fids: dict, plan_card: str,
                      **over) -> str:
-    async def _fake_first(work_id, card_id, assignment_id=""):
-        return {"status": "parsed", "rev": 1}
-    monkeypatch.setattr(routes, "_coord_first_turn", _fake_first)
     out = await coordination_store.appoint(
         wid, plan_card, function_id=fids["pm"], **_appoint_kwargs(**over))
     assert out.get("ok"), out
@@ -661,6 +658,43 @@ async def test_board_retains_origin_and_rejects_unverified_refs(sandbox, monkeyp
         wid, plan, assignment_id=aid, trigger="user_wake"))["status"] == "parsed"
     assert {row["item_id"] for row in coordination_store.panel(wid, plan)["board"]["items"]} == {
         item, "private"}
+
+
+async def test_project_board_updates_visible_item_with_archived_sources(sandbox, monkeypatch):
+    from src.storage import event_log
+
+    wid, _, _ = await _seeded_work(monkeypatch)
+    owner = await _mk_card(wid, "负责验收")
+    worker = await _mk_card(wid, "复跑实现")
+    agent = coordination_store.PROJECT_AGENT_ID
+    appointment = (await coordination_store.configure_project_agent(wid, _appoint_kwargs()["models"]))["appointment"]
+    aid = appointment["assignment_id"]
+    live_sources = {owner, worker}
+    await coordination_store.save_plan(wid, agent, assignment_id=aid, expected_rev=0,
+        plan={"items": [{"item_id": "implementation", "title": "核对施工", "owner_card": owner, "status": "doing"}]},
+        by="strong:fixture", source_cards=live_sources | {"card_archived"})
+
+    appt = coordination_runner._current_assignment(wid, agent)
+    item = coordination_board.read_board(appt, live_sources, "implementation")["item"]
+    assert item["status"] == "doing"
+    event = event_log.append_sync(wid, worker, {"type": "tool_result", "ts": "2026-11-23T15:04:51+00:00",
+                                               "data": {"content": "复跑已经开始"}})
+    event_log.append_sync(wid, worker, {"type": "reasoning", "ts": "2026-11-23T15:04:43+00:00",
+                                         "data": {"text": "稍后才落盘的较早事件"}})
+    reference = f"event:{wid}:{worker}:{event['seq']}"
+    saved = await coordination_store.board_apply(wid, agent, assignment_id=aid, expected_rev=1,
+        changes=[{"op": "update", "item_id": "implementation", "next_result": "等待复跑回执",
+                  "evidence_refs": [reference]}], by="strong:fixture", source_cards=live_sources)
+    assert saved["rev"] == 2
+    item, = coordination_store.panel(wid, agent)["board"]["items"]
+    assert item["evidence_refs"] == [reference] and item["next_result"] == "等待复跑回执"
+
+    with pytest.raises(coordination_store.CoordinationError, match="证据引用不可核验"):
+        await coordination_store.board_apply(wid, agent, assignment_id=aid, expected_rev=2,
+            changes=[{"op": "update", "item_id": "implementation", "status": "done",
+                      "result_note": "过程不能作为完成证据", "evidence_refs": [reference]}],
+            source_cards=live_sources)
+    assert coordination_store.panel(wid, agent)["rev"] == 2
 
 
 async def test_plan_board_wire_material_and_paging(sandbox, monkeypatch):

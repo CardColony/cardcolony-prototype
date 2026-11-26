@@ -1,7 +1,7 @@
 // [2026-11-23 · 统筹计划板任务书] 「项目统筹 → 计划板」页签：
 // 同一份 plan.items 的结构化编辑。读走 GET 面板（board 投影，只读不唤醒），
 // 写走 POST op=board_apply（与强模型 coord_plan_board 同一版本保存入口）。
-import { coordinationApi as api, esc } from "./coordination.js?v=2";
+import { coordinationApi as api, esc } from "./coordination.js?v=6";
 
 const STATUS_LABEL = { todo: "待办", doing: "进行中", blocked: "受阻", done: "完成" };
 

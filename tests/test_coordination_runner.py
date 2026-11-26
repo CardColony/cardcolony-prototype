@@ -86,13 +86,7 @@ def _appoint_kwargs(**over):
 
 async def _appointed(monkeypatch, wid: str, fids: dict, plan_card: str,
                      **over) -> str:
-    """任命并把首轮起轮打桩掉（单独测起轮的用例自己恢复）。"""
-    called = []
-
-    async def _fake_first(work_id, card_id, assignment_id=""):
-        called.append((work_id, card_id, assignment_id))
-        return {"status": "parsed", "rev": 1}
-    monkeypatch.setattr(routes, "_coord_first_turn", _fake_first)
+    """创建任命，起轮由各用例显式驱动。"""
     out = await coordination_store.appoint(
         wid, plan_card, function_id=fids["pm"], **_appoint_kwargs(**over))
     assert out.get("ok"), out
@@ -523,48 +517,27 @@ async def test_strong_first_turn_real_sources(sandbox, monkeypatch):
     assert "items 元素形状无效" in out_bad["detail"]["error"]
 
 
-# ---------------------------------------------------------------- T6 任命触发
+# ---------------------------------------------------------------- 项目配置
 
-async def test_appoint_triggers_first_turn(client, sandbox, monkeypatch):
-    wid, cards, fids = await _seeded_work(monkeypatch)
-    plan_card = await _mk_card(wid, "触发计划")
+async def test_project_configuration_does_not_schedule_a_model_turn(client, sandbox, monkeypatch):
+    from src.api import message_runner
+
+    wid, _, _ = await _seeded_work(monkeypatch)
+    plan_card = coordination_store.PROJECT_AGENT_ID
     called = []
 
-    async def _fake_first(work_id, card_id, assignment_id=""):
-        called.append((work_id, card_id, assignment_id))
-        return {"status": "parsed"}
-    monkeypatch.setattr(routes, "_coord_first_turn", _fake_first)
+    def capture(coro, **kwargs):
+        coro.close()
+        called.append(kwargs)
 
-    r = await client.post(f"/api/works/{wid}/cards/{plan_card}/coordination",
-                          json={"op": "appoint", "function_id": fids["pm"],
-                                "objective": "按现行需求推进",
-                                "observe": {"scope": "work"},
-                                "instruct": {"scope": "cards",
-                                             "ids": ["card_demo_protocol"]},
-                                "models": {"strong": "strong-test-route",
-                                           "weak": "weak-test-route"},
-                                "next_review_at": _future_ts()})
+    monkeypatch.setattr(message_runner, "_spawn_tracked", capture)
+
+    payload = {"op": "configure", "models": _appoint_kwargs()["models"]}
+    r = await client.post(f"/api/works/{wid}/coordination/agent", json=payload)
     assert r.status_code == 200
     aid = r.json()["assignment_id"]
-    for _ in range(50):
-        if called:
-            break
-        await asyncio.sleep(0.02)
-    assert called and called[0] == (wid, plan_card, aid)
-
-    async def _boom(work_id, card_id, assignment_id=""):
-        raise RuntimeError("起轮炸了")
-    monkeypatch.setattr(routes, "_coord_first_turn", _boom)
-    plan_b = await _mk_card(wid, "第二张计划")
-    r2 = await client.post(f"/api/works/{wid}/cards/{plan_b}/coordination",
-                           json={"op": "appoint", "function_id": fids["cto"],
-                                 "objective": "另一份计划",
-                                 "observe": {"scope": "work"},
-                                 "instruct": {"scope": "work_development_cards"},
-                                 "models": {"strong": "strong-test-route",
-                                            "weak": "weak-test-route"},
-                                 "next_review_at": _future_ts()})
-    assert r2.status_code == 200
+    assert aid and coordination_store.panel(wid, plan_card)["pending"] == []
+    assert called == []
 
 
 # ---------------------------------------------------------------- T7 后台绑定

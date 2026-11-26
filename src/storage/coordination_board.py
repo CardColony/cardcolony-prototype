@@ -190,8 +190,10 @@ def apply_changes(items: list[dict[str, Any]], changes: Any
 
 
 def visible_items(appt: dict[str, Any], allowed: Optional[set[str]]) -> list[dict[str, Any]]:
+    from .coordination_store import project_observes_all
+
     items = project_items((appt.get("plan") or {}).get("items"))
-    if allowed is None:
+    if allowed is None or project_observes_all(appt):
         return items
     fallback = appt.get("model_plan_sources", [])
     return [it for it in items

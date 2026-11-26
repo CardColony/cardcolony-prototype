@@ -1622,7 +1622,8 @@ async def update_card(
         # parent），子树整体迁移后它仍在子树内、仍是祖先，链没断。
         cur_owner = str(cur_meta.get("owner_card_id") or "")
         if cur_owner:
-            _metas = iter_card_metas(work_id)
+            # [事件循环冻结 2026-11-25] 全表读移出循环线程
+            _metas = await asyncio.to_thread(iter_card_metas, work_id)
             _chain: set[str] = set()
             _node, _guard = new_parent, 0
             while _node and _guard < 1000:
@@ -1933,7 +1934,8 @@ async def delete_card(work_id: str, card_id: str,
 
     # 子卡处理：cascade=True ⇒ 后序删整棵子树（子先父后，每张都走本函数，
     # 因此每张都进回收站、都删影子/会话）；cascade=False ⇒ 沿用旧防护（拒删）。
-    kids = [oid for oid, m in iter_card_metas(work_id).items()
+    kids = [oid for oid, m in (await asyncio.to_thread(
+            iter_card_metas, work_id)).items()
             if oid != card_id and m.get("parent") == card_id]
     if kids:
         if not cascade:
@@ -2077,7 +2079,7 @@ async def archive_card(work_id: str, card_id: str,
                     "SELECT seq, ts, text FROM card_history WHERE card_id = ?"
                     " ORDER BY seq", (card_id,))]
 
-    history = card_db.read_sync(work_id, _hist, []) or []
+    history = await card_db.run_read(work_id, _hist, []) or []
 
     await card_archive.archive(work_id, card_id, {
         "meta": meta,

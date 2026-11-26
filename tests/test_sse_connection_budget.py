@@ -117,7 +117,7 @@ async def test_c1_merged_stream_carries_both_channels(work):
         event_stream.emit_token(wid, cid, "content_chunk", "你好")
 
     # 直接调路由函数：Query(...) 默认值是 Query 对象而非 0 ⇒ 必须显式传全部参数
-    resp = await routes.stream_card_events(wid, cid, 0, 0, 1, 0)
+    resp = await routes.stream_card_events(wid, cid, 0, 0, 1, 0, session="")
     assert resp.media_type == "text/event-stream"
     frames = await _collect_stream(resp, 2, _emit)
 
@@ -143,7 +143,7 @@ async def test_c1b_merged_stream_two_cursors_are_independent(work):
     #   与本用例的 docstring、以及下面 B 段（fromT=1 ⇒ 该收到逐字帧）**三方矛盾**：
     #   A、B 两调用的 fromT 都是 1，实测两者都收到同一枚 ch='t' 的逐字帧
     #   （探针见 docs 里 §P28-c1b 归因）。真正该守的是"**过程**帧不回来"。
-    resp = await routes.stream_card_events(wid, cid, 10 ** 9, 1, 1, 0)
+    resp = await routes.stream_card_events(wid, cid, 10 ** 9, 1, 1, 0, session="")
     frames = await _collect_stream(resp, 1, lambda: None, timeout=1.0)
     # [死游标 v2 2026-11-09] 死游标不再归零整本重放，而是发**恰好一条**
     # resync 控制帧（前端据此走落盘重建＋游标重锚）——断言修正为：
@@ -153,7 +153,7 @@ async def test_c1b_merged_stream_two_cursors_are_independent(work):
     resyncs = [f for f in frames if f.get("type") == "resync"]
     assert len(resyncs) <= 1, f"resync 控制帧至多一条：{frames}"
 
-    resp2 = await routes.stream_card_events(wid, cid, 0, 1, 1, 0)
+    resp2 = await routes.stream_card_events(wid, cid, 0, 1, 1, 0, session="")
     frames2 = await _collect_stream(resp2, 1, lambda: None, timeout=1.0)
     assert any(f.get("ch") == "t" for f in frames2), \
         f"逐字游标 fromT=1 却没收不到存量逐字帧：{frames2}"
@@ -168,7 +168,7 @@ async def test_c2_legacy_stream_shape_unchanged(work):
     def _emit():
         event_stream.emit(wid, cid, "tool_call", {"tool": "x"})
 
-    resp = await routes.stream_card_events(wid, cid, 0, 0, 0, 0)
+    resp = await routes.stream_card_events(wid, cid, 0, 0, 0, 0, session="")
     frames = await _collect_stream(resp, 1, _emit)
     assert frames, "老形态流没收到帧"
     for f in frames:

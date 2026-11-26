@@ -128,12 +128,9 @@
       <button id="activityBtn" class="icon-btn canvas-only" type="button" aria-pressed="false" title="项目动态（运行中 + 最近活动）" aria-label="打开项目动态">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9h3l2-5 2 8 2-5h3"/></svg>
       </button>
-      <!-- [项目统筹 2026-11-21 任务一] 画布顶栏「项目统筹」入口：计划列表抽屉
-           （首次使用＝选承载卡出任命表单；已有计划点计划名跳卡详情）。
-           打开列表/刷新/浏览历史均不唤醒模型（后端只读路径）。 -->
-      <button id="coordBtn" class="icon-btn canvas-only" type="button" aria-pressed="false" title="项目统筹（计划与任命）" aria-label="打开项目统筹">
+      <a id="coordBtn" class="icon-btn canvas-only" href="/work/{{WORK_ID}}/coordination" title="项目统筹" aria-label="打开项目统筹">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="5.6"/><path d="M8 4.8v3.4l2.3 1.7"/></svg>
-      </button>
+      </a>
       <span data-i18n-mount class="canvas-only"></span>
       <span class="toolbar-sep canvas-only"></span>
       <button id="newCardBtn" class="btn primary canvas-only">＋ 新建卡</button>
@@ -182,15 +179,6 @@
   </div>
   <div id="activityList" class="cv-drawer-list"></div>
 </div>
-<!-- [项目统筹 2026-11-21 任务一] 计划列表抽屉（与项目动态抽屉同构：
-     .cv-drawer + .is-open 开合；内容由 static/esm/coordination.js 填） -->
-<div id="coordDrawer" class="cv-drawer" aria-label="项目统筹">
-  <div class="cv-drawer-head">
-    <span class="cv-drawer-title">项目统筹</span>
-    <button id="coordClose" class="cv-drawer-close" type="button" aria-label="关闭">×</button>
-  </div>
-  <div id="coordList" class="cv-drawer-list"></div>
-</div>
 <!-- [迭代四 F4②] 通知面板（浮层）：列表项「时间·发件卡名→收件卡名·类型·摘要」；
      点击跳收件卡；format_ok:false 归「格式异常」分组 -->
 <div id="notifyPanel" class="notify-panel">
@@ -208,10 +196,7 @@
      Cache-Control 策略需改后端（清单外），登记不做的偏离见汇报。 -->
 <!-- [思考流支持层 2026-10-12] main.js 升 ?v=13.0：内层 stream.js/workspace.js
      的 import 戳已升 13，不升外层戳浏览器会吃旧模块图 -->
-<script type="module" src="/static/esm/main.js?v=79.36"></script>
-<!-- [项目统筹 2026-11-21 任务一] 顶栏按钮＋计划列表抽屉接线（独立模块，
-     不进 main.js 模块图——加载失败不影响画布其余功能）。 -->
-<script type="module" src="/static/esm/coordination_canvas.js?v=1"></script>
+<script type="module" src="/static/esm/main.js?v=79.38"></script>
 <!-- [双语自适应 2026-11-03] 中英双语层：独立于业务模块，改词条升 ?v= -->
 <script type="module" src="/static/esm/i18n.js?v=4"></script>
 </body>

@@ -145,6 +145,27 @@ def flatten_parts(ev_type: str, data: Any) -> dict[str, Any]:
     return out
 
 
+def _fact_fields(work_id: str, rec: dict[str, Any]) -> Optional[dict[str, Any]]:
+    kind = str(rec.get("type") or "")
+    if not kind or not work_id or kind in _TOKEN_FRAMES:
+        return None
+    stamp = parse_ts(rec.get("ts"))
+    return {
+        "seq": int(rec["seq"]) if type(rec.get("seq")) is int else 0,
+        "ts": str(rec.get("ts") or "") if stamp is None else _fmt_ts(stamp),
+        "work": str(work_id), "card": str(rec.get("card_id") or rec.get("card") or ""),
+        "type": kind, "run": str(rec.get("run_id") or ""),
+        "round": int(rec.get("round") or 0) if isinstance(rec.get("round"), int) else 0,
+        "_t": stamp,
+    }
+
+
+def project_fact(work_id: str, rec: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """将事件账本记录投影到 Harness 使用的事实形状。"""
+    fields = _fact_fields(work_id, rec)
+    return {**fields, **flatten_parts(fields["type"], rec.get("data"))} if fields else None
+
+
 # ---------------------------------------------------------------- 数据集
 class FactStore:
     """按 work 分区的事实库（每个 work 一个 ``facts.db``）。"""
@@ -215,23 +236,10 @@ class FactStore:
         if ev_type in _TOKEN_FRAMES:
             self._skipped += 1
             return None
-        seq = rec.get("seq")
-        seq = int(seq) if isinstance(seq, int) and not isinstance(seq, bool) else 0
-        t = parse_ts(rec.get("ts"))
-        card = str(rec.get("card_id") or rec.get("card") or "")
+        fact = _fact_fields(work_id, rec)
+        if fact is None:
+            return None
         parts = flatten_parts(ev_type, rec.get("data"))
-
-        fact: dict[str, Any] = {
-            "seq": seq,
-            "ts": str(rec.get("ts") or "") if t is None else _fmt_ts(t),
-            "work": str(work_id),
-            "card": card,
-            "type": ev_type,
-            "run": str(rec.get("run_id") or ""),
-            "round": int(rec.get("round") or 0) if isinstance(rec.get("round"), int) else 0,
-            "_t": t,
-        }
-        fact.update(parts)
 
         conn = self._conn(work_id)
         try:
@@ -239,15 +247,15 @@ class FactStore:
                 "INSERT OR REPLACE INTO facts"
                 " (seq, card, ts, ts_iso, type, run_id, round, parts)"
                 " VALUES (?,?,?,?,?,?,?,?)",
-                (seq, card, t, fact["ts"], ev_type, fact["run"], fact["round"],
+                (fact["seq"], fact["card"], fact["_t"], fact["ts"], ev_type, fact["run"], fact["round"],
                  json.dumps(parts, ensure_ascii=False)))
             if commit:
                 conn.commit()
             self._ingested += 1
         except sqlite3.Error as exc:  # noqa: BLE001 零阻断
             logger.warning("[fact_store] 写入失败 work=%s type=%s seq=%s: %s",
-                           work_id, ev_type, seq, exc)
-        return fact
+                           work_id, ev_type, fact["seq"], exc)
+        return {**fact, **parts}
 
     def sort(self, work_id: str) -> int:
         """空实现：sqlite 版按查询时 ORDER BY，不需要维护物理顺序（保留接口）。"""

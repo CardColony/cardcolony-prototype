@@ -319,7 +319,11 @@ class PolicySet:
     def reload(self) -> list[str]:
         """从配置文件重读（改文件即生效，不必重启）。"""
         from . import policy_config
+        previous = self._policies.copy()
         errs = self.load(policy_config.load_raw())
+        for key in list(self._states):
+            if previous.get(key[1]) != self._policies.get(key[1]):
+                self._states.pop(key)
         self._gc_states()
         return errs
 
@@ -488,6 +492,13 @@ class PolicySet:
             logger.warning("[policy_set] 条件求值异常 %s: %s", p.id, exc)
             return False
 
+    @staticmethod
+    def _after_activation(p: Policy, fact: dict[str, Any]) -> bool:
+        if p.then.get("mode") != "inspect" or not p.then.get("saved_at"):
+            return True
+        stamp = fact.get("_t")
+        return isinstance(stamp, (int, float)) and int(stamp * 1000) >= int(p.then["saved_at"] * 1000)
+
     # ------------------------------------------------------------ 派发
     def dispatch(self, work_id: str, fact: dict[str, Any]) -> list[dict[str, Any]]:
         """一条事实进来：喂给关心它的值班员，谁凑够了就返回谁（并撕本子）。"""
@@ -510,6 +521,8 @@ class PolicySet:
                 continue
             if p.work and p.work != work_id:
                 continue          # 这条策略只管它自己的 work
+            if not self._after_activation(p, fact):
+                continue
             win = p.window_sec
             for key in self._scope_keys(p, work_id, fact):
                 st = self._state(work_id, p, key, now)
@@ -552,6 +565,8 @@ class PolicySet:
                 if p is None or not p.active:
                     continue
                 if p.work and p.work != work_id:
+                    continue
+                if not self._after_activation(p, fact):
                     continue
                 win = p.window_sec
                 for key in self._scope_keys(p, work_id, fact):
@@ -620,20 +635,37 @@ class PolicySet:
 
 # ---------------------------------------------------------------- 进程级单例
 _SET: Optional[PolicySet] = None
+_CONFIG_STAMP: tuple = ()
+
+
+def _config_stamp() -> tuple:
+    from . import policy_config
+
+    path = policy_config.config_path()
+    try:
+        stat = path.stat()
+        return (path, stat.st_ino, stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return (path,)
 
 
 def dispatcher() -> PolicySet:
     """进程级条件集（懒建 + 懒加载配置）。"""
-    global _SET
+    global _SET, _CONFIG_STAMP
+    stamp = _config_stamp()
     if _SET is None:
-        from . import policy_config
         _SET = PolicySet()
-        _SET.load(policy_config.load_raw())
+        _SET.reload()
+        _CONFIG_STAMP = stamp
+    elif stamp != _CONFIG_STAMP:
+        _SET.reload()
+        _CONFIG_STAMP = stamp
     return _SET
 
 
 def reset_set(set_: Optional[PolicySet] = None) -> PolicySet:
     """替换单例（测试/改配置后重载用）。"""
-    global _SET
+    global _SET, _CONFIG_STAMP
     _SET = set_ or PolicySet()
+    _CONFIG_STAMP = _config_stamp()
     return _SET

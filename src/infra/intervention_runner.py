@@ -484,7 +484,8 @@ def record_fired(work_id: str, fired: list[dict[str, Any]]) -> None:
                     spec=(json.dumps({"msg_tmpl": msg_tmpl},
                                      ensure_ascii=False)
                           if pid == _OVERSIZE_PID and _coalesce_on()
-                          else ""))
+                          else json.dumps({"basis": basis, "signature": then.get("signature")})
+                          if mode == "inspect" else ""))
                 if aid:
                     actions[t] = aid
                 else:
@@ -762,7 +763,7 @@ def mark_receipt(work_id: str, action_id: str, result: Any, *,
         previous = st.get_action(work_id, action_id) or {}
         if (previous.get("receipt") or {}).get("legacy_resume"):
             details = {**details, "legacy_resume": True}
-    if s == "continue:stale":
+    if s in ("continue:stale", "inspect:stale"):
         st.mark_action(work_id, action_id, "stale",
                        receipt={"result": s, "stale": True, **details},
                        claim_token=claim_token)

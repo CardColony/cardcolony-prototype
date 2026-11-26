@@ -162,6 +162,25 @@ test("回到底部：读者上翻后按钮出现，点它回到底部后按钮�
   assert.equal(scrollState.calls[0].behavior, "smooth", "回底应当是平滑滚动（要有过程感）");
 });
 
+test("估算高度偏离实际位置时，滚动换窗仍保留视口内的消息", { skip: SKIP }, async (t) => {
+  const { view, scroll, rows, window } = mountView(t);
+  const keys = Array.from({ length: 80 }, (_, index) => `message-${index}`);
+  view.render(keys, () => 1);
+  view.markLoaded();
+  const visible = rows.get("message-50");
+  stubRects([visible], { top: 80, height: 60 });
+
+  scroll.scrollTop = 1000;
+  scroll.dispatchEvent(new window.Event("scroll"));
+  await nextFrame();
+
+  assert.ok(visible.isConnected, "实际可见节点应继续挂载，即使按估算高度推断的位置相差很远");
+  assert.equal(scroll.scrollTop, 1000);
+  view.render([...keys, "new-message"], () => 1);
+  assert.ok(visible.isConnected, "收到新消息时也应留在当前阅读位置");
+  assert.equal(scroll.scrollTop, 1000);
+});
+
 /* [5715 · 网抓] 「读者上翻时来了新消息」必须**说一声**（按钮带"新消息"），
    否则用户以为界面死了。
    [2026-11-20] 同样要等一帧（scroll 处理按帧合并）。 */

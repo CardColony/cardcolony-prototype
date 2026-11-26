@@ -683,7 +683,9 @@ export function createAssembler() {
     const isLocal = ns === "local";
     // 去重键：本地记录无落盘 seq（恒 0），用 local_key 代替，避免互相吞帧。
     const dedupId = isLocal ? String(rec.local_key || "0") : seq;
-    const dedupKey = ns + "|" + type + "|" + dedupId;
+    const messageSeq = !isLocal && type === "user_message" && rec.data?.message_seq;
+    const dedupKey = Number.isInteger(messageSeq)
+      ? "message|user_message|" + messageSeq : ns + "|" + type + "|" + dedupId;
     if (seen.has(dedupKey)) return null;
     seen.add(dedupKey);
 

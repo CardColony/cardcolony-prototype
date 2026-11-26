@@ -12,9 +12,9 @@ import { store } from "./store.js?v=30";
 import { API } from "./api.js?v=57";
 import "./util.js?v=30";
 import { initTheme, initProcToggle, initNavDrawer, initSearchClear, initShortcuts } from "./theme.js?v=6";
-import { initModelBadge } from "./model_picker.js?v=9";
-import "../stream.js?v=81";
-import "../workspace.js?v=152";
+import { initModelBadge } from "./model_picker.js?v=12";
+import "../stream.js?v=85";
+import "../workspace.js?v=159";
 
 window.API = API;   // 调试便利（非功能依赖；与 api.js 薄壳同属兼容层）
 
@@ -28,7 +28,7 @@ initShortcuts();
 
 /* [模型设置 2026-10-19 产品裁定] 点哪里用哪里换：卡片页顶栏模型徽标。
    __WORK_ID__ / __CARD_ID__ 由 card.html 注入。 */
-if (new URLSearchParams(location.search).get("coordination") !== "1") {
+if (window.__CARD_ID__ !== "coordination") {
   initModelBadge({
     mountId: "modelBadgeMount",
     workId: window.__WORK_ID__,

@@ -87,7 +87,8 @@ async def state_of(work_id: str, align_id: str) -> dict[str, Any]:
         return st if isinstance(st, dict) else {}
 
     try:
-        return dict(card_db.read_sync(work_id, _fn, {}) or {})
+        # [事件循环冻结 2026-11-25] 同步 SQLite 读移出循环线程
+        return dict(await card_db.run_read(work_id, _fn, {}) or {})
     except Exception:  # noqa: BLE001
         return {}
 
@@ -131,7 +132,7 @@ async def list_active(work_id: str) -> list[dict[str, Any]]:
         return out
 
     try:
-        return list(card_db.read_sync(work_id, _fn, []) or [])
+        return list(await card_db.run_read(work_id, _fn, []) or [])
     except Exception as exc:  # noqa: BLE001
         logger.warning("[align] list_active 失败 work=%s: %s", work_id, exc)
         return []

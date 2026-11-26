@@ -50,6 +50,7 @@ _WEB_LOCAL_GET_TPLS: tuple[str, ...] = (
     "/settings",
     "/work/{}",
     "/work/{}/card/{}",
+    "/work/{}/coordination",
     "/api/nav",
     "/api/nav/children",
     "/api/nav/version",
@@ -194,7 +195,9 @@ def owner_index_of(work_id: str, card_id: str) -> int:
 
     串行模式语义＝一次一卡：跨进程无法共用回合锁，全部归 0 号保语义。
     """
-    if _RUNNER_COUNT <= 1 or not card_id:
+    from ..storage.coordination_store import PROJECT_AGENT_ID
+
+    if _RUNNER_COUNT <= 1 or not card_id or card_id == PROJECT_AGENT_ID:
         return 0
     try:
         from ..api import serial_gate as _sg
@@ -270,7 +273,11 @@ def _new_loop_client(kind: str) -> httpx.AsyncClient:
     kw: dict[str, Any]
     if kind == "short":
         n = max(2 * _RUNNER_COUNT, 8)
-        kw = dict(timeout=httpx.Timeout(30.0),
+        # [事件循环冻结 2026-11-25] 扇入腿超时 30s→4s：一片被装配冻结的
+        # runner 会把整份 gather 拖住（实测 nav/running 18-33s）；4s ⇒
+        # 冻住的片如实报 missing（覆盖机制已在），其余片正常合。short 池
+        # 只供扇入腿 + /api/health（后者自带 timeout=5.0 覆盖）。
+        kw = dict(timeout=httpx.Timeout(4.0),
                   limits=httpx.Limits(max_connections=n,
                                       max_keepalive_connections=n,
                                       keepalive_expiry=25.0))
@@ -466,6 +473,10 @@ async def _fanin_get_one(client: "httpx.AsyncClient", url: str) -> tuple:
         try:
             r = await client.get(url)
             return r, (time.perf_counter() - t0) * 1000.0, None
+        except httpx.TimeoutException as exc:
+            # 超时＝runner 活着但无应答（装配冻结）——重试只会再等一轮，
+            # 直接如实上抛（外层合并按 missing 处理）。
+            return None, (time.perf_counter() - t0) * 1000.0, exc
         except httpx.TransportError as exc:
             if attempt:     # 第二次仍失败：如实上抛语义
                 return None, (time.perf_counter() - t0) * 1000.0, exc
@@ -614,14 +625,33 @@ async def _fanin_sse_stream(work_id: str, query: str) -> StreamingResponse:
             # 40 泵风暴后 fanin 现建连接 SYN 重传 ~17s）。错峰后建立平滑。
             if i:
                 await asyncio.sleep(0.05 * i)
-            try:
-                async with sse_cli.stream("GET", url(i)) as resp:
-                    async for line in resp.aiter_lines():
-                        await q.put(line)
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 单 runner 断流不影响其他
-                pass
+            # [事件循环冻结 2026-11-25] 断流/半死重连：改前异常被吞后泵
+            # 永久退出（下游只剩其他片的流，本片半死）。现在——
+            #   read=45s：runner 侧 15s 一帧 : ping，45s 无字节即判死
+            #     （含「TCP 活着但循环冻住」的半死）⇒ 抛错重连；
+            #   重连退避 1s→2s→…→30s，连上即复位；
+            #   每次重连向下游发一帧注释心跳（下游消费端按 type 过滤，
+            #     注释行无害，顺带充当静默期活性信号）。
+            backoff = 1.0
+            while True:
+                try:
+                    async with sse_cli.stream(
+                            "GET", url(i),
+                            timeout=httpx.Timeout(None, connect=10.0,
+                                                  read=45.0)) as resp:
+                        backoff = 1.0
+                        async for line in resp.aiter_lines():
+                            await q.put(line)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 单 runner 断流不影响其他
+                    pass
+                try:
+                    await q.put(f": fanin-runner{i}-reconnect")
+                except asyncio.CancelledError:
+                    raise
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2.0, 30.0)
 
         tasks = [asyncio.create_task(_pump(i))
                  for i in range(_RUNNER_COUNT)]

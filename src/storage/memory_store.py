@@ -850,7 +850,7 @@ async def ensure_work_watermarks(work_id: str) -> list[str]:
     def _fn(conn):
         return [r["card_id"] for r in conn.execute("SELECT card_id FROM cards ORDER BY card_id")]
 
-    for cid in card_db.read_sync(work_id, _fn, []) or []:
+    for cid in await card_db.run_read(work_id, _fn, []) or []:
         if await ensure_watermark(work_id, cid):
             created.append(cid)
     return created
@@ -3353,8 +3353,11 @@ def _store_condense_debt(work_id: str, card_id: str, debt: dict[str, Any]) -> No
 def _card_is_archived(work_id: str, card_id: str) -> bool:
     """归档拦截（F14c）：卡已归档（卡表无此行）⇒ 不触发凝练。
     archive_card 把卡行从 `cards` 表移进归档记录 ⇒ 存在性判据即归档判据。"""
-    from . import card_store
+    from . import card_store, coordination_store
     try:
+        if card_id == coordination_store.PROJECT_CHAT_SESSION:
+            panel = coordination_store.panel(work_id, coordination_store.PROJECT_AGENT_ID)
+            return panel.get("state") not in ("active", "paused")
         return not card_store.card_exists(work_id, card_id)
     except Exception:  # noqa: BLE001 判不了就放行（宁多试，不误拦）
         return False

@@ -626,7 +626,7 @@ async def subscribe(work_id: str, card_id: str, from_seq: int = 0) -> AsyncItera
     # 重启单调）。⇒ 发 resync 控制帧让前端走 disk 重建＋游标重锚；
     # 本通道零重放、只实时跟进。在途轮的逐字正文由 token 通道自己的
     # 「本 run 首帧起放」补（过程帧全部落盘、无需 journal 重放）。
-    if from_seq > 0 and journal_last_seq(work_id, card_id) < from_seq:
+    if from_seq > journal_last_seq(work_id, card_id) + 1:
         yield {"seq": 0, "ts": time.time(), "type": "resync",
                "data": {"reason": "dead_cursor"}}
         from_seq = journal_last_seq(work_id, card_id) + 1
@@ -957,7 +957,7 @@ async def subscribe_tokens(work_id: str, card_id: str, from_seq: int = 0) -> Asy
     # 把历史轮的逐字帧全倒给客户端。逐字流真正要补的只有「在途那轮的
     # 正文」（content_chunk 不落盘、别处补不回）⇒ 只从本 run 首帧起放，
     # 与端点 replay=1 的既有口径同一粒度；无 run_start ⇒ 不重放。
-    if from_seq > 0 and token_journal_last_seq(work_id, card_id) < from_seq:
+    if from_seq > token_journal_last_seq(work_id, card_id) + 1:
         _rs = 0
         for _e in reversed(token_journal_of(work_id, card_id)):
             if (_e.get("type") == "run_start"

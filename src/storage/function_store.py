@@ -390,7 +390,7 @@ async def charter_history(work_id: str, function_id: str,
             (work_id, function_id, limit)).fetchall()
         return [dict(r) for r in rows]
 
-    return card_db.read_sync(work_id, _fn, []) or []
+    return await card_db.run_read(work_id, _fn, []) or []
 
 
 # ============================================================

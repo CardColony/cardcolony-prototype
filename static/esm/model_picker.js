@@ -17,9 +17,13 @@
  */
 import { API } from "./api.js?v=57";
 
-export function initModelBadge({ mountId, workId, cardId = "" }) {
+export function initModelBadge({ mountId, workId, cardId = "", selection = null }) {
   const mount = document.getElementById(mountId);
   if (!mount || !workId) return;
+  const primarySlot = selection?.slots[0]?.id;
+  let activeSlot = primarySlot;
+  let saving = false;
+  let currentToast = null;
   /* [切卡跟手 2026-10-21] 病根：cardId 原来是**页面加载时**的常量
      （window.__CARD_ID__），而切卡是前端路由（open(cid)），页面不刷新 ⇒
      ① 徽标一直显示「打开页面时那张卡」的模型：在卡 A 切了 k3，切到卡 B 还显示 k3；
@@ -75,16 +79,21 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
   function providers() { return Object.keys((state.settings && state.settings.providers) || {}); }
   function models() { return (state.settings && state.settings.models) || {}; }
   /* 当前选中的那一项（卡级＝这张卡自己的覆盖；没有＝继承 ⇒ 勾在「默认」行）。 */
-  function chosen() { return scopeOf() === "card" ? cd() : wd(); }
+  function chosen() {
+    return selection ? selection.current(activeSlot).model : scopeOf() === "card" ? cd() : wd();
+  }
 
   function pill() {
-    const e = effective();
+    const primary = selection?.current(primarySlot);
+    const e = primary ? primary.model : effective();
     /* [作用域标记 2026-10-21] 卡级**不显示**任何标记——卡片页本来就是「这张卡」，
        加「本卡」两个字是废话。只有「本项目」（会波及全部卡）才标出来。 */
     /* 只有「真项目级」才标——新建项目页整页就是新项目，标「本项目」是废话。 */
-    const proj = scopeOf() !== "card" && workId !== "draft";
-    const name = e ? (eff().model_label || display(e)) : "";
-    return `<button type="button" class="model-pill" data-mp="open" title="${proj ? "本项目" : "本卡"}模型：${esc(name)}（点击切换）">
+    const proj = !selection && scopeOf() !== "card" && workId !== "draft";
+    const name = e ? ((primary ? primary.label : eff().model_label) || display(e)) : "";
+    const title = selection ? selection.title : (proj ? "本项目模型" : "本卡模型");
+    return `<button type="button" class="model-pill" data-mp="open" aria-haspopup="true"
+      title="${esc(title)}：${esc(name)}（点击切换）">
       ${proj ? '<span class="mp-pill-scope">本项目</span>' : ""}
       <span class="mp-pill-name">${name ? esc(name) : "未配置"}</span>
       <span class="mp-caret">▾</span>
@@ -93,17 +102,15 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
 
   async function openPanel() {
     closePanel();
+    activeSlot = primarySlot;
     const pillar = mount.querySelector('[data-mp="open"]');
     const r = pillar ? pillar.getBoundingClientRect() : { right: mount.getBoundingClientRect().right, bottom: mount.getBoundingClientRect().top };
     panel = document.createElement("div");
     panel.className = "model-panel";
-    const ch = chosen();
+    const openedPanel = panel;
     const W = 300;
     panel.style.left = Math.max(8, r.right - W) + "px";
     panel.style.bottom = (window.innerHeight - r.top + 6) + "px";
-
-    const rButton = (val, label, selected) =>
-      `<button type="button" class="mp-row${selected ? " on" : ""}" data-mp-val="${esc(val)}">${esc(label)}${selected ? '<span class="mp-check">✓</span>' : ""}</button>`;
 
     /* [懒加载 2026-11-20] 模型目录到这里才拉。徽标本身不需要它
        （生效模型的名字由 /effective 带回）⇒ 冷开不再下整份目录。
@@ -120,11 +127,38 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
       } catch (e) {
         state.settings = {};
       }
-      if (!panel) return;          // 载入期间用户关掉了面板
+      if (panel !== openedPanel) return;
     }
 
-    let rows = `<div class="mp-grp"><div class="mp-grp-title">默认</div>` +
-      rButton("", `默认（当前 ${esc(inheritName())}）`, !ch) + `</div>`;
+    renderPanel();
+    if (!panel.parentNode) document.body.appendChild(panel);
+    state.open = true;
+
+    panel.addEventListener("click", (e) => {
+      const tab = e.target.closest("[data-mp-slot]");
+      if (tab && !saving) {
+        activeSlot = tab.dataset.mpSlot;
+        renderPanel();
+        panel.scrollTop = 0;
+        return;
+      }
+      const row = e.target.closest("[data-mp-val]");
+      if (row) choose(row.dataset.mpVal);
+    });
+  }
+
+  function renderPanel() {
+    const ch = chosen();
+    const rButton = (val, label, selected) =>
+      `<button type="button" class="mp-row${selected ? " on" : ""}" data-mp-val="${esc(val)}">${esc(label)}${selected ? '<span class="mp-check">✓</span>' : ""}</button>`;
+    let rows = selection
+      ? '<div class="session-tabs" role="group" aria-label="模型用途">'
+        + selection.slots.map((slot) =>
+          `<button type="button" class="session-tab${slot.id === activeSlot ? " on" : ""}"
+            data-mp-slot="${esc(slot.id)}" aria-pressed="${slot.id === activeSlot}">${esc(slot.label)}</button>`
+        ).join("") + '</div>'
+      : `<div class="mp-grp"><div class="mp-grp-title">默认</div>`
+        + rButton("", `默认（当前 ${inheritName()}）`, !ch) + '</div>';
 
     for (const prov of providers()) {
       const keys = Object.keys(models()).filter((k) => (models()[k] || {}).provider === prov);
@@ -132,16 +166,11 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
       rows += `<div class="mp-grp"><div class="mp-grp-title">${esc(prov)}</div>` +
         keys.map((k) => rButton(k, display(k), k === ch)).join("") + `</div>`;
     }
-    rows += `<div class="mp-foot">选择即对本${scopeOf() === "card" ? "卡" : "项目"}生效；选「默认」则跟进全局/项目。</div>`;
+    const footer = selection
+      ? (selection.slots.find((slot) => slot.id === activeSlot)?.description || "")
+      : `选择即对本${scopeOf() === "card" ? "卡" : "项目"}生效；选「默认」则跟进全局/项目。`;
+    rows += `<div class="mp-foot">${esc(footer)}</div>`;
     panel.innerHTML = rows;
-    if (!panel.parentNode) document.body.appendChild(panel);
-    state.open = true;
-
-    panel.addEventListener("click", (e) => {
-      const row = e.target.closest("[data-mp-val]");
-      if (!row) return;
-      choose(row.dataset.mpVal);
-    });
   }
 
   function closePanel() {
@@ -150,6 +179,22 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
   }
 
   async function choose(val) {
+    if (selection) {
+      if (saving) return;
+      saving = true;
+      try {
+        const message = await selection.save(activeSlot, val);
+        closePanel();
+        render();
+        toast(message || "已保存");
+      } catch (error) {
+        toast(error.message || "保存失败");
+        closePanel();
+      } finally {
+        saving = false;
+      }
+      return;
+    }
     /* [草稿态 2026-10-21] 项目/卡还没落盘，表还没生成 ⇒ 选择先记在本机，
        落库那一刻由 workspace.ensurePersisted 写进配置表（并通知本件刷新）。
        改前这里直接拒绝（"先保存项目再切模型"）——用户点了没反应，等于不能切。 */
@@ -216,8 +261,16 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
   }
 
   function toast(msg) {
+    currentToast?.remove();
     const el = document.createElement("div");
+    currentToast = el;
     el.className = "mp2-toast";
+    el.setAttribute("role", "status");
+    el.style.pointerEvents = "none";
+    if (selection) {
+      el.style.top = "64px";
+      el.style.bottom = "auto";
+    }
     el.textContent = msg;
     document.body.appendChild(el);
     setTimeout(() => el.remove(), 2200);
@@ -235,13 +288,13 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
     // mount 内点击/panel 点击在冒泡中已被记录；re-render 会摘除旧按钮导致 contains 误判，
     // 故用 lastClickInside 标记（真机验收踩过这个坑）。
     if (state.lastClickInside) { state.lastClickInside = false; return; }
-    if (panel && !panel.contains(e.target) && !mount.contains(e.target)) closePanel();
+    if (panel && !e.composedPath().includes(panel) && !mount.contains(e.target)) closePanel();
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePanel(); });
 
   /* [切卡跟手 2026-10-21] 宿主（workspace.open）切卡后派发：本件换行重读，
      徽标立刻变成**当前这张卡**的模型（不再停留在打开页面时那张）。 */
-  window.addEventListener("ui:card-changed", (e) => {
+  if (!selection) window.addEventListener("ui:card-changed", (e) => {
     const cid = String((e && e.detail && e.detail.cardId) || "");
     if (cid === curCard) return;
     curCard = cid;
@@ -249,6 +302,10 @@ export function initModelBadge({ mountId, workId, cardId = "" }) {
     reload();
   });
 
+  if (selection) {
+    render();
+    return { refresh: render };
+  }
   (async () => {
     try {
       /* [懒加载 2026-11-20] 这里**不再**拉整份模型目录 —— 徽标只要生效模型，

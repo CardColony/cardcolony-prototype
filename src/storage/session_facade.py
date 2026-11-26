@@ -1549,7 +1549,8 @@ async def append_card_message(work_id: str, card_id: str, *,
                               msg_type: str = "msg_notify",
                               event_type: str = "",
                               reply_to: str = "",
-                              extra: dict[str, Any] | None = None) -> dict[str, Any]:
+                              extra: dict[str, Any] | None = None,
+                              committed_msg_id: str = "") -> dict[str, Any]:
     """把一条**卡间消息**落成会话块（不进收件箱、不唤醒）。
 
     [2026-10-26 · 用户裁定] 同步/通知类消息不该走 inbox，也不该只在投递当轮可见：
@@ -1564,6 +1565,11 @@ async def append_card_message(work_id: str, card_id: str, *,
     口吻：第二人称、明确标出处（「卡 card_067（《标题》）给你发来一条通知」），
     模型能分清这不是用户本人说的话，不会误当指令来源。
     """
+    if committed_msg_id:
+        if msg_type != "msg_directive" or reply_to or extra or event_type:
+            raise ValueError("已提交的指令只能按原消息号和原正文补写")
+        return await _publish_committed_directive(work_id, card_id, from_card, text,
+                                                  committed_msg_id)
     title = from_card
     try:
         from . import card_store
@@ -1625,7 +1631,8 @@ async def append_card_message(work_id: str, card_id: str, *,
 
 
 async def append_many(work_id: str, card_id: str,
-                      blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                      blocks: list[dict[str, Any]], *,
+                      emit_event: bool = True) -> list[dict[str, Any]]:
     """**批量追加（单次锁、单次写、原子）**——一个工具轮的 A＋N×B 一次落盘。
 
     [工具结果落会话 2026-10-17] N1 红线（不得出现孤立 tool 块）的原子性保证：
@@ -1652,8 +1659,9 @@ async def append_many(work_id: str, card_id: str,
     # 事件流：工具块经 _block_event_type 一律返回空串（不发消息事件）
     # [harness 第 1 步] 逐块带**入参原块**（origin）——发件人/消息 id 只在原块里，
     # 白名单输出（_assign_block）已把它们丢掉。
-    for nb, _src in zip(new_blks, blocks):
-        await _emit_block_event(work_id, card_id, nb, "", origin=_src)
+    if emit_event:
+        for nb, _src in zip(new_blks, blocks):
+            await _emit_block_event(work_id, card_id, nb, "", origin=_src)
     for nb in new_blks:
         session_ops.ops_log("append", work_id, card_id,
                             {"seq": nb["seq"], "turn": nb["turn"],
@@ -2078,7 +2086,39 @@ def repair_damaged_tail(work_id: str, card_id: str) -> dict[str, Any]:
     return report
 
 
-# ---------------------------------------------------------------- 事务内同步落信（任务四）
+# ---------------------------------------------------------------- 已提交指令的幂等投影
+
+async def _publish_committed_directive(work_id: str, card_id: str, from_card: str,
+                                       text: str, msg_id: str) -> dict[str, Any]:
+    from . import origin_store
+
+    def write() -> dict[str, Any]:
+        projection = append_directive_sync(work_id, card_id, from_card, text, msg_id)
+        block = projection.get("block")
+        if not block:
+            raise OSError("会话未返回收件块")
+        block = {**block, "event_type": "msg_directive"}
+        if origin_store.write_blocks_sync(work_id, card_id, [block]) != 1:
+            raise OSError("原文账未确认写入")
+        return block
+
+    async def project() -> dict[str, Any]:
+        async with session_store._session_lock(work_id, card_id):
+            return await asyncio.to_thread(write)
+
+    # 写线程完成前必须持有会话锁，包括调用方取消的情况。
+    task = asyncio.create_task(project())
+    try:
+        block = await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await asyncio.gather(task, return_exceptions=True)
+        raise
+    event = await _emit_block_event(
+        work_id, card_id, block, "msg_directive",
+        origin={"from_card": from_card, "msg_id": msg_id}, once_per_message=True)
+    if not event:
+        raise OSError("事件流未确认写入")
+    return {**block, "msg_id": msg_id}
 
 def append_directive_sync(work_id: str, card_id: str, from_card: str,
                           text: str, msg_id: str) -> dict[str, Any]:
